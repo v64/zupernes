@@ -49,6 +49,25 @@ pub const Ppu = struct {
     tm: u8, // $212C - Main screen designation
     ts: u8, // $212D - Sub screen designation
 
+    // ==========================================================================
+    // WINDOW REGISTERS - Used to mask/clip layers in rectangular screen regions
+    // ==========================================================================
+    // The SNES has two windows (W1 and W2) that can be used to enable/disable
+    // rendering of BG layers, sprites, and color math in rectangular regions.
+    // Each window is defined by left and right X coordinates.
+    // ==========================================================================
+    w12sel: u8, // $2123 - Window 1/2 mask settings for BG1/BG2
+    w34sel: u8, // $2124 - Window 1/2 mask settings for BG3/BG4
+    wobjsel: u8, // $2125 - Window 1/2 mask settings for OBJ/Color
+    wh0: u8, // $2126 - Window 1 left position
+    wh1: u8, // $2127 - Window 1 right position
+    wh2: u8, // $2128 - Window 2 left position
+    wh3: u8, // $2129 - Window 2 right position
+    wbglog: u8, // $212A - Window 1/2 mask logic for BG1-4
+    wobjlog: u8, // $212B - Window 1/2 mask logic for OBJ/Color
+    tmw: u8, // $212E - Window mask designation for main screen
+    tsw: u8, // $212F - Window mask designation for sub screen
+
     // Color math registers
     cgwsel: u8, // $2130 - Color addition select
     cgadsub: u8, // $2131 - Color math designation
@@ -104,6 +123,18 @@ pub const Ppu = struct {
             .bg4vofs = 0,
             .tm = 0,
             .ts = 0,
+            // Window registers
+            .w12sel = 0,
+            .w34sel = 0,
+            .wobjsel = 0,
+            .wh0 = 0,
+            .wh1 = 0,
+            .wh2 = 0,
+            .wh3 = 0,
+            .wbglog = 0,
+            .wobjlog = 0,
+            .tmw = 0,
+            .tsw = 0,
             .cgwsel = 0,
             .cgadsub = 0,
             .coldata = 0,
@@ -197,13 +228,15 @@ pub const Ppu = struct {
             switch (mode) {
                 0 => {
                     // Mode 0: 4 BG layers, 2bpp each (4 colors per BG)
-                    if ((self.tm & 0x08) != 0) {
+                    // Apply window masking per layer
+                    const x8: u8 = @intCast(x);
+                    if ((self.tm & 0x08) != 0 and !self.isWindowMasked(3, x8)) {
                         if (self.renderBgPixel(4, @intCast(x), y, 2)) |c| {
                             color = c.color;
                             bg_priority = c.priority;
                         }
                     }
-                    if ((self.tm & 0x04) != 0) {
+                    if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
                         if (self.renderBgPixel(3, @intCast(x), y, 2)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
@@ -211,7 +244,7 @@ pub const Ppu = struct {
                             }
                         }
                     }
-                    if ((self.tm & 0x02) != 0) {
+                    if ((self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
                         if (self.renderBgPixel(2, @intCast(x), y, 2)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
@@ -219,7 +252,7 @@ pub const Ppu = struct {
                             }
                         }
                     }
-                    if ((self.tm & 0x01) != 0) {
+                    if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
                         if (self.renderBgPixel(1, @intCast(x), y, 2)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
@@ -230,6 +263,8 @@ pub const Ppu = struct {
                 },
                 1 => {
                     // Mode 1: BG1/BG2 4bpp (16 colors), BG3 2bpp (4 colors)
+                    // Render back to front: BG3 (lowest), BG2, BG1 (highest)
+                    // Each layer only overwrites if it has a non-transparent pixel
                     if ((self.tm & 0x04) != 0) {
                         if (self.renderBgPixel(3, @intCast(x), y, 2)) |c| {
                             color = c.color;
@@ -353,15 +388,24 @@ pub const Ppu = struct {
         // =============================================================================
         // TILEMAP BASE ADDRESS CALCULATION
         // =============================================================================
-        // BGxSC register format: AAAAAASS where:
-        //   - AAAAAA (bits 7:2) = tilemap base in 0x400 WORD units (2KB)
-        //   - SS (bits 1:0) = tilemap size (0=32x32, 1=64x32, 2=32x64, 3=64x64)
+        // Reference: https://snes.nesdev.org/wiki/Registers
+        // Reference: fullsnes.txt "$2107-$210A - BGxSC"
+        //
+        // $2107-$210A - BGxSC - BG1-4 Tilemap Address and Size (W)
+        // Register format: AAAAAASS where:
+        //   - AAAAAA (bits 7:2) = tilemap base address in 0x400 WORD units (1KB words = 2KB bytes)
+        //   - SS (bits 1:0) = tilemap size (0=32x32, 1=64x32, 2=32x64, 3=64x64 tiles)
         //
         // The PPU uses word addresses internally, but our vram[] array is byte-indexed.
         // Conversion: byte_addr = word_addr * 2
         //
         // Formula: base_addr = ((sc_reg & 0xFC) >> 2) * 0x400 words * 2 bytes
         //        = (sc_reg & 0xFC) * 0x100 * 2 = (sc_reg & 0xFC) << 9
+        //
+        // Example: If BG1SC = 0x70:
+        //   - bits 7:2 = 0x1C = 28
+        //   - tilemap base = 28 * 0x400 * 2 = 0xE000 bytes
+        //   - With formula: (0x70 & 0xFC) << 9 = 0x70 << 9 = 0xE000 bytes ✓
         // =============================================================================
         var tilemap_addr: u32 = @as(u32, sc_reg & 0xFC) << 9;
 
@@ -410,11 +454,24 @@ pub const Ppu = struct {
         // =============================================================================
         // CHARACTER (TILE GRAPHICS) BASE ADDRESS CALCULATION
         // =============================================================================
-        // BG12NBA/BG34NBA register format: BBBBAAAA where:
-        //   - AAAA (bits 3:0) = BG1/BG3 character base in 0x1000 WORD units (8KB)
-        //   - BBBB (bits 7:4) = BG2/BG4 character base in 0x1000 WORD units (8KB)
+        // Reference: https://snes.nesdev.org/wiki/Registers
+        // Reference: fullsnes.txt "$210B/$210C - BG12NBA/BG34NBA"
         //
-        // Conversion to byte address: byte_addr = value * 0x1000 * 2 = value << 13
+        // $210B - BG12NBA - BG1/BG2 Character Data Address (W)
+        // $210C - BG34NBA - BG3/BG4 Character Data Address (W)
+        //
+        // Register format: BBBBAAAA where:
+        //   - AAAA (bits 3:0) = BG1/BG3 character base address
+        //   - BBBB (bits 7:4) = BG2/BG4 character base address
+        //
+        // Address calculation (from fullsnes):
+        //   - Each increment = 0x1000 WORDS = 0x2000 BYTES (4K-word / 8KB steps)
+        //   - Character base (bytes) = value * 0x2000 = value << 13
+        //   - Value range 0-F maps to VRAM 0x0000-0xE000 (word addr) = 0x0000-0x1C000 (byte addr)
+        //
+        // Example: If BG12NBA = 0x21:
+        //   - BG1 chr base = (0x21 & 0x0F) << 13 = 1 << 13 = 0x2000 bytes
+        //   - BG2 chr base = (0x21 >> 4) << 13 = 2 << 13 = 0x4000 bytes
         // =============================================================================
         const chr_base: u32 = switch (bg) {
             1 => @as(u32, self.bg12nba & 0x0F) << 13,
@@ -514,6 +571,96 @@ pub const Ppu = struct {
         return @as(u16, hi & 0x7F) << 8 | lo;
     }
 
+    // ==========================================================================
+    // WINDOW MASKING
+    // ==========================================================================
+    // The SNES has two windows that can mask (hide) portions of BG layers and
+    // sprites. Each window defines a horizontal range (left to right position).
+    // For each layer, you can enable either window, invert either window's effect,
+    // and combine the two windows using OR/AND/XOR/XNOR logic.
+    //
+    // Registers:
+    //   W12SEL ($2123): Window enable/invert for BG1/BG2
+    //   W34SEL ($2124): Window enable/invert for BG3/BG4
+    //   WOBJSEL ($2125): Window enable/invert for OBJ/Color
+    //   WH0-WH3 ($2126-$2129): Window 1/2 left/right positions
+    //   WBGLOG ($212A): Window logic for BG1-4
+    //   WOBJLOG ($212B): Window logic for OBJ/Color
+    //   TMW ($212E): Enable window masking per layer on main screen
+    //   TSW ($212F): Enable window masking per layer on sub screen
+    //
+    // Returns true if the pixel at position x should be MASKED (hidden) for
+    // the given layer. Layer: 0=BG1, 1=BG2, 2=BG3, 3=BG4, 4=OBJ
+    // ==========================================================================
+    fn isWindowMasked(self: *Ppu, layer: u3, x: u8) bool {
+        // Check if window masking is enabled for this layer on main screen
+        const tmw_bit = @as(u8, 1) << layer;
+        if ((self.tmw & tmw_bit) == 0) return false;
+
+        // Get window settings for this layer
+        const w_sel: u8 = switch (layer) {
+            0 => self.w12sel & 0x0F, // BG1
+            1 => self.w12sel >> 4, // BG2
+            2 => self.w34sel & 0x0F, // BG3
+            3 => self.w34sel >> 4, // BG4
+            4 => self.wobjsel & 0x0F, // OBJ
+            else => 0,
+        };
+
+        // Get window logic for this layer
+        const w_log: u2 = switch (layer) {
+            0 => @truncate(self.wbglog & 0x03), // BG1
+            1 => @truncate((self.wbglog >> 2) & 0x03), // BG2
+            2 => @truncate((self.wbglog >> 4) & 0x03), // BG3
+            3 => @truncate(self.wbglog >> 6), // BG4
+            4 => @truncate(self.wobjlog & 0x03), // OBJ
+            else => 0,
+        };
+
+        // Window 1 settings: bits 0=enable, 1=invert
+        const w1_enable = (w_sel & 0x02) != 0;
+        const w1_invert = (w_sel & 0x01) != 0;
+
+        // Window 2 settings: bits 2=enable, 3=invert
+        const w2_enable = (w_sel & 0x08) != 0;
+        const w2_invert = (w_sel & 0x04) != 0;
+
+        // Calculate window 1 state (true if inside window)
+        var w1_inside: bool = false;
+        if (w1_enable) {
+            // Window is "inside" when left <= x <= right
+            // When left > right, window covers nothing
+            w1_inside = (x >= self.wh0 and x <= self.wh1);
+            if (w1_invert) w1_inside = !w1_inside;
+        }
+
+        // Calculate window 2 state
+        var w2_inside: bool = false;
+        if (w2_enable) {
+            w2_inside = (x >= self.wh2 and x <= self.wh3);
+            if (w2_invert) w2_inside = !w2_inside;
+        }
+
+        // Combine windows based on logic
+        // If only one window enabled, use that window's result
+        // If neither enabled, no masking (return false)
+        var masked: bool = false;
+        if (w1_enable and w2_enable) {
+            masked = switch (w_log) {
+                0 => w1_inside or w2_inside, // OR
+                1 => w1_inside and w2_inside, // AND
+                2 => w1_inside != w2_inside, // XOR
+                3 => w1_inside == w2_inside, // XNOR
+            };
+        } else if (w1_enable) {
+            masked = w1_inside;
+        } else if (w2_enable) {
+            masked = w2_inside;
+        }
+
+        return masked;
+    }
+
     const SpritePixel = struct {
         color: u16,
         priority: u8,
@@ -550,14 +697,23 @@ pub const Ppu = struct {
         // =============================================================================
         // SPRITE CHARACTER BASE ADDRESS CALCULATION
         // =============================================================================
-        // OBSEL ($2101) register format:
-        //   - Bits 0-2: OBJ name base address in 0x4000 WORD units (16KB)
-        //   - Bits 3-4: OBJ name select (offset for second character table)
-        //   - Bits 5-7: OBJ size select
+        // Reference: https://snes.nesdev.org/wiki/Registers
+        // Reference: fullsnes.txt "$2101 - OBSEL"
         //
-        // Word-to-byte conversion: byte_addr = word_addr * 2
-        //   obj_base = (obsel & 0x07) * 0x4000 words * 2 = (obsel & 0x07) << 14
-        //   obj_name_offset = ((obsel >> 3) & 0x03) * 0x1000 words * 2 = ((obsel >> 3) & 0x03) << 13
+        // $2101 - OBSEL - OBJ Size and Character Data Address (W)
+        // Register format: SSSNNBBB where:
+        //   - BBB (bits 0-2): OBJ name base address
+        //   - NN (bits 3-4): OBJ name select (gap between character tables)
+        //   - SSS (bits 5-7): OBJ size select
+        //
+        // Address calculation (from fullsnes "upper 3bit of 16bit address"):
+        //   - BBB forms bits 15-13 of the 16-bit WORD address
+        //   - Word address = BBB << 13, Byte address = BBB << 14
+        //   - Name select: NN << 12 words = NN << 13 bytes added for tiles 0x100-0x1FF
+        //
+        // Example: If OBSEL = 0x22 (bits: 001 00 010):
+        //   - obj_base = 2 << 14 = 0x8000 bytes
+        //   - obj_name_select = 0 << 13 = 0 (no gap)
         // =============================================================================
         const obj_base: u32 = @as(u32, self.obsel & 0x07) << 14;
         const obj_name_base: u32 = (@as(u32, (self.obsel >> 3) & 0x03) << 13) +% obj_base;
@@ -610,10 +766,13 @@ pub const Ppu = struct {
             if (v_flip) py = height - 1 - py;
 
             // Get base tile number
-            // If name_select is set, add the name table offset to the tile number
-            // The offset in bytes divided by 32 (bytes per 4bpp tile) = tile offset
+            // If name_select is set (OAM attribute bit 0), use the second character table.
+            // The gap between tables is determined by OBSEL bits 3-4 (name select).
+            // Each tile is 32 bytes (4bpp 8x8), so byte offset / 32 = tile offset.
             var base_tile: u16 = tile;
             if (name_select) {
+                // obj_name_base - obj_base gives the byte offset between tables
+                // Divide by 32 to get tile number offset
                 base_tile +%= @truncate((obj_name_base - obj_base) >> 5);
             }
 
@@ -768,9 +927,24 @@ pub const Ppu = struct {
                 self.cgram_addr = @as(u9, value) << 1;
             },
             0x2122 => self.writeCgram(value),
+            // Window mask settings
+            0x2123 => self.w12sel = value,
+            0x2124 => self.w34sel = value,
+            0x2125 => self.wobjsel = value,
+            // Window positions
+            0x2126 => self.wh0 = value,
+            0x2127 => self.wh1 = value,
+            0x2128 => self.wh2 = value,
+            0x2129 => self.wh3 = value,
+            // Window logic
+            0x212A => self.wbglog = value,
+            0x212B => self.wobjlog = value,
             // Main/sub screen designation
             0x212C => self.tm = value,
             0x212D => self.ts = value,
+            // Window area main/sub screen disable
+            0x212E => self.tmw = value,
+            0x212F => self.tsw = value,
             // Color math
             0x2130 => self.cgwsel = value,
             0x2131 => self.cgadsub = value,

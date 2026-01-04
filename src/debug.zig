@@ -65,6 +65,9 @@ pub const trace_hdma = enabled and false;
 /// Trace PPU register writes
 pub const trace_ppu_regs = enabled and false;
 
+/// Trace BG rendering (for debugging tile issues)
+pub const trace_bg_render = enabled and false;
+
 /// Trace PPU rendering (very verbose!)
 pub const trace_ppu_render = enabled and false;
 
