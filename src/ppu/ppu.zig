@@ -1,5 +1,8 @@
 // PPU (Picture Processing Unit) Emulation
 
+const std = @import("std");
+const dbg = @import("../debug.zig");
+
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 224; // Can be 224 or 239 depending on overscan
 pub const SCANLINES_PER_FRAME: usize = 262; // NTSC
@@ -191,6 +194,11 @@ pub const Ppu = struct {
                 if (self.scanline >= SCANLINES_PER_FRAME) {
                     self.scanline = 0;
                     self.frame_count += 1;
+
+                    // Draw frame counter overlay in debug builds
+                    if (comptime dbg.show_frame_counter) {
+                        self.drawFrameCounter();
+                    }
                 }
             }
         }
@@ -822,6 +830,112 @@ pub const Ppu = struct {
 
                 sprite_count += 1;
                 if (sprite_count >= 32 * 8) break; // Max 32 sprites, 34 8-pixel chunks per line
+            }
+        }
+    }
+
+    // ==========================================================================
+    // DEBUG FRAME COUNTER OVERLAY
+    // ==========================================================================
+    // Draws the current frame number in the lower-right corner of the screen.
+    // Uses a simple 5x7 pixel bitmap font for digits 0-9.
+    // White text (0x7FFF) on black background (0x0000) for easy readability.
+    // Only compiled in debug builds (gated by dbg.show_frame_counter).
+    // ==========================================================================
+
+    /// 5x7 pixel bitmap font for digits 0-9
+    /// Each digit is stored as 7 bytes, one per row, with bits 4-0 representing pixels
+    const digit_font = [10][7]u8{
+        // 0
+        .{ 0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110 },
+        // 1
+        .{ 0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110 },
+        // 2
+        .{ 0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111 },
+        // 3
+        .{ 0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110 },
+        // 4
+        .{ 0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010 },
+        // 5
+        .{ 0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110 },
+        // 6
+        .{ 0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110 },
+        // 7
+        .{ 0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000 },
+        // 8
+        .{ 0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110 },
+        // 9
+        .{ 0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100 },
+    };
+
+    /// Draw the frame counter overlay in the lower-right corner
+    /// Called at end of each frame when dbg.show_frame_counter is enabled
+    fn drawFrameCounter(self: *Ppu) void {
+        const white: u16 = 0x7FFF; // 15-bit BGR white
+        const black: u16 = 0x0000;
+
+        // Convert frame count to digits
+        var digits: [10]u8 = undefined;
+        var digit_count: usize = 0;
+        var n = self.frame_count;
+
+        // Handle 0 specially
+        if (n == 0) {
+            digits[0] = 0;
+            digit_count = 1;
+        } else {
+            // Extract digits in reverse order
+            while (n > 0 and digit_count < 10) {
+                digits[digit_count] = @intCast(n % 10);
+                n /= 10;
+                digit_count += 1;
+            }
+        }
+
+        // Each digit is 5 pixels wide + 1 pixel spacing, font is 7 pixels tall
+        const char_width: usize = 6; // 5 pixel char + 1 pixel spacing
+        const char_height: usize = 7;
+        const padding: usize = 2; // Padding around text
+
+        // Calculate total width of text area (including black background padding)
+        const text_width = digit_count * char_width + padding * 2;
+        const text_height = char_height + padding * 2;
+
+        // Position in lower-right corner
+        const start_x = SCREEN_WIDTH - text_width;
+        const start_y = SCREEN_HEIGHT - text_height;
+
+        // Draw black background
+        for (0..text_height) |dy| {
+            const y = start_y + dy;
+            if (y >= SCREEN_HEIGHT) continue;
+            for (0..text_width) |dx| {
+                const x = start_x + dx;
+                if (x >= SCREEN_WIDTH) continue;
+                self.framebuffer[y * SCREEN_WIDTH + x] = black;
+            }
+        }
+
+        // Draw digits (in reverse order since we extracted them backwards)
+        var i: usize = 0;
+        while (i < digit_count) : (i += 1) {
+            const digit = digits[digit_count - 1 - i];
+            const digit_x = start_x + padding + i * char_width;
+            const digit_y = start_y + padding;
+
+            // Draw each row of the digit
+            for (0..7) |row| {
+                const row_bits = digit_font[digit][row];
+                for (0..5) |col| {
+                    const bit: u3 = @intCast(4 - col);
+                    if ((row_bits >> bit) & 1 != 0) {
+                        const x = digit_x + col;
+                        const y = digit_y + row;
+                        if (x < SCREEN_WIDTH and y < SCREEN_HEIGHT) {
+                            self.framebuffer[y * SCREEN_WIDTH + x] = white;
+                        }
+                    }
+                }
             }
         }
     }

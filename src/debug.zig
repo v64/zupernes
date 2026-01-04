@@ -85,6 +85,10 @@ pub const trace_memory = enabled and false;
 /// Print frame summary every N frames (0 = every frame when enabled)
 pub const frame_interval: u32 = 60;
 
+/// Show frame counter overlay in lower-right corner of screen
+/// White text on black background - useful for identifying exact frame in screenshots
+pub const show_frame_counter = enabled and true;
+
 // =============================================================================
 // HELPER FUNCTIONS
 // =============================================================================
