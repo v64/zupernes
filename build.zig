@@ -4,17 +4,30 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Sokol dependency
+    // Debug mode option - enables all debug tracing and frame output
+    // Build with: zig build -Ddebug=true
+    const debug_mode = b.option(bool, "debug", "Enable emulator debug output") orelse false;
+
+    // Sokol dependency (graphics/windowing library)
     const dep_sokol = b.dependency("sokol", .{
         .target = target,
         .optimize = optimize,
     });
+
+    // Build options - shared between main exe and emulator library
+    // IMPORTANT: createModule() must only be called ONCE, then shared
+    const build_opts = b.addOptions();
+    build_opts.addOption(bool, "debug_mode", debug_mode);
+    const build_opts_mod = build_opts.createModule();
 
     // Core emulator library module
     const emu_mod = b.addModule("zupernes", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{
+            .{ .name = "build_options", .module = build_opts_mod },
+        },
     });
 
     // Main executable
@@ -27,6 +40,7 @@ pub fn build(b: *std.Build) void {
             .imports = &.{
                 .{ .name = "zupernes", .module = emu_mod },
                 .{ .name = "sokol", .module = dep_sokol.module("sokol") },
+                .{ .name = "build_options", .module = build_opts_mod },
             },
         }),
     });

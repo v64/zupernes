@@ -130,6 +130,7 @@ fn runTest(
 
     // Create emulator and load ROM
     var emulator = Emulator.init();
+    emulator.setup();
     try emulator.loadRom(rom_data);
 
     // Run for specified number of frames

@@ -35,6 +35,29 @@ pub const Ppu = struct {
     vmaddl: u8, // $2116 - VRAM address low
     vmaddh: u8, // $2117 - VRAM address high
 
+    // BG scroll registers
+    bg1hofs: u16, // $210D - BG1 horizontal scroll
+    bg1vofs: u16, // $210E - BG1 vertical scroll
+    bg2hofs: u16, // $210F - BG2 horizontal scroll
+    bg2vofs: u16, // $2110 - BG2 vertical scroll
+    bg3hofs: u16, // $2111 - BG3 horizontal scroll
+    bg3vofs: u16, // $2112 - BG3 vertical scroll
+    bg4hofs: u16, // $2113 - BG4 horizontal scroll
+    bg4vofs: u16, // $2114 - BG4 vertical scroll
+
+    // Main/Sub screen designation
+    tm: u8, // $212C - Main screen designation
+    ts: u8, // $212D - Sub screen designation
+
+    // Color math registers
+    cgwsel: u8, // $2130 - Color addition select
+    cgadsub: u8, // $2131 - Color math designation
+    coldata: u16, // Fixed color (combined from $2132 writes)
+
+    // Latch for double-write scroll registers
+    scroll_latch: u8,
+    scroll_latch_set: bool,
+
     // Internal state
     vram_addr: u16,
     cgram_addr: u9,
@@ -71,6 +94,21 @@ pub const Ppu = struct {
             .vmain = 0,
             .vmaddl = 0,
             .vmaddh = 0,
+            .bg1hofs = 0,
+            .bg1vofs = 0,
+            .bg2hofs = 0,
+            .bg2vofs = 0,
+            .bg3hofs = 0,
+            .bg3vofs = 0,
+            .bg4hofs = 0,
+            .bg4vofs = 0,
+            .tm = 0,
+            .ts = 0,
+            .cgwsel = 0,
+            .cgadsub = 0,
+            .coldata = 0,
+            .scroll_latch = 0,
+            .scroll_latch_set = false,
             .vram_addr = 0,
             .cgram_addr = 0,
             .oam_addr = 0,
@@ -90,6 +128,17 @@ pub const Ppu = struct {
         self.vram_addr = 0;
         self.cgram_addr = 0;
         self.oam_addr = 0;
+        self.bg1hofs = 0;
+        self.bg1vofs = 0;
+        self.bg2hofs = 0;
+        self.bg2vofs = 0;
+        self.bg3hofs = 0;
+        self.bg3vofs = 0;
+        self.bg4hofs = 0;
+        self.bg4vofs = 0;
+        self.tm = 0;
+        self.ts = 0;
+        self.scroll_latch_set = false;
     }
 
     /// Advance PPU by given number of master clock cycles
@@ -117,48 +166,470 @@ pub const Ppu = struct {
     }
 
     fn renderScanline(self: *Ppu) void {
+        const y = self.scanline;
+        const start = y * SCREEN_WIDTH;
+
         // Check if display is enabled
         if ((self.inidisp & 0x80) != 0) {
             // Force blank - fill with black
-            const start = self.scanline * SCREEN_WIDTH;
             for (0..SCREEN_WIDTH) |x| {
                 self.framebuffer[start + x] = 0;
             }
             return;
         }
 
-        // Get background mode
-        const mode = self.bgmode & 0x07;
+        // Get background color from CGRAM[0]
+        const backdrop = self.getColor(0);
 
-        // For now, just render a test pattern based on mode
-        const start = self.scanline * SCREEN_WIDTH;
+        // Get background mode
+        const mode: u3 = @truncate(self.bgmode);
+
+        // Render sprites for this scanline
+        var sprite_buffer: [SCREEN_WIDTH]?SpritePixel = undefined;
+        self.renderSprites(y, &sprite_buffer);
+
+        // Render each pixel
         for (0..SCREEN_WIDTH) |x| {
-            // Simple test pattern - will be replaced with actual rendering
-            const color: u16 = switch (mode) {
-                0 => self.renderMode0Pixel(x, self.scanline),
-                1 => self.renderMode1Pixel(x, self.scanline),
-                else => @as(u16, @truncate(x)) | (@as(u16, @truncate(self.scanline)) << 5),
-            };
+            var color: u16 = backdrop;
+            var bg_priority: u8 = 0;
+
+            // Render BG layers (back to front based on priority)
+            switch (mode) {
+                0 => {
+                    // Mode 0: 4 BG layers, 2bpp each (4 colors per BG)
+                    if ((self.tm & 0x08) != 0) {
+                        if (self.renderBgPixel(4, @intCast(x), y, 2)) |c| {
+                            color = c.color;
+                            bg_priority = c.priority;
+                        }
+                    }
+                    if ((self.tm & 0x04) != 0) {
+                        if (self.renderBgPixel(3, @intCast(x), y, 2)) |c| {
+                            if (c.priority >= bg_priority) {
+                                color = c.color;
+                                bg_priority = c.priority;
+                            }
+                        }
+                    }
+                    if ((self.tm & 0x02) != 0) {
+                        if (self.renderBgPixel(2, @intCast(x), y, 2)) |c| {
+                            if (c.priority >= bg_priority) {
+                                color = c.color;
+                                bg_priority = c.priority;
+                            }
+                        }
+                    }
+                    if ((self.tm & 0x01) != 0) {
+                        if (self.renderBgPixel(1, @intCast(x), y, 2)) |c| {
+                            if (c.priority >= bg_priority) {
+                                color = c.color;
+                                bg_priority = c.priority;
+                            }
+                        }
+                    }
+                },
+                1 => {
+                    // Mode 1: BG1/BG2 4bpp (16 colors), BG3 2bpp (4 colors)
+                    if ((self.tm & 0x04) != 0) {
+                        if (self.renderBgPixel(3, @intCast(x), y, 2)) |c| {
+                            color = c.color;
+                            bg_priority = c.priority;
+                        }
+                    }
+                    if ((self.tm & 0x02) != 0) {
+                        if (self.renderBgPixel(2, @intCast(x), y, 4)) |c| {
+                            if (c.priority >= bg_priority) {
+                                color = c.color;
+                                bg_priority = c.priority;
+                            }
+                        }
+                    }
+                    if ((self.tm & 0x01) != 0) {
+                        if (self.renderBgPixel(1, @intCast(x), y, 4)) |c| {
+                            if (c.priority >= bg_priority) {
+                                color = c.color;
+                                bg_priority = c.priority;
+                            }
+                        }
+                    }
+                },
+                2, 3, 4, 5, 6 => {
+                    // Other modes - just render BG1 for now
+                    if ((self.tm & 0x01) != 0) {
+                        const bpp: u8 = if (mode == 3 or mode == 4) 8 else 4;
+                        if (self.renderBgPixel(1, @intCast(x), y, bpp)) |c| {
+                            color = c.color;
+                            bg_priority = c.priority;
+                        }
+                    }
+                },
+                7 => {
+                    // Mode 7 - affine transform (not implemented yet)
+                    color = backdrop;
+                },
+            }
+
+            // Combine with sprites based on priority
+            // Sprite priority 0-3: higher = in front
+            // Simplified: sprites with priority > bg_priority go in front
+            if (sprite_buffer[x]) |sprite| {
+                // Simple priority check - sprite wins if its priority is higher
+                // Real SNES has more complex priority handling per-mode
+                if (sprite.priority >= bg_priority or bg_priority == 0) {
+                    color = sprite.color;
+                }
+            }
+
             self.framebuffer[start + x] = color;
         }
     }
 
-    fn renderMode0Pixel(self: *Ppu, x: usize, y: u16) u16 {
-        _ = self;
-        _ = x;
-        _ = y;
-        // Mode 0: 4 BG layers, 4 colors each
-        // TODO: Implement proper Mode 0 rendering
-        return 0;
+    const BgPixelResult = struct {
+        color: u16,
+        priority: u8,
+    };
+
+    /// Render a single BG pixel
+    fn renderBgPixel(self: *Ppu, bg: u8, x: u16, y: u16, bpp: u8) ?BgPixelResult {
+        // Get scroll offsets for this BG
+        const hofs: u16 = switch (bg) {
+            1 => self.bg1hofs,
+            2 => self.bg2hofs,
+            3 => self.bg3hofs,
+            4 => self.bg4hofs,
+            else => 0,
+        };
+        const vofs: u16 = switch (bg) {
+            1 => self.bg1vofs,
+            2 => self.bg2vofs,
+            3 => self.bg3vofs,
+            4 => self.bg4vofs,
+            else => 0,
+        };
+
+        // Get tilemap address for this BG
+        const sc_reg: u8 = switch (bg) {
+            1 => self.bg1sc,
+            2 => self.bg2sc,
+            3 => self.bg3sc,
+            4 => self.bg4sc,
+            else => 0,
+        };
+
+        // Check tile size (8x8 or 16x16)
+        const tile_size_bit: u3 = switch (bg) {
+            1 => 4,
+            2 => 5,
+            3 => 6,
+            4 => 7,
+            else => 4,
+        };
+        const large_tiles = ((self.bgmode >> tile_size_bit) & 1) != 0;
+        const tile_size: u16 = if (large_tiles) 16 else 8;
+
+        // Calculate scrolled position
+        const sx = (x +% hofs) & 0x3FF; // 10-bit wrap for 1024 pixel tilemap
+        const sy = (y +% vofs) & 0x3FF;
+
+        // Get tile coordinates
+        const tile_x = sx / tile_size;
+        const tile_y = sy / tile_size;
+
+        // Calculate which tilemap quadrant we're in (for > 32x32 tilemaps)
+        const map_width_32 = (sc_reg & 0x01) != 0;
+        const map_height_32 = (sc_reg & 0x02) != 0;
+
+        var quadrant_x: u16 = 0;
+        var quadrant_y: u16 = 0;
+
+        if (large_tiles) {
+            quadrant_x = (tile_x / 32) & 1;
+            quadrant_y = (tile_y / 32) & 1;
+        } else {
+            quadrant_x = (tile_x / 32) & 1;
+            quadrant_y = (tile_y / 32) & 1;
+        }
+
+        // Base tilemap address (word address shifted left 10)
+        var tilemap_addr: u16 = (@as(u16, sc_reg & 0xFC) << 8);
+
+        // Add quadrant offset (each quadrant is 2KB = 0x800)
+        if (map_width_32 and quadrant_x != 0) {
+            tilemap_addr +%= 0x800;
+        }
+        if (map_height_32 and quadrant_y != 0) {
+            tilemap_addr +%= if (map_width_32) 0x1000 else 0x800;
+        }
+
+        // Calculate tile position within current quadrant
+        const local_tile_x = tile_x & 31;
+        const local_tile_y = tile_y & 31;
+
+        // Read tilemap entry (2 bytes per tile)
+        const tilemap_offset = tilemap_addr + (local_tile_y * 32 + local_tile_x) * 2;
+        const tile_lo = self.vram[tilemap_offset & 0xFFFF];
+        const tile_hi = self.vram[(tilemap_offset + 1) & 0xFFFF];
+        const tilemap_entry: u16 = @as(u16, tile_hi) << 8 | tile_lo;
+
+        // Parse tilemap entry
+        const tile_num: u16 = tilemap_entry & 0x3FF;
+        const palette: u8 = @truncate((tilemap_entry >> 10) & 0x07);
+        const tile_priority = (tilemap_entry >> 13) & 1;
+        const h_flip = ((tilemap_entry >> 14) & 1) != 0;
+        const v_flip = ((tilemap_entry >> 15) & 1) != 0;
+
+        // Get pixel position within tile
+        var px = sx % tile_size;
+        var py = sy % tile_size;
+
+        // Handle flipping
+        if (h_flip) px = tile_size - 1 - px;
+        if (v_flip) py = tile_size - 1 - py;
+
+        // For 16x16 tiles, figure out which 8x8 sub-tile
+        var actual_tile = tile_num;
+        if (large_tiles) {
+            actual_tile += (px / 8);
+            actual_tile += (py / 8) * 16;
+            px = px % 8;
+            py = py % 8;
+        }
+
+        // Get character data address
+        const chr_base: u16 = switch (bg) {
+            1 => (@as(u16, self.bg12nba & 0x0F) << 12),
+            2 => (@as(u16, self.bg12nba >> 4) << 12),
+            3 => (@as(u16, self.bg34nba & 0x0F) << 12),
+            4 => (@as(u16, self.bg34nba >> 4) << 12),
+            else => 0,
+        };
+
+        // Calculate bytes per tile row based on bpp
+        const bytes_per_row: u16 = switch (bpp) {
+            2 => 2,
+            4 => 4,
+            8 => 8,
+            else => 2,
+        };
+
+        // Calculate tile data address
+        // Each 8x8 tile uses (8 * bytes_per_row) bytes
+        const tile_data_addr = chr_base + actual_tile * 8 * bytes_per_row;
+
+        // Read pixel data from tile
+        const pixel_color = self.getTilePixel(tile_data_addr, @intCast(px), @intCast(py), bpp);
+
+        // Color 0 is transparent
+        if (pixel_color == 0) return null;
+
+        // Calculate palette offset based on bpp and BG
+        const palette_offset: u16 = switch (bpp) {
+            2 => @as(u16, palette) * 4,
+            4 => @as(u16, palette) * 16,
+            8 => 0, // 8bpp uses full 256-color palette
+            else => 0,
+        };
+
+        // Get actual color from CGRAM
+        const color = self.getColor(@intCast(palette_offset + pixel_color));
+
+        return .{
+            .color = color,
+            .priority = @intCast(tile_priority),
+        };
     }
 
-    fn renderMode1Pixel(self: *Ppu, x: usize, y: u16) u16 {
-        _ = self;
-        _ = x;
-        _ = y;
-        // Mode 1: 2 BG layers with 16 colors, 1 with 4 colors
-        // TODO: Implement proper Mode 1 rendering
-        return 0;
+    /// Get a pixel value from tile data
+    fn getTilePixel(self: *Ppu, base_addr: u16, px: u8, py: u8, bpp: u8) u8 {
+        var pixel: u8 = 0;
+
+        // SNES uses planar format - bitplanes are interleaved
+        // 2bpp: bp0, bp1 for each row (16 bytes per tile)
+        // 4bpp: bp0, bp1, then bp2, bp3 (32 bytes per tile)
+        // 8bpp: bp0-1, bp2-3, bp4-5, bp6-7 (64 bytes per tile)
+
+        const bit: u3 = @intCast(7 - px);
+
+        // Bitplanes 0-1
+        const row_addr0 = base_addr + @as(u16, py) * 2;
+        const bp0 = self.vram[row_addr0 & 0xFFFF];
+        const bp1 = self.vram[(row_addr0 + 1) & 0xFFFF];
+        pixel |= ((bp0 >> bit) & 1);
+        pixel |= ((bp1 >> bit) & 1) << 1;
+
+        if (bpp >= 4) {
+            // Bitplanes 2-3
+            const row_addr2 = base_addr + 16 + @as(u16, py) * 2;
+            const bp2 = self.vram[row_addr2 & 0xFFFF];
+            const bp3 = self.vram[(row_addr2 + 1) & 0xFFFF];
+            pixel |= ((bp2 >> bit) & 1) << 2;
+            pixel |= ((bp3 >> bit) & 1) << 3;
+        }
+
+        if (bpp >= 8) {
+            // Bitplanes 4-5
+            const row_addr4 = base_addr + 32 + @as(u16, py) * 2;
+            const bp4 = self.vram[row_addr4 & 0xFFFF];
+            const bp5 = self.vram[(row_addr4 + 1) & 0xFFFF];
+            pixel |= ((bp4 >> bit) & 1) << 4;
+            pixel |= ((bp5 >> bit) & 1) << 5;
+
+            // Bitplanes 6-7
+            const row_addr6 = base_addr + 48 + @as(u16, py) * 2;
+            const bp6 = self.vram[row_addr6 & 0xFFFF];
+            const bp7 = self.vram[(row_addr6 + 1) & 0xFFFF];
+            pixel |= ((bp6 >> bit) & 1) << 6;
+            pixel |= ((bp7 >> bit) & 1) << 7;
+        }
+
+        return pixel;
+    }
+
+    /// Get a 15-bit color from CGRAM
+    fn getColor(self: *Ppu, index: u8) u16 {
+        const addr = @as(u16, index) * 2;
+        const lo = self.cgram[addr];
+        const hi = self.cgram[addr + 1];
+        return @as(u16, hi & 0x7F) << 8 | lo;
+    }
+
+    const SpritePixel = struct {
+        color: u16,
+        priority: u8,
+        palette: u8,
+    };
+
+    /// Get sprite sizes based on OBSEL register
+    fn getSpriteSizes(self: *Ppu) struct { small: [2]u8, large: [2]u8 } {
+        // OBSEL bits 5-7 select size combination
+        const size_sel: u3 = @truncate(self.obsel >> 5);
+        return switch (size_sel) {
+            0 => .{ .small = .{ 8, 8 }, .large = .{ 16, 16 } },
+            1 => .{ .small = .{ 8, 8 }, .large = .{ 32, 32 } },
+            2 => .{ .small = .{ 8, 8 }, .large = .{ 64, 64 } },
+            3 => .{ .small = .{ 16, 16 }, .large = .{ 32, 32 } },
+            4 => .{ .small = .{ 16, 16 }, .large = .{ 64, 64 } },
+            5 => .{ .small = .{ 32, 32 }, .large = .{ 64, 64 } },
+            6 => .{ .small = .{ 16, 32 }, .large = .{ 32, 64 } },
+            7 => .{ .small = .{ 16, 32 }, .large = .{ 32, 32 } },
+        };
+    }
+
+    /// Render sprites for a scanline into a buffer
+    fn renderSprites(self: *Ppu, y: u16, sprite_buffer: *[SCREEN_WIDTH]?SpritePixel) void {
+        // Clear sprite buffer
+        for (sprite_buffer) |*p| {
+            p.* = null;
+        }
+
+        if ((self.tm & 0x10) == 0) return; // OBJ not enabled on main screen
+
+        const sizes = self.getSpriteSizes();
+
+        // OBJ character base address
+        const obj_base: u16 = (@as(u16, self.obsel & 0x07) << 13);
+        const obj_name_base: u16 = (@as(u16, (self.obsel >> 3) & 0x03) << 12) +% obj_base;
+
+        // Process sprites in reverse order (sprite 0 has highest priority)
+        var sprite_count: u8 = 0;
+        var i: i16 = 127;
+        while (i >= 0) : (i -= 1) {
+            const sprite_idx: u8 = @intCast(i);
+
+            // Read OAM entry (4 bytes per sprite in low table)
+            const oam_offset = @as(usize, sprite_idx) * 4;
+            const x_lo = self.oam[oam_offset];
+            const y_pos = self.oam[oam_offset + 1];
+            const tile = self.oam[oam_offset + 2];
+            const attr = self.oam[oam_offset + 3];
+
+            // Read high table (2 bits per sprite: x bit 8, size bit)
+            const high_byte = self.oam[512 + @as(usize, sprite_idx >> 2)];
+            const shift_amt: u3 = @truncate((sprite_idx & 3) * 2);
+            const high_bits = (high_byte >> shift_amt) & 0x03;
+            const x_hi = (high_bits & 1) != 0;
+            const large = (high_bits & 2) != 0;
+
+            // Calculate X position (signed 9-bit)
+            var x: i16 = @as(i16, x_lo);
+            if (x_hi) x = x - 256;
+
+            // Calculate Y position (wrapped at 256)
+            const sprite_y = y_pos;
+
+            // Get sprite size
+            const size = if (large) sizes.large else sizes.small;
+            const width: i16 = size[0];
+            const height: i16 = size[1];
+
+            // Check if sprite is on this scanline
+            const py_raw = (@as(i16, @intCast(y)) -% @as(i16, sprite_y)) & 0xFF;
+            if (py_raw >= height) continue;
+
+            // Parse attributes
+            const palette: u8 = ((attr >> 1) & 0x07) + 8; // Sprites use palettes 8-15
+            const priority: u8 = (attr >> 4) & 0x03;
+            const h_flip = (attr & 0x40) != 0;
+            const v_flip = (attr & 0x80) != 0;
+            const name_select = (attr & 0x01) != 0;
+
+            // Calculate tile Y offset (with vertical flip)
+            var py: i16 = py_raw;
+            if (v_flip) py = height - 1 - py;
+
+            // Get base tile number
+            var base_tile: u16 = tile;
+            if (name_select) {
+                base_tile +%= (obj_name_base - obj_base) >> 4;
+            }
+
+            // Calculate which 8x8 tile row we're in
+            const tile_row: u16 = @intCast(@divFloor(py, 8));
+
+            // Render pixels for this sprite
+            var px: i16 = 0;
+            while (px < width) : (px += 1) {
+                const screen_x = x + px;
+                if (screen_x < 0 or screen_x >= SCREEN_WIDTH) continue;
+
+                const sx: usize = @intCast(screen_x);
+
+                // Skip if already drawn by higher priority sprite
+                if (sprite_buffer[sx] != null) continue;
+
+                // Calculate pixel position within sprite (with horizontal flip)
+                var pixel_x = px;
+                if (h_flip) pixel_x = width - 1 - pixel_x;
+
+                // Calculate which 8x8 tile column
+                const tile_col: u16 = @intCast(@divFloor(pixel_x, 8));
+
+                // Calculate tile number (16 tiles per row in VRAM layout)
+                const tile_num = base_tile +% tile_col +% (tile_row * 16);
+
+                // Calculate pixel position within 8x8 tile
+                const tile_px: u8 = @intCast(@mod(pixel_x, 8));
+                const tile_py: u8 = @intCast(@mod(py, 8));
+
+                // Read tile data (sprites are always 4bpp)
+                const tile_addr = obj_base +% (tile_num * 32);
+                const pixel_color = self.getTilePixel(tile_addr, tile_px, tile_py, 4);
+
+                if (pixel_color == 0) continue; // Transparent
+
+                // Get color from sprite palette (128 + palette*16 + color)
+                const color = self.getColor(128 + @as(u8, palette - 8) * 16 + pixel_color);
+
+                sprite_buffer[sx] = .{
+                    .color = color,
+                    .priority = priority,
+                    .palette = palette,
+                };
+
+                sprite_count += 1;
+                if (sprite_count >= 32 * 8) break; // Max 32 sprites, 34 8-pixel chunks per line
+            }
+        }
     }
 
     pub fn getFramebuffer(self: *Ppu) []const u16 {
@@ -204,6 +675,47 @@ pub const Ppu = struct {
             0x210A => self.bg4sc = value,
             0x210B => self.bg12nba = value,
             0x210C => self.bg34nba = value,
+            // BG scroll registers (double-write, first write is low 8 bits, second is high 5 bits)
+            0x210D => {
+                self.bg1hofs = (@as(u16, value) << 8) | (self.bg1hofs >> 8);
+                self.bg1hofs = (self.bg1hofs & 0xFF00) | self.scroll_latch;
+                self.scroll_latch = value;
+            },
+            0x210E => {
+                self.bg1vofs = (@as(u16, value) << 8) | (self.bg1vofs >> 8);
+                self.bg1vofs = (self.bg1vofs & 0xFF00) | self.scroll_latch;
+                self.scroll_latch = value;
+            },
+            0x210F => {
+                self.bg2hofs = (@as(u16, value) << 8) | (self.bg2hofs >> 8);
+                self.bg2hofs = (self.bg2hofs & 0xFF00) | self.scroll_latch;
+                self.scroll_latch = value;
+            },
+            0x2110 => {
+                self.bg2vofs = (@as(u16, value) << 8) | (self.bg2vofs >> 8);
+                self.bg2vofs = (self.bg2vofs & 0xFF00) | self.scroll_latch;
+                self.scroll_latch = value;
+            },
+            0x2111 => {
+                self.bg3hofs = (@as(u16, value) << 8) | (self.bg3hofs >> 8);
+                self.bg3hofs = (self.bg3hofs & 0xFF00) | self.scroll_latch;
+                self.scroll_latch = value;
+            },
+            0x2112 => {
+                self.bg3vofs = (@as(u16, value) << 8) | (self.bg3vofs >> 8);
+                self.bg3vofs = (self.bg3vofs & 0xFF00) | self.scroll_latch;
+                self.scroll_latch = value;
+            },
+            0x2113 => {
+                self.bg4hofs = (@as(u16, value) << 8) | (self.bg4hofs >> 8);
+                self.bg4hofs = (self.bg4hofs & 0xFF00) | self.scroll_latch;
+                self.scroll_latch = value;
+            },
+            0x2114 => {
+                self.bg4vofs = (@as(u16, value) << 8) | (self.bg4vofs >> 8);
+                self.bg4vofs = (self.bg4vofs & 0xFF00) | self.scroll_latch;
+                self.scroll_latch = value;
+            },
             0x2115 => self.vmain = value,
             0x2116 => {
                 self.vmaddl = value;
@@ -221,6 +733,19 @@ pub const Ppu = struct {
                 self.cgram_addr = @as(u9, value) << 1;
             },
             0x2122 => self.writeCgram(value),
+            // Main/sub screen designation
+            0x212C => self.tm = value,
+            0x212D => self.ts = value,
+            // Color math
+            0x2130 => self.cgwsel = value,
+            0x2131 => self.cgadsub = value,
+            0x2132 => {
+                // Fixed color data
+                const intensity: u16 = @as(u16, value & 0x1F);
+                if ((value & 0x20) != 0) self.coldata = (self.coldata & 0x7FE0) | intensity; // Red
+                if ((value & 0x40) != 0) self.coldata = (self.coldata & 0x7C1F) | (intensity << 5); // Green
+                if ((value & 0x80) != 0) self.coldata = (self.coldata & 0x03FF) | (intensity << 10); // Blue
+            },
             else => {},
         }
     }

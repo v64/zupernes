@@ -11,15 +11,31 @@ Zupernes is a SNES (Super Nintendo Entertainment System) emulator written in Zig
 - Graphics: sokol-zig (cross-platform with Metal backend)
 - Platform: macOS Apple Silicon (Metal)
 
+## Work Ethic
+- Document and comment on code liberally, context is important
+- Consider this project also as a learning doc
+- Both code and explanatory comments are equally important
+- It should be a thorough documentation of how an SNES works
+- The debugging code is of the utmost importance
+- We always put it behind comptime debug so that none of that code is present in the final release
+- but it is so important to preserve it for the debug release
+- never remove debug code you made, it's always important
+- always check the sources below for knowledge about the code you're working on, and incorporate that knowledge into the code comments
+
 ## Build Commands
 
 ```bash
 zig build              # Build the project
 zig build run          # Build and run emulator
 zig build run -- <rom.sfc>  # Run with a ROM file
+zig build -Ddebug=true run -- <rom.sfc>  # Run with debug output
 zig build test         # Run unit tests
 zig build test-roms    # Run ROM test harness
 ```
+
+### Build Options
+
+- `-Ddebug=true` - Enable debug output (PPU state, CPU registers, cycle counts)
 
 ## Architecture
 

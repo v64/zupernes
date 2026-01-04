@@ -3,9 +3,12 @@ const sokol = @import("sokol");
 const sapp = sokol.app;
 const sgfx = sokol.gfx;
 const slog = sokol.log;
+const build_options = @import("build_options");
 
 const zupernes = @import("zupernes");
 const Emulator = zupernes.Emulator;
+
+const DEBUG = build_options.debug_mode;
 
 const SCREEN_WIDTH = 256;
 const SCREEN_HEIGHT = 224;
@@ -29,6 +32,9 @@ const State = struct {
 
 var state: State = undefined;
 
+// ROM data loaded before sokol init - will be loaded into emulator in init()
+var pending_rom_data: ?[]const u8 = null;
+
 export fn init() void {
     sgfx.setup(.{
         .environment = sokol.glue.environment(),
@@ -36,8 +42,18 @@ export fn init() void {
     });
 
     state.emulator = Emulator.init();
+    state.emulator.setup(); // Set up internal pointers now that emulator is in final location
     state.rom_loaded = false;
     state.texture_buffer = [_]u8{0} ** (SCREEN_WIDTH * SCREEN_HEIGHT * 4);
+
+    // Load pending ROM if one was specified on command line
+    if (pending_rom_data) |rom_data| {
+        state.emulator.loadRom(rom_data) catch |err| {
+            std.debug.print("Failed to load ROM: {}\n", .{err});
+            return;
+        };
+        state.rom_loaded = true;
+    }
 
     // Create texture for framebuffer
     state.texture = sgfx.makeImage(.{
@@ -73,10 +89,30 @@ export fn init() void {
     };
 }
 
+var frame_count: u32 = if (DEBUG) 0 else undefined;
+
 export fn frame() void {
     if (state.rom_loaded) {
         // Run one frame of emulation
         state.emulator.runFrame();
+
+        // Debug output every 60 frames (once per second)
+        if (comptime DEBUG) {
+            frame_count += 1;
+            if (frame_count % 60 == 1) {
+                const ppu = &state.emulator.ppu;
+                const cpu = &state.emulator.cpu;
+                std.debug.print("Frame {}: INIDISP=${x:0>2} BGMODE=${x:0>2} TM=${x:0>2} PC=${x:0>4} cycles={} NMITIMEN=${x:0>2}\n", .{
+                    frame_count,
+                    ppu.inidisp,
+                    ppu.bgmode,
+                    ppu.tm,
+                    cpu.pc,
+                    cpu.total_cycles,
+                    state.emulator.bus.nmitimen,
+                });
+            }
+        }
 
         // Convert framebuffer from 15-bit BGR to RGBA8
         const fb = state.emulator.getFramebuffer();
@@ -142,6 +178,7 @@ fn shaderDesc() sgfx.ShaderDesc {
         \\    return out;
         \\}
     ;
+    desc.vertex_func.entry = "vs_main";
 
     desc.fragment_func.source =
         \\#include <metal_stdlib>
@@ -157,6 +194,7 @@ fn shaderDesc() sgfx.ShaderDesc {
         \\    return tex.sample(smp, in.uv);
         \\}
     ;
+    desc.fragment_func.entry = "fs_main";
 
     // Set up texture view binding
     desc.views[0] = .{
@@ -198,11 +236,8 @@ pub fn main() !void {
             return;
         };
 
-        state.emulator.loadRom(rom_data) catch |err| {
-            std.debug.print("Failed to load ROM: {}\n", .{err});
-            return;
-        };
-        state.rom_loaded = true;
+        // Store ROM data - will be loaded into emulator in init() callback
+        pending_rom_data = rom_data;
         std.debug.print("Loaded ROM: {s} ({d} bytes)\n", .{ rom_path, rom_data.len });
     } else {
         std.debug.print("Zupernes - SNES Emulator\n", .{});
