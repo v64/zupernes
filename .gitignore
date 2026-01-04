@@ -10,3 +10,6 @@ zig-out/
 
 # ROMs
 test/games/
+
+# Screencaps
+caps/
