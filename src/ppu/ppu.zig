@@ -200,11 +200,11 @@ pub const Ppu = struct {
                         self.drawFrameCounter();
                     }
 
-                    // Debug: dump PPU state on frame 600 (~10 seconds in)
+                    // Debug: dump PPU state on frame 600 and 700
                     // Gated behind comptime so it compiles out in release builds
                     if (comptime dbg.enabled) {
-                        if (self.frame_count == 600) {
-                            std.debug.print("\n=== PPU STATE DUMP (frame 600) ===\n", .{});
+                        if (self.frame_count == 1 or self.frame_count == 100 or self.frame_count == 200 or self.frame_count == 600 or self.frame_count == 700) {
+                            std.debug.print("\n=== PPU STATE DUMP (frame {d}) ===\n", .{self.frame_count});
                             std.debug.print("BGMODE: ${x:0>2} (mode {})\n", .{ self.bgmode, @as(u3, @truncate(self.bgmode)) });
                             std.debug.print("TM (layer enable): ${x:0>2} (BG1={} BG2={} BG3={} BG4={} OBJ={})\n", .{
                                 self.tm,
@@ -274,6 +274,84 @@ pub const Ppu = struct {
                                 std.debug.print("{x:0>2} ", .{self.vram[(tile_fc_addr + i) & 0xFFFF]});
                             }
                             std.debug.print("\n", .{});
+                            // Check tile $30 (where ASCII "0" would normally be)
+                            const tile_30_addr = bg3_chr_base + 0x30 * 16; // 2bpp = 16 bytes
+                            std.debug.print("BG3 tile $30 addr: ${x:0>5}, data: ", .{tile_30_addr});
+                            for (0..16) |i| {
+                                std.debug.print("{x:0>2} ", .{self.vram[(tile_30_addr + i) & 0xFFFF]});
+                            }
+                            std.debug.print("\n", .{});
+                            // Check first 8 tiles to see pattern
+                            std.debug.print("BG3 tiles 0-7 first byte: ", .{});
+                            for (0..8) |t| {
+                                const addr = bg3_chr_base + t * 16;
+                                std.debug.print("t{d}=${x:0>2} ", .{ t, self.vram[addr & 0xFFFF] });
+                            }
+                            std.debug.print("\n", .{});
+
+                            // Dump BG1 tilemap (where sky/clouds might be)
+                            const bg1_tilemap_base = @as(u32, self.bg1sc & 0xFC) << 9;
+                            const bg1_chr_base = @as(u32, self.bg12nba & 0x0F) << 13;
+                            const bg1_size = self.bg1sc & 0x03;
+                            std.debug.print("BG1 tilemap base: ${x:0>5}, chr base: ${x:0>5}, size bits: {d}\n", .{ bg1_tilemap_base, bg1_chr_base, bg1_size });
+                            std.debug.print("BG1 scroll: hofs={} vofs={}\n", .{ self.bg1hofs, self.bg1vofs });
+                            // With vofs=192, screen Y=0 reads tilemap Y=192, tile row 24
+                            // Dump rows 24-27 which would be visible on screen
+                            for (0..4) |row_idx| {
+                                const row: u32 = 24 + @as(u32, @intCast(row_idx));
+                                std.debug.print("BG1 tilemap row {d} (first 16 tiles): ", .{row});
+                                for (0..16) |i| {
+                                    const offset = bg1_tilemap_base + (row * 32 + i) * 2;
+                                    const lo = self.vram[offset & 0xFFFF];
+                                    const hi = self.vram[(offset + 1) & 0xFFFF];
+                                    const entry: u16 = @as(u16, hi) << 8 | lo;
+                                    const tile_num = entry & 0x3FF;
+                                    std.debug.print("{x:0>3} ", .{tile_num});
+                                }
+                                std.debug.print("\n", .{});
+                            }
+                            // Show what tile $F8 looks like (4bpp = 32 bytes per tile)
+                            const tile_f8_addr = bg1_chr_base + 0xF8 * 32;
+                            std.debug.print("BG1 tile $F8 addr: ${x:0>5}, first 16 bytes: ", .{tile_f8_addr});
+                            for (0..16) |i| {
+                                std.debug.print("{x:0>2} ", .{self.vram[(tile_f8_addr + i) & 0xFFFF]});
+                            }
+                            std.debug.print("\n", .{});
+                            // Also check tile 0 at BG1 chr base
+                            std.debug.print("BG1 tile $00 addr: ${x:0>5}, first 16 bytes: ", .{bg1_chr_base});
+                            for (0..16) |i| {
+                                std.debug.print("{x:0>2} ", .{self.vram[(bg1_chr_base + i) & 0xFFFF]});
+                            }
+                            std.debug.print("\n", .{});
+                            // Check which tiles in BG1 chr data are non-empty
+                            // Sample tiles 0, 16, 32, 64, 128, 248 to see pattern
+                            std.debug.print("BG1 chr data survey (first byte of each tile): ", .{});
+                            const sample_tiles = [_]u32{ 0, 16, 32, 64, 128, 200, 248, 255 };
+                            for (sample_tiles) |t| {
+                                const addr = bg1_chr_base + t * 32; // 4bpp = 32 bytes per tile
+                                const first_byte = self.vram[addr & 0xFFFF];
+                                std.debug.print("t{d}=${x:0>2} ", .{ t, first_byte });
+                            }
+                            std.debug.print("\n", .{});
+                            // Also check COLDATA for color math gradient
+                            std.debug.print("COLDATA (fixed color): ${x:0>4}, CGADSUB: ${x:0>2}, CGWSEL: ${x:0>2}, TS: ${x:0>2}\n", .{ self.coldata, self.cgadsub, self.cgwsel, self.ts });
+
+                            // Dump BG2 tilemap (where hills/ground might be)
+                            const bg2_tilemap_base = @as(u32, self.bg2sc & 0xFC) << 9;
+                            const bg2_chr_base = @as(u32, self.bg12nba >> 4) << 13;
+                            std.debug.print("BG2 tilemap base: ${x:0>5}, chr base: ${x:0>5}\n", .{ bg2_tilemap_base, bg2_chr_base });
+                            std.debug.print("BG2 scroll: hofs={} vofs={}\n", .{ self.bg2hofs, self.bg2vofs });
+                            std.debug.print("BG2 tilemap row 0 (first 16 tiles): ", .{});
+                            for (0..16) |i| {
+                                const offset = bg2_tilemap_base + i * 2;
+                                const lo = self.vram[offset & 0xFFFF];
+                                const hi = self.vram[(offset + 1) & 0xFFFF];
+                                const entry: u16 = @as(u16, hi) << 8 | lo;
+                                const tile_num = entry & 0x3FF;
+                                std.debug.print("{x:0>3} ", .{tile_num});
+                            }
+                            std.debug.print("\n", .{});
+
                             std.debug.print("=================================\n\n", .{});
                         }
                     }
@@ -500,6 +578,11 @@ pub const Ppu = struct {
             // The SNES has complex per-mode priority ordering between sprites and BGs.
             // Each mode has a specific layering order that determines which elements
             // appear in front of others.
+            //
+            // Track final layer for color math:
+            //   0 = backdrop, 1-4 = BG1-BG4, 5 = OBJ (sprite)
+            var final_layer: u8 = bg_layer;
+
             if (sprite_buffer[x]) |sprite| {
                 const sprite_wins = self.spritePriorityWins(mode, sprite.priority, bg_layer, bg_priority);
 
@@ -515,41 +598,138 @@ pub const Ppu = struct {
 
                 if (sprite_wins) {
                     color = sprite.color;
+                    final_layer = 5; // OBJ won
                 }
             }
 
             // ==========================================================================
-            // COLOR MATH: Force main screen black based on color window
+            // COLOR MATH - Full SNES color blending implementation
             // ==========================================================================
-            // CGWSEL ($2130) bits 6-7 control "Force main screen black":
-            //   00 = Never force black
-            //   01 = Force black OUTSIDE color window
-            //   10 = Force black INSIDE color window
-            //   11 = Always force black
-            // This is used for spotlight/iris effects like SMW's title screen.
+            // The SNES PPU has sophisticated color math capabilities controlled by:
+            //
+            // CGWSEL ($2130) - Color Addition Select:
+            //   Bits 7-6 (MM): Force main screen BLACK region
+            //     00 = Never (nowhere)
+            //     01 = Outside color window
+            //     10 = Inside color window
+            //     11 = Always (everywhere)
+            //   Bits 5-4 (SS): Force subscreen TRANSPARENT region (disables math)
+            //     00 = Never (color math always applies)
+            //     01 = Outside color window (math only inside window)
+            //     10 = Inside color window (math only outside window)
+            //     11 = Always (color math never applies)
+            //   Bit 1: Add subscreen (0 = use fixed color, 1 = use subscreen)
+            //   Bit 0: Direct color mode (for modes 3, 4, 7)
+            //
+            // CGADSUB ($2131) - Color Math Designation:
+            //   Bits 0-3: BG1-BG4 participate in color math
+            //   Bit 4: OBJ (sprites) participates
+            //   Bit 5: Backdrop participates
+            //   Bit 6: Half color math (divide result by 2)
+            //   Bit 7: Subtract mode (0 = add, 1 = subtract)
+            //
+            // COLDATA ($2132) - Fixed color for blending (built from R/G/B writes)
             // ==========================================================================
-            const force_black_mode: u2 = @truncate(self.cgwsel >> 6);
             const x8: u8 = @intCast(x);
+            const color_window_active = self.isColorWindowActive(x8);
 
+            // Step 1: Force main screen BLACK based on CGWSEL bits 7-6
+            // This happens BEFORE color math and creates spotlight/iris effects
+            const force_black_mode: u2 = @truncate(self.cgwsel >> 6);
             var force_black = false;
             switch (force_black_mode) {
                 0b00 => {}, // Never force black
-                0b01 => {
-                    // Force black OUTSIDE color window
-                    force_black = !self.isColorWindowActive(x8);
-                },
-                0b10 => {
-                    // Force black INSIDE color window
-                    force_black = self.isColorWindowActive(x8);
-                },
-                0b11 => {
-                    // Always force black
-                    force_black = true;
-                },
+                0b01 => force_black = !color_window_active, // Black OUTSIDE window
+                0b10 => force_black = color_window_active, // Black INSIDE window
+                0b11 => force_black = true, // Always black
             }
 
             if (force_black) {
-                color = 0; // Force to black (backdrop will also be black)
+                color = 0; // Main screen becomes black
+            }
+
+            // Step 2: Determine if color math should be applied
+            // CGWSEL bits 5-4 control where subscreen becomes transparent
+            // When subscreen is transparent, color math effectively doesn't apply
+            const math_disable_mode: u2 = @truncate(self.cgwsel >> 4);
+            var disable_math = false;
+            switch (math_disable_mode) {
+                0b00 => {}, // Never disable (math always applies)
+                0b01 => disable_math = !color_window_active, // Disable OUTSIDE window
+                0b10 => disable_math = color_window_active, // Disable INSIDE window
+                0b11 => disable_math = true, // Always disable
+            }
+
+            // Step 3: Check if the source layer participates in color math
+            // CGADSUB bits 0-5 control which layers can have math applied
+            const layer_participates = switch (final_layer) {
+                0 => (self.cgadsub & 0x20) != 0, // Backdrop (bit 5)
+                1 => (self.cgadsub & 0x01) != 0, // BG1 (bit 0)
+                2 => (self.cgadsub & 0x02) != 0, // BG2 (bit 1)
+                3 => (self.cgadsub & 0x04) != 0, // BG3 (bit 2)
+                4 => (self.cgadsub & 0x08) != 0, // BG4 (bit 3)
+                5 => (self.cgadsub & 0x10) != 0, // OBJ (bit 4)
+                else => false,
+            };
+
+            // Step 4: Apply color math if not disabled and layer participates
+            if (!disable_math and layer_participates) {
+                // Get the color to blend with (fixed color or subscreen)
+                // CGWSEL bit 1: 0 = use fixed color (COLDATA), 1 = use subscreen
+                //
+                // Subscreen is a second rendered image using layers from TS register
+                // instead of TM. It's commonly used for transparency effects like
+                // water reflections, shadows, and the SMW title screen sky.
+                const use_subscreen = (self.cgwsel & 0x02) != 0;
+
+                var blend_color: u16 = undefined;
+                if (use_subscreen) {
+                    // Render subscreen pixel for this position
+                    // Subscreen uses TS register for layer enable instead of TM
+                    blend_color = self.renderSubscreenPixel(@intCast(x), y, mode, backdrop);
+                } else {
+                    // Use fixed color from COLDATA register
+                    blend_color = self.coldata;
+                }
+
+                // Extract RGB components (5 bits each)
+                // SNES color format: 0bbbbbgg gggrrrrr (15-bit BGR)
+                var r: i16 = @intCast(color & 0x1F);
+                var g: i16 = @intCast((color >> 5) & 0x1F);
+                var b: i16 = @intCast((color >> 10) & 0x1F);
+
+                const br: i16 = @intCast(blend_color & 0x1F);
+                const bg: i16 = @intCast((blend_color >> 5) & 0x1F);
+                const bb: i16 = @intCast((blend_color >> 10) & 0x1F);
+
+                // Add or subtract based on CGADSUB bit 7
+                const subtract = (self.cgadsub & 0x80) != 0;
+                if (subtract) {
+                    r -= br;
+                    g -= bg;
+                    b -= bb;
+                } else {
+                    r += br;
+                    g += bg;
+                    b += bb;
+                }
+
+                // Half color math (CGADSUB bit 6) - divide result by 2
+                // This is used for transparency effects
+                const half_math = (self.cgadsub & 0x40) != 0;
+                if (half_math) {
+                    r = @divTrunc(r, 2);
+                    g = @divTrunc(g, 2);
+                    b = @divTrunc(b, 2);
+                }
+
+                // Clamp to valid range (0-31)
+                r = @max(0, @min(31, r));
+                g = @max(0, @min(31, g));
+                b = @max(0, @min(31, b));
+
+                // Recombine into 15-bit color
+                color = @as(u16, @intCast(r)) | (@as(u16, @intCast(g)) << 5) | (@as(u16, @intCast(b)) << 10);
             }
 
             // Apply master brightness from INIDISP bits 0-3
@@ -687,6 +867,14 @@ pub const Ppu = struct {
         // Parse tilemap entry
         const tile_num: u16 = tilemap_entry & 0x3FF;
 
+        // DIAGNOSTIC TEST: Check if tilemap entry $0000 should be fully transparent
+        // Some games use $0000 entries as "empty space" expecting tile 0 to be blank.
+        // If tile 0's chr data isn't actually blank, this causes visual artifacts.
+        // TODO: Investigate if this is correct SNES behavior or a data loading issue.
+        if (tilemap_entry == 0x0000) {
+            return null; // Treat $0000 tilemap entries as fully transparent
+        }
+
         // Debug: trace BG3 tile reading on frame 600
         // Trace first few positions to verify tile reading
         if (comptime dbg.trace_bg_render) {
@@ -792,6 +980,90 @@ pub const Ppu = struct {
             .color = color,
             .priority = @intCast(tile_priority),
         };
+    }
+
+    /// ==========================================================================
+    /// SUBSCREEN RENDERING
+    /// ==========================================================================
+    /// Renders a single pixel from the subscreen for color math blending.
+    /// The subscreen uses the TS register ($212D) instead of TM ($212C) to
+    /// determine which layers are enabled. This is used for transparency effects.
+    ///
+    /// Unlike the main screen which composites layers back-to-front with priority,
+    /// the subscreen result is simply blended with the main screen via color math.
+    /// ==========================================================================
+    fn renderSubscreenPixel(self: *Ppu, x: u16, y: u16, mode: u3, backdrop: u16) u16 {
+        var color: u16 = backdrop;
+
+        // Note: Subscreen doesn't use window masking for layer enable
+        // (though the color window affects where color math applies)
+
+        switch (mode) {
+            0 => {
+                // Mode 0: 4 BG layers, 2bpp each
+                if ((self.ts & 0x08) != 0) {
+                    if (self.renderBgPixel(4, x, y, 2)) |c| {
+                        color = c.color;
+                    }
+                }
+                if ((self.ts & 0x04) != 0) {
+                    if (self.renderBgPixel(3, x, y, 2)) |c| {
+                        color = c.color;
+                    }
+                }
+                if ((self.ts & 0x02) != 0) {
+                    if (self.renderBgPixel(2, x, y, 2)) |c| {
+                        color = c.color;
+                    }
+                }
+                if ((self.ts & 0x01) != 0) {
+                    if (self.renderBgPixel(1, x, y, 2)) |c| {
+                        color = c.color;
+                    }
+                }
+            },
+            1 => {
+                // Mode 1: BG1/BG2 4bpp, BG3 2bpp
+                if ((self.ts & 0x04) != 0) {
+                    if (self.renderBgPixel(3, x, y, 2)) |c| {
+                        color = c.color;
+                    }
+                }
+                if ((self.ts & 0x02) != 0) {
+                    if (self.renderBgPixel(2, x, y, 4)) |c| {
+                        color = c.color;
+                    }
+                }
+                if ((self.ts & 0x01) != 0) {
+                    if (self.renderBgPixel(1, x, y, 4)) |c| {
+                        color = c.color;
+                    }
+                }
+            },
+            2, 3, 4, 5, 6 => {
+                // Other modes - just render BG1/BG2 for now
+                if ((self.ts & 0x02) != 0) {
+                    const bpp: u8 = if (mode == 3 or mode == 4) 8 else 4;
+                    if (self.renderBgPixel(2, x, y, bpp)) |c| {
+                        color = c.color;
+                    }
+                }
+                if ((self.ts & 0x01) != 0) {
+                    const bpp: u8 = if (mode == 3 or mode == 4) 8 else 4;
+                    if (self.renderBgPixel(1, x, y, bpp)) |c| {
+                        color = c.color;
+                    }
+                }
+            },
+            7 => {
+                // Mode 7 - not implemented for subscreen
+            },
+        }
+
+        // Note: Subscreen sprites (OBJ) would be handled here if TS bit 4 is set
+        // For now we don't render subscreen sprites, as it's less common
+
+        return color;
     }
 
     /// Get a pixel value from tile data

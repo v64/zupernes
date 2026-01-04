@@ -377,7 +377,13 @@ pub const Dma = struct {
             }
 
             // Decrement line counter
-            channel.line_counter = (channel.line_counter & 0x7F) -% 1;
+            // IMPORTANT: Preserve the repeat bit (bit 7) while decrementing!
+            // The repeat bit determines if HDMA transfers every scanline in this block.
+            // Without preserving it, HDMA only transfers once at the start of each block,
+            // breaking effects like the SMW title screen spotlight which needs per-scanline updates.
+            const repeat_bit = channel.line_counter & 0x80;
+            const new_count = ((channel.line_counter & 0x7F) -% 1) & 0x7F;
+            channel.line_counter = repeat_bit | new_count;
 
             // Check if we need to reload
             if ((channel.line_counter & 0x7F) == 0) {
