@@ -282,6 +282,91 @@ pub const Ppu = struct {
         }
     }
 
+    // ==========================================================================
+    // SPRITE-TO-BACKGROUND PRIORITY
+    // ==========================================================================
+    // Determines whether a sprite pixel should appear in front of a BG pixel.
+    // The SNES has complex per-mode priority ordering. This function implements
+    // the correct layering for each mode.
+    //
+    // Mode 1 standard priority order (front to back):
+    //   S3 → 1H → 2H → S2 → 1L → 2L → S1 → 3H → S0 → 3L
+    //
+    // Mode 1 with BG3 priority bit set (BGMODE bit 3 = 1):
+    //   3H → S3 → 1H → 2H → S2 → 1L → 2L → S1 → S0 → 3L
+    //   BG3 high priority tiles appear in front of EVERYTHING!
+    //
+    // Where:
+    //   S0-S3 = Sprites with priority 0-3
+    //   1H/1L = BG1 high/low priority (tile priority bit)
+    //   2H/2L = BG2 high/low priority
+    //   3H/3L = BG3 high/low priority
+    // ==========================================================================
+    fn spritePriorityWins(self: *Ppu, mode: u3, sprite_priority: u8, bg_layer: u8, bg_tile_priority: u8) bool {
+        // If no BG pixel (backdrop only), sprite always wins
+        if (bg_layer == 0) return true;
+
+        switch (mode) {
+            1 => {
+                // Mode 1 has a special "BG3 priority" bit in BGMODE (bit 3).
+                // When this bit is SET, BG3 high-priority tiles go to the FRONT
+                // of the entire priority list - in front of even sprite priority 3!
+                //
+                // Standard Mode 1 priority (BGMODE bit 3 = 0):
+                //   S3 → 1H → 2H → S2 → 1L → 2L → S1 → 3H → S0 → 3L
+                //
+                // Mode 1 with BG3 priority (BGMODE bit 3 = 1):
+                //   3H → S3 → 1H → 2H → S2 → 1L → 2L → S1 → S0 → 3L
+                //
+                // This is used by SMW's title screen (BGMODE=$09) to make the
+                // logo appear in front of Mario who is jumping behind it.
+                const bg3_priority_bit = (self.bgmode & 0x08) != 0;
+
+                // Special case: BG3 high priority with BG3 priority bit wins over ALL sprites
+                if (bg3_priority_bit and bg_layer == 3 and bg_tile_priority == 1) {
+                    return false; // Sprite does NOT win - BG3 high priority is in front
+                }
+
+                // Standard Mode 1 priority values (higher = more in front)
+                const sprite_eff: u8 = switch (sprite_priority) {
+                    3 => 10, // S3 - front
+                    2 => 7, // S2
+                    1 => 4, // S1
+                    else => 2, // S0
+                };
+
+                // Note: 3H is lower in standard mode, but handled above when bg3_priority_bit is set
+                const bg_eff: u8 = switch (bg_layer) {
+                    1 => if (bg_tile_priority == 1) 9 else 6, // 1H=9, 1L=6
+                    2 => if (bg_tile_priority == 1) 8 else 5, // 2H=8, 2L=5
+                    3 => if (bg_tile_priority == 1) 3 else 1, // 3H=3, 3L=1
+                    else => 0,
+                };
+
+                return sprite_eff > bg_eff;
+            },
+            0 => {
+                // Mode 0 - simplified: treat similar to Mode 1 for now
+                // TODO: Implement proper Mode 0 priority if needed
+                const sprite_eff: u8 = switch (sprite_priority) {
+                    3 => 10,
+                    2 => 7,
+                    1 => 4,
+                    else => 2,
+                };
+                const bg_eff: u8 = if (bg_tile_priority == 1) 8 else 5;
+                return sprite_eff > bg_eff;
+            },
+            else => {
+                // Other modes - use simple comparison for now
+                // Sprite priority 3 always wins, otherwise compare directly
+                if (sprite_priority == 3) return true;
+                if (bg_tile_priority == 1) return false; // High priority BG wins
+                return sprite_priority >= 1; // Low priority BG loses to sprite 1+
+            },
+        }
+    }
+
     fn renderScanline(self: *Ppu) void {
         const y = self.scanline;
         const start = y * SCREEN_WIDTH;
@@ -319,6 +404,7 @@ pub const Ppu = struct {
         for (0..SCREEN_WIDTH) |x| {
             var color: u16 = backdrop;
             var bg_priority: u8 = 0;
+            var bg_layer: u8 = 0; // Track which BG layer produced this pixel (0 = backdrop)
 
             // Render BG layers (back to front based on priority)
             switch (mode) {
@@ -330,6 +416,7 @@ pub const Ppu = struct {
                         if (self.renderBgPixel(4, @intCast(x), y, 2)) |c| {
                             color = c.color;
                             bg_priority = c.priority;
+                            bg_layer = 4;
                         }
                     }
                     if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
@@ -337,6 +424,7 @@ pub const Ppu = struct {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
+                                bg_layer = 3;
                             }
                         }
                     }
@@ -345,6 +433,7 @@ pub const Ppu = struct {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
+                                bg_layer = 2;
                             }
                         }
                     }
@@ -353,6 +442,7 @@ pub const Ppu = struct {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
+                                bg_layer = 1;
                             }
                         }
                     }
@@ -367,6 +457,7 @@ pub const Ppu = struct {
                         if (self.renderBgPixel(3, @intCast(x), y, 2)) |c| {
                             color = c.color;
                             bg_priority = c.priority;
+                            bg_layer = 3;
                         }
                     }
                     if ((self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
@@ -374,6 +465,7 @@ pub const Ppu = struct {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
+                                bg_layer = 2;
                             }
                         }
                     }
@@ -382,6 +474,7 @@ pub const Ppu = struct {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
+                                bg_layer = 1;
                             }
                         }
                     }
@@ -393,6 +486,7 @@ pub const Ppu = struct {
                         if (self.renderBgPixel(1, @intCast(x), y, bpp)) |c| {
                             color = c.color;
                             bg_priority = c.priority;
+                            bg_layer = 1;
                         }
                     }
                 },
@@ -403,12 +497,23 @@ pub const Ppu = struct {
             }
 
             // Combine with sprites based on priority
-            // Sprite priority 0-3: higher = in front
-            // Simplified: sprites with priority > bg_priority go in front
+            // The SNES has complex per-mode priority ordering between sprites and BGs.
+            // Each mode has a specific layering order that determines which elements
+            // appear in front of others.
             if (sprite_buffer[x]) |sprite| {
-                // Simple priority check - sprite wins if its priority is higher
-                // Real SNES has more complex priority handling per-mode
-                if (sprite.priority >= bg_priority or bg_priority == 0) {
+                const sprite_wins = self.spritePriorityWins(mode, sprite.priority, bg_layer, bg_priority);
+
+                // Debug: trace sprite priority decisions at frame 700
+                if (comptime dbg.enabled) {
+                    // Log sprite pixels that overlap with BG at frame 700
+                    if (self.frame_count == 700 and bg_layer != 0) {
+                        std.debug.print("[PRIO] x={d} y={d} s_pri={d} bg_l={d} bg_p={d} wins={}\n", .{
+                            x, y, sprite.priority, bg_layer, bg_priority, sprite_wins,
+                        });
+                    }
+                }
+
+                if (sprite_wins) {
                     color = sprite.color;
                 }
             }
