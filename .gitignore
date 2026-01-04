@@ -7,3 +7,6 @@ zig-out/
 
 # Claude Code
 .claude/
+
+# ROMs
+test/games/
