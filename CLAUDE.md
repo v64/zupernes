@@ -15,8 +15,10 @@ Zupernes is a SNES (Super Nintendo Entertainment System) emulator written in Zig
 
 ```bash
 zig build              # Build the project
-zig build run          # Build and run
-zig build test         # Run tests
+zig build run          # Build and run emulator
+zig build run -- <rom.sfc>  # Run with a ROM file
+zig build test         # Run unit tests
+zig build test-roms    # Run ROM test harness
 ```
 
 ## Architecture
