@@ -28,6 +28,7 @@ const std = @import("std");
 const Ppu = @import("ppu/ppu.zig").Ppu;
 const Cartridge = @import("cartridge.zig").Cartridge;
 const Dma = @import("dma.zig").Dma;
+const Apu = @import("apu/apu.zig").Apu;
 const dbg = @import("debug.zig");
 
 pub const Bus = struct {
@@ -126,22 +127,12 @@ pub const Bus = struct {
     //   - Port 1: Command byte or data
     //   - Ports 2-3: Additional parameters
     //
-    // Since we don't emulate the actual SPC700, we stub this communication
-    // by echoing writes and providing sensible default responses.
+    // The APU is now fully emulated via the SPC700 CPU which runs the IPL ROM
+    // and any uploaded sound driver code.
     // =========================================================================
 
-    // APU output registers (what CPU reads from $2140-$2143)
-    // These represent what the SPC700 "wrote" to its side
-    apu_out: [4]u8,
-
-    // APU input registers (what CPU writes to $2140-$2143)
-    // These represent what the 65816 sent to the SPC700
-    apu_in: [4]u8,
-
-    // APU state tracking for the stub implementation
-    apu_boot_done: bool, // True after CPU writes $CC (transfer started)
-    apu_last_index: u8, // Last index value written to port 0 during transfer
-    apu_driver_ready: bool, // True after execute command (driver running)
+    // The full APU emulation (SPC700 + DSP)
+    apu: Apu,
 
     pub fn init(ppu: *Ppu) Bus {
         return Bus{
@@ -162,13 +153,10 @@ pub const Bus = struct {
             .rddiv = 0,
             .rdmpy = 0,
             .memsel = 0, // SlowROM by default
-            // APU boot state: $AA at port 0, $BB at port 1 signals "ready"
-            // This is what the IPL ROM writes after initialization
-            .apu_out = [_]u8{ 0xAA, 0xBB, 0x00, 0x00 },
-            .apu_in = [_]u8{ 0x00, 0x00, 0x00, 0x00 },
-            .apu_boot_done = false, // True once $CC written (transfer mode)
-            .apu_last_index = 0, // Track transfer index for execute detection
-            .apu_driver_ready = false, // True once sound driver is running
+            // APU with SPC700 CPU - initialized with IPL ROM ready signal
+            // The SPC700 starts executing at $FFC0 (IPL ROM) and will
+            // write $AA/$BB to ports 0/1 to signal readiness
+            .apu = Apu.init(),
         };
     }
 
@@ -279,151 +267,37 @@ pub const Bus = struct {
     }
 
     // =========================================================================
-    // APU PORT READ - CPU reads what the SPC700 "wrote"
+    // APU PORT READ - CPU reads what the SPC700 wrote to $F4-$F7
     // =========================================================================
-    // During boot: Returns $AA (port 0) and $BB (port 1) - the ready signal
-    // During transfer: Returns echoed index values for handshake
-    // After driver starts: Returns driver status/acknowledgment
+    // The SPC700 is now fully emulated, running the IPL ROM and any uploaded
+    // sound driver. We simply read from the SPC700's output port buffer.
     // =========================================================================
     fn readApuPort(self: *Bus, addr: u16) u8 {
-        const port = addr - 0x2140;
-        const value = self.apu_out[port];
-        dbg.apuRead(addr, value, self.apu_out);
-        return value;
+        const port: u2 = @truncate(addr - 0x2140);
+        return self.apu.readPort(port);
     }
 
     // =========================================================================
-    // APU PORT WRITE - CPU sends data/commands to the SPC700
+    // APU PORT WRITE - CPU sends data to the SPC700's $F4-$F7 input ports
     // =========================================================================
-    // This is the heart of CPU-APU communication. The protocol has multiple
-    // phases, and we need to track state to respond correctly.
-    //
-    // Protocol reference: https://wiki.superfamicom.org/transferring-data-from-rom-to-the-snes-apu
+    // The SPC700 is now fully emulated. We write to its input port buffer,
+    // and the SPC700's instruction execution (running the IPL ROM or uploaded
+    // driver code) handles the communication protocol.
     // =========================================================================
     fn writeApuPort(self: *Bus, addr: u16, value: u8) void {
-        const port = addr - 0x2140;
-        self.apu_in[port] = value;
+        const port: u2 = @truncate(addr - 0x2140);
+        self.apu.writePort(port, value);
+    }
 
-        // -----------------------------------------------------------------
-        // PHASE 1: Pre-transfer (boot signature visible)
-        // -----------------------------------------------------------------
-        // Before $CC is written, APU shows $AA/$BB. Games may clear ports
-        // with $00 during init - we must NOT echo these or we lose the
-        // boot signature that games poll for.
-        if (!self.apu_boot_done) {
-            if (port == 0 and value == 0xCC) {
-                // $CC to port 0 = "start transfer" command
-                // Echo it back to acknowledge, enter transfer mode
-                self.apu_boot_done = true;
-                self.apu_last_index = 0xCC;
-                self.apu_out[0] = 0xCC;
-                if (comptime dbg.trace_apu) {
-                    std.debug.print("[APU] Transfer start ($CC) - entering transfer mode\n", .{});
-                }
-            } else {
-                // Pre-boot: only echo non-zero, non-boot-signature values
-                // This preserves $AA/$BB for the ready check
-                const is_boot_sig = (port == 0 and value == 0xAA) or (port == 1 and value == 0xBB);
-                if (value != 0 and !is_boot_sig) {
-                    self.apu_out[port] = value;
-                    dbg.apuWrite(addr, value, true);
-                } else {
-                    dbg.apuWrite(addr, value, false);
-                }
-            }
-            return;
-        }
-
-        // -----------------------------------------------------------------
-        // PHASE 4: Post-execute driver communication
-        // -----------------------------------------------------------------
-        // After the sound driver is running, we're in a game-specific
-        // protocol. Common N-SPC patterns:
-        //
-        // Port 0: Command acknowledgment byte
-        //   - Game writes command, driver echoes when processed
-        //   - Value $00 typically means "idle/ready"
-        //
-        // Port 1: Command byte or "no-op" ($FF)
-        //   - $FF often means "no command" or "query status"
-        //   - When $FF is sent, driver signals ready with port 0 = $00
-        //
-        // We simulate this by:
-        //   - Echoing port 0 writes (game commands)
-        //   - When port 1 = $FF, setting port 0 = $00 (driver idle)
-        // -----------------------------------------------------------------
-        if (self.apu_driver_ready) {
-            self.apu_out[port] = value;
-
-            if (port == 1 and value == 0xFF) {
-                // $FF to port 1 = "no command" / "idle query"
-                // Different games expect different responses. SMW's N-SPC driver
-                // likely expects the same boot signature pattern ($BBAA).
-                // This matches the pre-transfer ready state.
-                self.apu_out[0] = 0xAA;
-                self.apu_out[1] = 0xBB;
-                if (comptime dbg.trace_apu) {
-                    std.debug.print("[APU] Driver: idle query ($FF) -> $BBAA (boot pattern)\n", .{});
-                }
-            } else if (port == 0) {
-                // Command to port 0 - acknowledge by echoing the value
-                // (Some drivers increment, but echoing is more common)
-                self.apu_out[0] = value;
-                if (comptime dbg.trace_apu) {
-                    std.debug.print("[APU] Driver cmd: port0=${x:0>2} -> ack\n", .{value});
-                }
-            } else {
-                if (comptime dbg.trace_apu) {
-                    std.debug.print("[APU] Driver: port{d}=${x:0>2}\n", .{ port, value });
-                }
-            }
-            return;
-        }
-
-        // -----------------------------------------------------------------
-        // PHASES 2-3: Data transfer with execute detection
-        // -----------------------------------------------------------------
-        // During transfer, port 0 carries the byte index (0, 1, 2, ...)
-        // and port 1 carries the data byte. We echo port 0 to acknowledge.
-        //
-        // EXECUTE DETECTION (Phase 4 trigger):
-        // The execute command is detected when:
-        //   1. Port 1 is written with $00 (meaning "no more data, execute")
-        //   2. Port 0 jumps by 2 or more (not a normal +1 increment)
-        //
-        // When we detect execute, we signal "driver ready" and enter
-        // the post-execute communication phase.
-        // -----------------------------------------------------------------
-
-        if (port == 0) {
-            // Port 0 write during transfer - this is the index/control byte
-
-            // Check for execute command: index jumps by 2+ AND port 1 is $00
-            // The jump detection: if new value differs from last by more than 1
-            // (accounting for the 0->255 wrap case)
-            const diff = value -% self.apu_last_index;
-            const is_execute = (diff >= 2) and (self.apu_in[1] == 0x00);
-
-            if (is_execute) {
-                // Execute command detected!
-                // The uploaded code would now run. We simulate this by
-                // entering driver mode and signaling "ready".
-                self.apu_driver_ready = true;
-                self.apu_out[0] = value; // Echo the execute index
-                if (comptime dbg.trace_apu) {
-                    std.debug.print("[APU] EXECUTE: index ${x:0>2} (jumped from ${x:0>2}) - driver starting\n", .{ value, self.apu_last_index });
-                }
-            } else {
-                // Normal data transfer - echo the index
-                self.apu_out[0] = value;
-                self.apu_last_index = value;
-            }
-        } else {
-            // Port 1, 2, or 3 write - just echo it
-            self.apu_out[port] = value;
-        }
-
-        dbg.apuWrite(addr, value, true);
+    // =========================================================================
+    // APU SYNCHRONIZATION - Run SPC700 to keep it in sync with main CPU
+    // =========================================================================
+    // This should be called after each main CPU instruction with the number
+    // of master cycles consumed. The APU will execute enough SPC700 cycles
+    // to stay in sync.
+    // =========================================================================
+    pub fn runApu(self: *Bus, master_cycles: u32) void {
+        self.apu.runCycles(master_cycles);
     }
 
     fn readSystemRegister(self: *Bus, addr: u16) u8 {

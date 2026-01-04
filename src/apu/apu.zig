@@ -112,13 +112,7 @@ pub const Apu = struct {
 
     /// Execute one SPC700 instruction, returns cycles consumed
     fn step(self: *Apu) u8 {
-        // TODO: Implement actual instruction execution
-        // For now, just advance the PC and return a fixed cycle count
-        _ = self;
-
-        // This is a stub - real implementation will decode and execute
-        // the instruction at PC, updating registers and memory
-        return 2; // Most common cycle count
+        return self.spc.step();
     }
 
     // =========================================================================
@@ -139,9 +133,9 @@ pub const Apu = struct {
 test "apu init" {
     const apu = Apu.init();
 
-    // Check that SPC700 is initialized with ready signal
-    try std.testing.expectEqual(@as(u8, 0xAA), apu.spc.port_out[0]);
-    try std.testing.expectEqual(@as(u8, 0xBB), apu.spc.port_out[1]);
+    // Ports start at 0 - IPL ROM will write $AA/$BB after RAM clear
+    try std.testing.expectEqual(@as(u8, 0), apu.spc.port_out[0]);
+    try std.testing.expectEqual(@as(u8, 0), apu.spc.port_out[1]);
 }
 
 test "apu port communication" {

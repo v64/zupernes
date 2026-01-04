@@ -51,6 +51,11 @@ pub const Emulator = struct {
     pub fn step(self: *Emulator) void {
         const cycles = self.cpu.step();
 
+        // Run APU (SPC700) to stay synchronized with main CPU
+        // The SPC700 runs at 1.024 MHz, main CPU at ~3.58 MHz
+        // Ratio: 3.58/1.024 ≈ 3.5 CPU cycles per SPC cycle
+        self.bus.runApu(cycles);
+
         // Track current scanline before tick
         const prev_scanline = self.ppu.scanline;
 

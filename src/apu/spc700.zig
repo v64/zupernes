@@ -557,9 +557,11 @@ pub const Spc700 = struct {
 
             .ram = [_]u8{0} ** 65536,
 
-            // Ports - IPL ROM writes $AA to port 0, $BB to port 1
+            // Ports - start at 0, IPL ROM will write $AA/$BB after RAM clear
+            // Do NOT pre-initialize to $AA/$BB - the IPL ROM must write these
+            // so the CPU properly waits for the APU to be ready
             .port_in = [_]u8{ 0, 0, 0, 0 },
-            .port_out = [_]u8{ 0xAA, 0xBB, 0, 0 }, // Ready signal
+            .port_out = [_]u8{ 0, 0, 0, 0 },
 
             // Timers disabled at boot
             .timer_enable = [_]bool{ false, false, false },
@@ -681,7 +683,13 @@ pub const Spc700 = struct {
             IoReg.CONTROL => return 0, // Write-only (mostly)
             IoReg.DSPADDR => return self.dsp_addr,
             IoReg.DSPDATA => return self.readDsp(self.dsp_addr),
-            IoReg.PORT0 => return self.port_in[0],
+            IoReg.PORT0 => {
+                const val = self.port_in[0];
+                if (comptime dbg.trace_apu) {
+                    std.debug.print("[SPC] Read port0 = ${x:0>2} (waiting for $CC)\n", .{val});
+                }
+                return val;
+            },
             IoReg.PORT1 => return self.port_in[1],
             IoReg.PORT2 => return self.port_in[2],
             IoReg.PORT3 => return self.port_in[3],
@@ -753,7 +761,12 @@ pub const Spc700 = struct {
             },
             IoReg.DSPADDR => self.dsp_addr = value,
             IoReg.DSPDATA => self.writeDsp(self.dsp_addr, value),
-            IoReg.PORT0 => self.port_out[0] = value,
+            IoReg.PORT0 => {
+                if (comptime dbg.trace_apu) {
+                    std.debug.print("[SPC] Write port0 = ${x:0>2} (echo)\n", .{value});
+                }
+                self.port_out[0] = value;
+            },
             IoReg.PORT1 => self.port_out[1] = value,
             IoReg.PORT2 => self.port_out[2] = value,
             IoReg.PORT3 => self.port_out[3] = value,
@@ -765,6 +778,1630 @@ pub const Spc700 = struct {
             IoReg.T0OUT, IoReg.T1OUT, IoReg.T2OUT => {}, // Read-only
             else => self.ram[addr] = value,
         }
+    }
+
+    // =========================================================================
+    // INSTRUCTION EXECUTION
+    // =========================================================================
+    // Execute one instruction and return the number of cycles consumed.
+    // This is the main CPU loop - fetch opcode, decode, execute.
+
+    /// Fetch the next byte from PC and advance PC
+    fn fetch(self: *Spc700) u8 {
+        const value = self.read(self.pc);
+        self.pc +%= 1;
+        return value;
+    }
+
+    /// Fetch a 16-bit value (little-endian) from PC
+    fn fetch16(self: *Spc700) u16 {
+        const low = self.fetch();
+        const high = self.fetch();
+        return (@as(u16, high) << 8) | low;
+    }
+
+    /// Read from direct page address
+    fn readDp(self: *Spc700, offset: u8) u8 {
+        return self.read(self.directPage() | offset);
+    }
+
+    /// Write to direct page address
+    fn writeDp(self: *Spc700, offset: u8, value: u8) void {
+        self.write(self.directPage() | offset, value);
+    }
+
+    /// Read 16-bit value from direct page (little-endian)
+    fn readDp16(self: *Spc700, offset: u8) u16 {
+        const low = self.readDp(offset);
+        const high = self.readDp(offset +% 1);
+        return (@as(u16, high) << 8) | low;
+    }
+
+    /// Write 16-bit value to direct page (little-endian)
+    fn writeDp16(self: *Spc700, offset: u8, value: u16) void {
+        self.writeDp(offset, @truncate(value));
+        self.writeDp(offset +% 1, @truncate(value >> 8));
+    }
+
+    /// Execute one instruction, return cycles consumed
+    pub fn step(self: *Spc700) u8 {
+        const opcode = self.fetch();
+
+        // Trace instruction if debug enabled
+        if (comptime dbg.enabled and dbg.trace_cpu) {
+            std.debug.print("[SPC] ${x:0>4}: ${x:0>2} A=${x:0>2} X=${x:0>2} Y=${x:0>2} SP=${x:0>2} PSW=${x:0>2}\n", .{
+                self.pc -% 1,
+                opcode,
+                self.a,
+                self.x,
+                self.y,
+                self.sp,
+                self.psw,
+            });
+        }
+
+        const cycles: u8 = switch (opcode) {
+            // =================================================================
+            // NOP
+            // =================================================================
+            0x00 => 2, // NOP
+
+            // =================================================================
+            // MOV - Register to Register
+            // =================================================================
+            0x7D => blk: { // MOV A,X
+                self.a = self.x;
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x5D => blk: { // MOV X,A
+                self.x = self.a;
+                self.setNZ(self.x);
+                break :blk 2;
+            },
+            0xDD => blk: { // MOV A,Y
+                self.a = self.y;
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0xFD => blk: { // MOV Y,A
+                self.y = self.a;
+                self.setNZ(self.y);
+                break :blk 2;
+            },
+            0x9D => blk: { // MOV X,SP
+                self.x = self.sp;
+                self.setNZ(self.x);
+                break :blk 2;
+            },
+            0xBD => blk: { // MOV SP,X
+                self.sp = self.x;
+                break :blk 2;
+            },
+
+            // =================================================================
+            // MOV - Immediate
+            // =================================================================
+            0xE8 => blk: { // MOV A,#imm
+                self.a = self.fetch();
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0xCD => blk: { // MOV X,#imm
+                self.x = self.fetch();
+                self.setNZ(self.x);
+                break :blk 2;
+            },
+            0x8D => blk: { // MOV Y,#imm
+                self.y = self.fetch();
+                self.setNZ(self.y);
+                break :blk 2;
+            },
+
+            // =================================================================
+            // MOV - Direct Page Read
+            // =================================================================
+            0xE4 => blk: { // MOV A,dp
+                const dp = self.fetch();
+                self.a = self.readDp(dp);
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+            0xF8 => blk: { // MOV X,dp
+                const dp = self.fetch();
+                self.x = self.readDp(dp);
+                self.setNZ(self.x);
+                break :blk 3;
+            },
+            0xEB => blk: { // MOV Y,dp
+                const dp = self.fetch();
+                self.y = self.readDp(dp);
+                self.setNZ(self.y);
+                break :blk 3;
+            },
+            0xF4 => blk: { // MOV A,dp+X
+                const dp = self.fetch();
+                self.a = self.readDp(dp +% self.x);
+                self.setNZ(self.a);
+                break :blk 4;
+            },
+            0xF9 => blk: { // MOV X,dp+Y
+                const dp = self.fetch();
+                self.x = self.readDp(dp +% self.y);
+                self.setNZ(self.x);
+                break :blk 4;
+            },
+            0xFB => blk: { // MOV Y,dp+X
+                const dp = self.fetch();
+                self.y = self.readDp(dp +% self.x);
+                self.setNZ(self.y);
+                break :blk 4;
+            },
+
+            // =================================================================
+            // MOV - Direct Page Write
+            // =================================================================
+            0xC4 => blk: { // MOV dp,A
+                const dp = self.fetch();
+                self.writeDp(dp, self.a);
+                break :blk 4;
+            },
+            0xD8 => blk: { // MOV dp,X
+                const dp = self.fetch();
+                self.writeDp(dp, self.x);
+                break :blk 4;
+            },
+            0xCB => blk: { // MOV dp,Y
+                const dp = self.fetch();
+                self.writeDp(dp, self.y);
+                break :blk 4;
+            },
+            0xD4 => blk: { // MOV dp+X,A
+                const dp = self.fetch();
+                self.writeDp(dp +% self.x, self.a);
+                break :blk 5;
+            },
+            0xD9 => blk: { // MOV dp+Y,X
+                const dp = self.fetch();
+                self.writeDp(dp +% self.y, self.x);
+                break :blk 5;
+            },
+            0xDB => blk: { // MOV dp+X,Y
+                const dp = self.fetch();
+                self.writeDp(dp +% self.x, self.y);
+                break :blk 5;
+            },
+            0x8F => blk: { // MOV dp,#imm
+                const imm = self.fetch();
+                const dp = self.fetch();
+                self.writeDp(dp, imm);
+                break :blk 5;
+            },
+            0xFA => blk: { // MOV dp,dp (destination first in encoding)
+                const src = self.fetch();
+                const dst = self.fetch();
+                const value = self.readDp(src);
+                self.writeDp(dst, value);
+                break :blk 5;
+            },
+
+            // =================================================================
+            // MOV - Absolute
+            // =================================================================
+            0xE5 => blk: { // MOV A,!abs
+                const addr = self.fetch16();
+                self.a = self.read(addr);
+                self.setNZ(self.a);
+                break :blk 4;
+            },
+            0xE9 => blk: { // MOV X,!abs
+                const addr = self.fetch16();
+                self.x = self.read(addr);
+                self.setNZ(self.x);
+                break :blk 4;
+            },
+            0xEC => blk: { // MOV Y,!abs
+                const addr = self.fetch16();
+                self.y = self.read(addr);
+                self.setNZ(self.y);
+                break :blk 4;
+            },
+            0xF5 => blk: { // MOV A,!abs+X
+                const addr = self.fetch16();
+                self.a = self.read(addr +% self.x);
+                self.setNZ(self.a);
+                break :blk 5;
+            },
+            0xF6 => blk: { // MOV A,!abs+Y
+                const addr = self.fetch16();
+                self.a = self.read(addr +% self.y);
+                self.setNZ(self.a);
+                break :blk 5;
+            },
+            0xC5 => blk: { // MOV !abs,A
+                const addr = self.fetch16();
+                self.write(addr, self.a);
+                break :blk 5;
+            },
+            0xC9 => blk: { // MOV !abs,X
+                const addr = self.fetch16();
+                self.write(addr, self.x);
+                break :blk 5;
+            },
+            0xCC => blk: { // MOV !abs,Y
+                const addr = self.fetch16();
+                self.write(addr, self.y);
+                break :blk 5;
+            },
+            0xD5 => blk: { // MOV !abs+X,A
+                const addr = self.fetch16();
+                self.write(addr +% self.x, self.a);
+                break :blk 6;
+            },
+            0xD6 => blk: { // MOV !abs+Y,A
+                const addr = self.fetch16();
+                self.write(addr +% self.y, self.a);
+                break :blk 6;
+            },
+
+            // =================================================================
+            // MOV - Indirect
+            // =================================================================
+            0xE6 => blk: { // MOV A,(X)
+                self.a = self.readDp(self.x);
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+            0xC6 => blk: { // MOV (X),A
+                self.writeDp(self.x, self.a);
+                break :blk 4;
+            },
+            0xBF => blk: { // MOV A,(X)+
+                self.a = self.readDp(self.x);
+                self.x +%= 1;
+                self.setNZ(self.a);
+                break :blk 4;
+            },
+            0xAF => blk: { // MOV (X)+,A
+                self.writeDp(self.x, self.a);
+                self.x +%= 1;
+                break :blk 4;
+            },
+            0xE7 => blk: { // MOV A,[dp+X]
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp +% self.x);
+                self.a = self.read(ptr);
+                self.setNZ(self.a);
+                break :blk 6;
+            },
+            0xF7 => blk: { // MOV A,[dp]+Y
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp);
+                self.a = self.read(ptr +% self.y);
+                self.setNZ(self.a);
+                break :blk 6;
+            },
+            0xC7 => blk: { // MOV [dp+X],A
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp +% self.x);
+                self.write(ptr, self.a);
+                break :blk 7;
+            },
+            0xD7 => blk: { // MOV [dp]+Y,A
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp);
+                self.write(ptr +% self.y, self.a);
+                break :blk 7;
+            },
+
+            // =================================================================
+            // MOVW - 16-bit moves
+            // =================================================================
+            0xBA => blk: { // MOVW YA,dp
+                const dp = self.fetch();
+                const value = self.readDp16(dp);
+                self.setYA(value);
+                self.setNZ(self.y); // N/Z based on high byte
+                if (value == 0) self.psw |= PSW.Z;
+                break :blk 5;
+            },
+            0xDA => blk: { // MOVW dp,YA
+                const dp = self.fetch();
+                self.writeDp16(dp, self.getYA());
+                break :blk 5;
+            },
+
+            // =================================================================
+            // INC/DEC - Register
+            // =================================================================
+            0xBC => blk: { // INC A
+                self.a +%= 1;
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x3D => blk: { // INC X
+                self.x +%= 1;
+                self.setNZ(self.x);
+                break :blk 2;
+            },
+            0xFC => blk: { // INC Y
+                self.y +%= 1;
+                self.setNZ(self.y);
+                break :blk 2;
+            },
+            0x9C => blk: { // DEC A
+                self.a -%= 1;
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x1D => blk: { // DEC X
+                self.x -%= 1;
+                self.setNZ(self.x);
+                break :blk 2;
+            },
+            0xDC => blk: { // DEC Y
+                self.y -%= 1;
+                self.setNZ(self.y);
+                break :blk 2;
+            },
+
+            // =================================================================
+            // INC/DEC - Memory
+            // =================================================================
+            0xAB => blk: { // INC dp
+                const dp = self.fetch();
+                const value = self.readDp(dp) +% 1;
+                self.writeDp(dp, value);
+                self.setNZ(value);
+                break :blk 4;
+            },
+            0xAC => blk: { // INC !abs
+                const addr = self.fetch16();
+                const value = self.read(addr) +% 1;
+                self.write(addr, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0xBB => blk: { // INC dp+X
+                const dp = self.fetch();
+                const value = self.readDp(dp +% self.x) +% 1;
+                self.writeDp(dp +% self.x, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x8B => blk: { // DEC dp
+                const dp = self.fetch();
+                const value = self.readDp(dp) -% 1;
+                self.writeDp(dp, value);
+                self.setNZ(value);
+                break :blk 4;
+            },
+            0x8C => blk: { // DEC !abs
+                const addr = self.fetch16();
+                const value = self.read(addr) -% 1;
+                self.write(addr, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x9B => blk: { // DEC dp+X
+                const dp = self.fetch();
+                const value = self.readDp(dp +% self.x) -% 1;
+                self.writeDp(dp +% self.x, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+
+            // =================================================================
+            // INCW/DECW - 16-bit memory
+            // =================================================================
+            0x3A => blk: { // INCW dp
+                const dp = self.fetch();
+                const value = self.readDp16(dp) +% 1;
+                self.writeDp16(dp, value);
+                self.psw &= ~(PSW.N | PSW.Z);
+                if (value == 0) self.psw |= PSW.Z;
+                if (value & 0x8000 != 0) self.psw |= PSW.N;
+                break :blk 6;
+            },
+            0x1A => blk: { // DECW dp
+                const dp = self.fetch();
+                const value = self.readDp16(dp) -% 1;
+                self.writeDp16(dp, value);
+                self.psw &= ~(PSW.N | PSW.Z);
+                if (value == 0) self.psw |= PSW.Z;
+                if (value & 0x8000 != 0) self.psw |= PSW.N;
+                break :blk 6;
+            },
+
+            // =================================================================
+            // CMP - Compare
+            // =================================================================
+            0x68 => blk: { // CMP A,#imm
+                const imm = self.fetch();
+                self.compare(self.a, imm);
+                break :blk 2;
+            },
+            0xC8 => blk: { // CMP X,#imm
+                const imm = self.fetch();
+                self.compare(self.x, imm);
+                break :blk 2;
+            },
+            0xAD => blk: { // CMP Y,#imm
+                const imm = self.fetch();
+                self.compare(self.y, imm);
+                break :blk 2;
+            },
+            0x64 => blk: { // CMP A,dp
+                const dp = self.fetch();
+                self.compare(self.a, self.readDp(dp));
+                break :blk 3;
+            },
+            0x3E => blk: { // CMP X,dp
+                const dp = self.fetch();
+                self.compare(self.x, self.readDp(dp));
+                break :blk 3;
+            },
+            0x7E => blk: { // CMP Y,dp
+                const dp = self.fetch();
+                self.compare(self.y, self.readDp(dp));
+                break :blk 3;
+            },
+            0x74 => blk: { // CMP A,dp+X
+                const dp = self.fetch();
+                self.compare(self.a, self.readDp(dp +% self.x));
+                break :blk 4;
+            },
+            0x65 => blk: { // CMP A,!abs
+                const addr = self.fetch16();
+                self.compare(self.a, self.read(addr));
+                break :blk 4;
+            },
+            0x1E => blk: { // CMP X,!abs
+                const addr = self.fetch16();
+                self.compare(self.x, self.read(addr));
+                break :blk 4;
+            },
+            0x5E => blk: { // CMP Y,!abs
+                const addr = self.fetch16();
+                self.compare(self.y, self.read(addr));
+                break :blk 4;
+            },
+            0x75 => blk: { // CMP A,!abs+X
+                const addr = self.fetch16();
+                self.compare(self.a, self.read(addr +% self.x));
+                break :blk 5;
+            },
+            0x76 => blk: { // CMP A,!abs+Y
+                const addr = self.fetch16();
+                self.compare(self.a, self.read(addr +% self.y));
+                break :blk 5;
+            },
+            0x66 => blk: { // CMP A,(X)
+                self.compare(self.a, self.readDp(self.x));
+                break :blk 3;
+            },
+            0x67 => blk: { // CMP A,[dp+X]
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp +% self.x);
+                self.compare(self.a, self.read(ptr));
+                break :blk 6;
+            },
+            0x77 => blk: { // CMP A,[dp]+Y
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp);
+                self.compare(self.a, self.read(ptr +% self.y));
+                break :blk 6;
+            },
+            0x69 => blk: { // CMP dp,dp
+                const src = self.fetch();
+                const dst = self.fetch();
+                self.compare(self.readDp(dst), self.readDp(src));
+                break :blk 6;
+            },
+            0x78 => blk: { // CMP dp,#imm
+                const imm = self.fetch();
+                const dp = self.fetch();
+                self.compare(self.readDp(dp), imm);
+                break :blk 5;
+            },
+            0x79 => blk: { // CMP (X),(Y)
+                self.compare(self.readDp(self.x), self.readDp(self.y));
+                break :blk 5;
+            },
+
+            // =================================================================
+            // CMPW - 16-bit compare
+            // =================================================================
+            0x5A => blk: { // CMPW YA,dp
+                const dp = self.fetch();
+                const value = self.readDp16(dp);
+                const ya = self.getYA();
+                const result = ya -% value;
+                self.psw &= ~(PSW.N | PSW.Z | PSW.C);
+                if (ya >= value) self.psw |= PSW.C;
+                if (result == 0) self.psw |= PSW.Z;
+                if (result & 0x8000 != 0) self.psw |= PSW.N;
+                break :blk 4;
+            },
+
+            // =================================================================
+            // ADC - Add with carry
+            // =================================================================
+            0x88 => blk: { // ADC A,#imm
+                const imm = self.fetch();
+                self.a = self.adc(self.a, imm);
+                break :blk 2;
+            },
+            0x84 => blk: { // ADC A,dp
+                const dp = self.fetch();
+                self.a = self.adc(self.a, self.readDp(dp));
+                break :blk 3;
+            },
+            0x94 => blk: { // ADC A,dp+X
+                const dp = self.fetch();
+                self.a = self.adc(self.a, self.readDp(dp +% self.x));
+                break :blk 4;
+            },
+            0x85 => blk: { // ADC A,!abs
+                const addr = self.fetch16();
+                self.a = self.adc(self.a, self.read(addr));
+                break :blk 4;
+            },
+            0x95 => blk: { // ADC A,!abs+X
+                const addr = self.fetch16();
+                self.a = self.adc(self.a, self.read(addr +% self.x));
+                break :blk 5;
+            },
+            0x96 => blk: { // ADC A,!abs+Y
+                const addr = self.fetch16();
+                self.a = self.adc(self.a, self.read(addr +% self.y));
+                break :blk 5;
+            },
+            0x86 => blk: { // ADC A,(X)
+                self.a = self.adc(self.a, self.readDp(self.x));
+                break :blk 3;
+            },
+            0x87 => blk: { // ADC A,[dp+X]
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp +% self.x);
+                self.a = self.adc(self.a, self.read(ptr));
+                break :blk 6;
+            },
+            0x97 => blk: { // ADC A,[dp]+Y
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp);
+                self.a = self.adc(self.a, self.read(ptr +% self.y));
+                break :blk 6;
+            },
+            0x89 => blk: { // ADC dp,dp
+                const src = self.fetch();
+                const dst = self.fetch();
+                const result = self.adc(self.readDp(dst), self.readDp(src));
+                self.writeDp(dst, result);
+                break :blk 6;
+            },
+            0x98 => blk: { // ADC dp,#imm
+                const imm = self.fetch();
+                const dp = self.fetch();
+                const result = self.adc(self.readDp(dp), imm);
+                self.writeDp(dp, result);
+                break :blk 5;
+            },
+            0x99 => blk: { // ADC (X),(Y)
+                const result = self.adc(self.readDp(self.x), self.readDp(self.y));
+                self.writeDp(self.x, result);
+                break :blk 5;
+            },
+
+            // =================================================================
+            // SBC - Subtract with borrow
+            // =================================================================
+            0xA8 => blk: { // SBC A,#imm
+                const imm = self.fetch();
+                self.a = self.sbc(self.a, imm);
+                break :blk 2;
+            },
+            0xA4 => blk: { // SBC A,dp
+                const dp = self.fetch();
+                self.a = self.sbc(self.a, self.readDp(dp));
+                break :blk 3;
+            },
+            0xB4 => blk: { // SBC A,dp+X
+                const dp = self.fetch();
+                self.a = self.sbc(self.a, self.readDp(dp +% self.x));
+                break :blk 4;
+            },
+            0xA5 => blk: { // SBC A,!abs
+                const addr = self.fetch16();
+                self.a = self.sbc(self.a, self.read(addr));
+                break :blk 4;
+            },
+            0xB5 => blk: { // SBC A,!abs+X
+                const addr = self.fetch16();
+                self.a = self.sbc(self.a, self.read(addr +% self.x));
+                break :blk 5;
+            },
+            0xB6 => blk: { // SBC A,!abs+Y
+                const addr = self.fetch16();
+                self.a = self.sbc(self.a, self.read(addr +% self.y));
+                break :blk 5;
+            },
+            0xA6 => blk: { // SBC A,(X)
+                self.a = self.sbc(self.a, self.readDp(self.x));
+                break :blk 3;
+            },
+            0xA7 => blk: { // SBC A,[dp+X]
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp +% self.x);
+                self.a = self.sbc(self.a, self.read(ptr));
+                break :blk 6;
+            },
+            0xB7 => blk: { // SBC A,[dp]+Y
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp);
+                self.a = self.sbc(self.a, self.read(ptr +% self.y));
+                break :blk 6;
+            },
+            0xA9 => blk: { // SBC dp,dp
+                const src = self.fetch();
+                const dst = self.fetch();
+                const result = self.sbc(self.readDp(dst), self.readDp(src));
+                self.writeDp(dst, result);
+                break :blk 6;
+            },
+            0xB8 => blk: { // SBC dp,#imm
+                const imm = self.fetch();
+                const dp = self.fetch();
+                const result = self.sbc(self.readDp(dp), imm);
+                self.writeDp(dp, result);
+                break :blk 5;
+            },
+            0xB9 => blk: { // SBC (X),(Y)
+                const result = self.sbc(self.readDp(self.x), self.readDp(self.y));
+                self.writeDp(self.x, result);
+                break :blk 5;
+            },
+
+            // =================================================================
+            // ADDW/SUBW - 16-bit arithmetic
+            // =================================================================
+            0x7A => blk: { // ADDW YA,dp
+                const dp = self.fetch();
+                const value = self.readDp16(dp);
+                const ya = self.getYA();
+                const result32 = @as(u32, ya) + @as(u32, value);
+                const result = @as(u16, @truncate(result32));
+                self.setYA(result);
+                self.psw &= ~(PSW.N | PSW.Z | PSW.C | PSW.V | PSW.H);
+                if (result32 > 0xFFFF) self.psw |= PSW.C;
+                if (result == 0) self.psw |= PSW.Z;
+                if (result & 0x8000 != 0) self.psw |= PSW.N;
+                // V and H flags for 16-bit are complex, simplified here
+                break :blk 5;
+            },
+            0x9A => blk: { // SUBW YA,dp
+                const dp = self.fetch();
+                const value = self.readDp16(dp);
+                const ya = self.getYA();
+                const result = ya -% value;
+                self.setYA(result);
+                self.psw &= ~(PSW.N | PSW.Z | PSW.C | PSW.V | PSW.H);
+                if (ya >= value) self.psw |= PSW.C;
+                if (result == 0) self.psw |= PSW.Z;
+                if (result & 0x8000 != 0) self.psw |= PSW.N;
+                break :blk 5;
+            },
+
+            // =================================================================
+            // AND/OR/EOR - Logical operations
+            // =================================================================
+            0x28 => blk: { // AND A,#imm
+                self.a &= self.fetch();
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x24 => blk: { // AND A,dp
+                const dp = self.fetch();
+                self.a &= self.readDp(dp);
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+            0x34 => blk: { // AND A,dp+X
+                const dp = self.fetch();
+                self.a &= self.readDp(dp +% self.x);
+                self.setNZ(self.a);
+                break :blk 4;
+            },
+            0x25 => blk: { // AND A,!abs
+                const addr = self.fetch16();
+                self.a &= self.read(addr);
+                self.setNZ(self.a);
+                break :blk 4;
+            },
+            0x35 => blk: { // AND A,!abs+X
+                const addr = self.fetch16();
+                self.a &= self.read(addr +% self.x);
+                self.setNZ(self.a);
+                break :blk 5;
+            },
+            0x36 => blk: { // AND A,!abs+Y
+                const addr = self.fetch16();
+                self.a &= self.read(addr +% self.y);
+                self.setNZ(self.a);
+                break :blk 5;
+            },
+            0x26 => blk: { // AND A,(X)
+                self.a &= self.readDp(self.x);
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+            0x27 => blk: { // AND A,[dp+X]
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp +% self.x);
+                self.a &= self.read(ptr);
+                self.setNZ(self.a);
+                break :blk 6;
+            },
+            0x37 => blk: { // AND A,[dp]+Y
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp);
+                self.a &= self.read(ptr +% self.y);
+                self.setNZ(self.a);
+                break :blk 6;
+            },
+            0x29 => blk: { // AND dp,dp
+                const src = self.fetch();
+                const dst = self.fetch();
+                const result = self.readDp(dst) & self.readDp(src);
+                self.writeDp(dst, result);
+                self.setNZ(result);
+                break :blk 6;
+            },
+            0x38 => blk: { // AND dp,#imm
+                const imm = self.fetch();
+                const dp = self.fetch();
+                const result = self.readDp(dp) & imm;
+                self.writeDp(dp, result);
+                self.setNZ(result);
+                break :blk 5;
+            },
+            0x39 => blk: { // AND (X),(Y)
+                const result = self.readDp(self.x) & self.readDp(self.y);
+                self.writeDp(self.x, result);
+                self.setNZ(result);
+                break :blk 5;
+            },
+            0x08 => blk: { // OR A,#imm
+                self.a |= self.fetch();
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x04 => blk: { // OR A,dp
+                const dp = self.fetch();
+                self.a |= self.readDp(dp);
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+            0x14 => blk: { // OR A,dp+X
+                const dp = self.fetch();
+                self.a |= self.readDp(dp +% self.x);
+                self.setNZ(self.a);
+                break :blk 4;
+            },
+            0x05 => blk: { // OR A,!abs
+                const addr = self.fetch16();
+                self.a |= self.read(addr);
+                self.setNZ(self.a);
+                break :blk 4;
+            },
+            0x15 => blk: { // OR A,!abs+X
+                const addr = self.fetch16();
+                self.a |= self.read(addr +% self.x);
+                self.setNZ(self.a);
+                break :blk 5;
+            },
+            0x16 => blk: { // OR A,!abs+Y
+                const addr = self.fetch16();
+                self.a |= self.read(addr +% self.y);
+                self.setNZ(self.a);
+                break :blk 5;
+            },
+            0x06 => blk: { // OR A,(X)
+                self.a |= self.readDp(self.x);
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+            0x07 => blk: { // OR A,[dp+X]
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp +% self.x);
+                self.a |= self.read(ptr);
+                self.setNZ(self.a);
+                break :blk 6;
+            },
+            0x17 => blk: { // OR A,[dp]+Y
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp);
+                self.a |= self.read(ptr +% self.y);
+                self.setNZ(self.a);
+                break :blk 6;
+            },
+            0x09 => blk: { // OR dp,dp
+                const src = self.fetch();
+                const dst = self.fetch();
+                const result = self.readDp(dst) | self.readDp(src);
+                self.writeDp(dst, result);
+                self.setNZ(result);
+                break :blk 6;
+            },
+            0x18 => blk: { // OR dp,#imm
+                const imm = self.fetch();
+                const dp = self.fetch();
+                const result = self.readDp(dp) | imm;
+                self.writeDp(dp, result);
+                self.setNZ(result);
+                break :blk 5;
+            },
+            0x19 => blk: { // OR (X),(Y)
+                const result = self.readDp(self.x) | self.readDp(self.y);
+                self.writeDp(self.x, result);
+                self.setNZ(result);
+                break :blk 5;
+            },
+            0x48 => blk: { // EOR A,#imm
+                self.a ^= self.fetch();
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x44 => blk: { // EOR A,dp
+                const dp = self.fetch();
+                self.a ^= self.readDp(dp);
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+            0x54 => blk: { // EOR A,dp+X
+                const dp = self.fetch();
+                self.a ^= self.readDp(dp +% self.x);
+                self.setNZ(self.a);
+                break :blk 4;
+            },
+            0x45 => blk: { // EOR A,!abs
+                const addr = self.fetch16();
+                self.a ^= self.read(addr);
+                self.setNZ(self.a);
+                break :blk 4;
+            },
+            0x55 => blk: { // EOR A,!abs+X
+                const addr = self.fetch16();
+                self.a ^= self.read(addr +% self.x);
+                self.setNZ(self.a);
+                break :blk 5;
+            },
+            0x56 => blk: { // EOR A,!abs+Y
+                const addr = self.fetch16();
+                self.a ^= self.read(addr +% self.y);
+                self.setNZ(self.a);
+                break :blk 5;
+            },
+            0x46 => blk: { // EOR A,(X)
+                self.a ^= self.readDp(self.x);
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+            0x47 => blk: { // EOR A,[dp+X]
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp +% self.x);
+                self.a ^= self.read(ptr);
+                self.setNZ(self.a);
+                break :blk 6;
+            },
+            0x57 => blk: { // EOR A,[dp]+Y
+                const dp = self.fetch();
+                const ptr = self.readDp16(dp);
+                self.a ^= self.read(ptr +% self.y);
+                self.setNZ(self.a);
+                break :blk 6;
+            },
+            0x49 => blk: { // EOR dp,dp
+                const src = self.fetch();
+                const dst = self.fetch();
+                const result = self.readDp(dst) ^ self.readDp(src);
+                self.writeDp(dst, result);
+                self.setNZ(result);
+                break :blk 6;
+            },
+            0x58 => blk: { // EOR dp,#imm
+                const imm = self.fetch();
+                const dp = self.fetch();
+                const result = self.readDp(dp) ^ imm;
+                self.writeDp(dp, result);
+                self.setNZ(result);
+                break :blk 5;
+            },
+            0x59 => blk: { // EOR (X),(Y)
+                const result = self.readDp(self.x) ^ self.readDp(self.y);
+                self.writeDp(self.x, result);
+                self.setNZ(result);
+                break :blk 5;
+            },
+
+            // =================================================================
+            // ASL/LSR/ROL/ROR - Shifts and rotates
+            // =================================================================
+            0x1C => blk: { // ASL A
+                self.psw = (self.psw & ~PSW.C) | ((self.a >> 7) & PSW.C);
+                self.a <<= 1;
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x0B => blk: { // ASL dp
+                const dp = self.fetch();
+                var value = self.readDp(dp);
+                self.psw = (self.psw & ~PSW.C) | ((value >> 7) & PSW.C);
+                value <<= 1;
+                self.writeDp(dp, value);
+                self.setNZ(value);
+                break :blk 4;
+            },
+            0x1B => blk: { // ASL dp+X
+                const dp = self.fetch();
+                var value = self.readDp(dp +% self.x);
+                self.psw = (self.psw & ~PSW.C) | ((value >> 7) & PSW.C);
+                value <<= 1;
+                self.writeDp(dp +% self.x, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x0C => blk: { // ASL !abs
+                const addr = self.fetch16();
+                var value = self.read(addr);
+                self.psw = (self.psw & ~PSW.C) | ((value >> 7) & PSW.C);
+                value <<= 1;
+                self.write(addr, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x5C => blk: { // LSR A
+                self.psw = (self.psw & ~PSW.C) | (self.a & PSW.C);
+                self.a >>= 1;
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x4B => blk: { // LSR dp
+                const dp = self.fetch();
+                var value = self.readDp(dp);
+                self.psw = (self.psw & ~PSW.C) | (value & PSW.C);
+                value >>= 1;
+                self.writeDp(dp, value);
+                self.setNZ(value);
+                break :blk 4;
+            },
+            0x5B => blk: { // LSR dp+X
+                const dp = self.fetch();
+                var value = self.readDp(dp +% self.x);
+                self.psw = (self.psw & ~PSW.C) | (value & PSW.C);
+                value >>= 1;
+                self.writeDp(dp +% self.x, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x4C => blk: { // LSR !abs
+                const addr = self.fetch16();
+                var value = self.read(addr);
+                self.psw = (self.psw & ~PSW.C) | (value & PSW.C);
+                value >>= 1;
+                self.write(addr, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x3C => blk: { // ROL A
+                const old_c: u8 = self.psw & PSW.C;
+                self.psw = (self.psw & ~PSW.C) | ((self.a >> 7) & PSW.C);
+                self.a = (self.a << 1) | old_c;
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x2B => blk: { // ROL dp
+                const dp = self.fetch();
+                var value = self.readDp(dp);
+                const old_c: u8 = self.psw & PSW.C;
+                self.psw = (self.psw & ~PSW.C) | ((value >> 7) & PSW.C);
+                value = (value << 1) | old_c;
+                self.writeDp(dp, value);
+                self.setNZ(value);
+                break :blk 4;
+            },
+            0x3B => blk: { // ROL dp+X
+                const dp = self.fetch();
+                var value = self.readDp(dp +% self.x);
+                const old_c: u8 = self.psw & PSW.C;
+                self.psw = (self.psw & ~PSW.C) | ((value >> 7) & PSW.C);
+                value = (value << 1) | old_c;
+                self.writeDp(dp +% self.x, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x2C => blk: { // ROL !abs
+                const addr = self.fetch16();
+                var value = self.read(addr);
+                const old_c: u8 = self.psw & PSW.C;
+                self.psw = (self.psw & ~PSW.C) | ((value >> 7) & PSW.C);
+                value = (value << 1) | old_c;
+                self.write(addr, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x7C => blk: { // ROR A
+                const old_c: u8 = (self.psw & PSW.C) << 7;
+                self.psw = (self.psw & ~PSW.C) | (self.a & PSW.C);
+                self.a = (self.a >> 1) | old_c;
+                self.setNZ(self.a);
+                break :blk 2;
+            },
+            0x6B => blk: { // ROR dp
+                const dp = self.fetch();
+                var value = self.readDp(dp);
+                const old_c: u8 = (self.psw & PSW.C) << 7;
+                self.psw = (self.psw & ~PSW.C) | (value & PSW.C);
+                value = (value >> 1) | old_c;
+                self.writeDp(dp, value);
+                self.setNZ(value);
+                break :blk 4;
+            },
+            0x7B => blk: { // ROR dp+X
+                const dp = self.fetch();
+                var value = self.readDp(dp +% self.x);
+                const old_c: u8 = (self.psw & PSW.C) << 7;
+                self.psw = (self.psw & ~PSW.C) | (value & PSW.C);
+                value = (value >> 1) | old_c;
+                self.writeDp(dp +% self.x, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x6C => blk: { // ROR !abs
+                const addr = self.fetch16();
+                var value = self.read(addr);
+                const old_c: u8 = (self.psw & PSW.C) << 7;
+                self.psw = (self.psw & ~PSW.C) | (value & PSW.C);
+                value = (value >> 1) | old_c;
+                self.write(addr, value);
+                self.setNZ(value);
+                break :blk 5;
+            },
+            0x9F => blk: { // XCN A - exchange nibbles
+                self.a = (self.a << 4) | (self.a >> 4);
+                self.setNZ(self.a);
+                break :blk 5;
+            },
+
+            // =================================================================
+            // Branch instructions
+            // =================================================================
+            0x2F => blk: { // BRA rel
+                const offset: i8 = @bitCast(self.fetch());
+                self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                break :blk 4;
+            },
+            0xF0 => blk: { // BEQ rel
+                const offset: i8 = @bitCast(self.fetch());
+                if (self.flagZ()) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 4;
+                }
+                break :blk 2;
+            },
+            0xD0 => blk: { // BNE rel
+                const offset: i8 = @bitCast(self.fetch());
+                if (!self.flagZ()) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 4;
+                }
+                break :blk 2;
+            },
+            0xB0 => blk: { // BCS rel
+                const offset: i8 = @bitCast(self.fetch());
+                if (self.flagC()) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 4;
+                }
+                break :blk 2;
+            },
+            0x90 => blk: { // BCC rel
+                const offset: i8 = @bitCast(self.fetch());
+                if (!self.flagC()) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 4;
+                }
+                break :blk 2;
+            },
+            0x70 => blk: { // BVS rel
+                const offset: i8 = @bitCast(self.fetch());
+                if (self.flagV()) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 4;
+                }
+                break :blk 2;
+            },
+            0x50 => blk: { // BVC rel
+                const offset: i8 = @bitCast(self.fetch());
+                if (!self.flagV()) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 4;
+                }
+                break :blk 2;
+            },
+            0x30 => blk: { // BMI rel
+                const offset: i8 = @bitCast(self.fetch());
+                if (self.flagN()) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 4;
+                }
+                break :blk 2;
+            },
+            0x10 => blk: { // BPL rel
+                const offset: i8 = @bitCast(self.fetch());
+                if (!self.flagN()) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 4;
+                }
+                break :blk 2;
+            },
+
+            // =================================================================
+            // CBNE - Compare and branch if not equal
+            // =================================================================
+            0x2E => blk: { // CBNE dp,rel
+                const dp = self.fetch();
+                const offset: i8 = @bitCast(self.fetch());
+                if (self.a != self.readDp(dp)) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 7;
+                }
+                break :blk 5;
+            },
+            0xDE => blk: { // CBNE dp+X,rel
+                const dp = self.fetch();
+                const offset: i8 = @bitCast(self.fetch());
+                if (self.a != self.readDp(dp +% self.x)) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 8;
+                }
+                break :blk 6;
+            },
+
+            // =================================================================
+            // DBNZ - Decrement and branch if not zero
+            // =================================================================
+            0x6E => blk: { // DBNZ dp,rel
+                const dp = self.fetch();
+                const offset: i8 = @bitCast(self.fetch());
+                const value = self.readDp(dp) -% 1;
+                self.writeDp(dp, value);
+                if (value != 0) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 7;
+                }
+                break :blk 5;
+            },
+            0xFE => blk: { // DBNZ Y,rel
+                const offset: i8 = @bitCast(self.fetch());
+                self.y -%= 1;
+                if (self.y != 0) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 6;
+                }
+                break :blk 4;
+            },
+
+            // =================================================================
+            // JMP - Jump
+            // =================================================================
+            0x5F => blk: { // JMP !abs
+                self.pc = self.fetch16();
+                break :blk 3;
+            },
+            0x1F => blk: { // JMP [!abs+X]
+                const addr = self.fetch16() +% self.x;
+                const low = self.read(addr);
+                const high = self.read(addr +% 1);
+                self.pc = (@as(u16, high) << 8) | low;
+                break :blk 6;
+            },
+
+            // =================================================================
+            // CALL/RET - Subroutine
+            // =================================================================
+            0x3F => blk: { // CALL !abs
+                const addr = self.fetch16();
+                self.push16(self.pc);
+                self.pc = addr;
+                break :blk 8;
+            },
+            0x4F => blk: { // PCALL up
+                const offset = self.fetch();
+                self.push16(self.pc);
+                self.pc = 0xFF00 | @as(u16, offset);
+                break :blk 6;
+            },
+            0x6F => blk: { // RET
+                self.pc = self.pop16();
+                break :blk 5;
+            },
+            0x7F => blk: { // RETI
+                self.psw = self.pop();
+                self.pc = self.pop16();
+                break :blk 6;
+            },
+            0x0F => blk: { // BRK
+                self.push16(self.pc);
+                self.push(self.psw);
+                self.psw |= PSW.B | PSW.I;
+                const low = self.read(0xFFDE);
+                const high = self.read(0xFFDF);
+                self.pc = (@as(u16, high) << 8) | low;
+                break :blk 8;
+            },
+
+            // =================================================================
+            // TCALL - Table call (0x01, 0x11, 0x21, ..., 0xF1)
+            // =================================================================
+            0x01, 0x11, 0x21, 0x31, 0x41, 0x51, 0x61, 0x71, 0x81, 0x91, 0xA1, 0xB1, 0xC1, 0xD1, 0xE1, 0xF1 => blk: {
+                const n = (opcode >> 4);
+                const vector_addr: u16 = 0xFFDE - (@as(u16, n) * 2);
+                self.push16(self.pc);
+                const low = self.read(vector_addr);
+                const high = self.read(vector_addr + 1);
+                self.pc = (@as(u16, high) << 8) | low;
+                break :blk 8;
+            },
+
+            // =================================================================
+            // PUSH/POP
+            // =================================================================
+            0x2D => blk: { // PUSH A
+                self.push(self.a);
+                break :blk 4;
+            },
+            0x4D => blk: { // PUSH X
+                self.push(self.x);
+                break :blk 4;
+            },
+            0x6D => blk: { // PUSH Y
+                self.push(self.y);
+                break :blk 4;
+            },
+            0x0D => blk: { // PUSH PSW
+                self.push(self.psw);
+                break :blk 4;
+            },
+            0xAE => blk: { // POP A
+                self.a = self.pop();
+                break :blk 4;
+            },
+            0xCE => blk: { // POP X
+                self.x = self.pop();
+                break :blk 4;
+            },
+            0xEE => blk: { // POP Y
+                self.y = self.pop();
+                break :blk 4;
+            },
+            0x8E => blk: { // POP PSW
+                self.psw = self.pop();
+                break :blk 4;
+            },
+
+            // =================================================================
+            // Flag manipulation
+            // =================================================================
+            0x60 => blk: { // CLRC
+                self.psw &= ~PSW.C;
+                break :blk 2;
+            },
+            0x80 => blk: { // SETC
+                self.psw |= PSW.C;
+                break :blk 2;
+            },
+            0xED => blk: { // NOTC
+                self.psw ^= PSW.C;
+                break :blk 3;
+            },
+            0xE0 => blk: { // CLRV
+                self.psw &= ~(PSW.V | PSW.H);
+                break :blk 2;
+            },
+            0x20 => blk: { // CLRP
+                self.psw &= ~PSW.P;
+                break :blk 2;
+            },
+            0x40 => blk: { // SETP
+                self.psw |= PSW.P;
+                break :blk 2;
+            },
+            0xA0 => blk: { // EI
+                self.psw |= PSW.I;
+                break :blk 3;
+            },
+            0xC0 => blk: { // DI
+                self.psw &= ~PSW.I;
+                break :blk 3;
+            },
+
+            // =================================================================
+            // SET1/CLR1 - Bit set/clear
+            // =================================================================
+            0x02, 0x22, 0x42, 0x62, 0x82, 0xA2, 0xC2, 0xE2 => blk: { // SET1 dp.n
+                const dp = self.fetch();
+                const bit: u3 = @truncate(opcode >> 5);
+                var value = self.readDp(dp);
+                value |= (@as(u8, 1) << bit);
+                self.writeDp(dp, value);
+                break :blk 4;
+            },
+            0x12, 0x32, 0x52, 0x72, 0x92, 0xB2, 0xD2, 0xF2 => blk: { // CLR1 dp.n
+                const dp = self.fetch();
+                const bit: u3 = @truncate(opcode >> 5);
+                var value = self.readDp(dp);
+                value &= ~(@as(u8, 1) << bit);
+                self.writeDp(dp, value);
+                break :blk 4;
+            },
+
+            // =================================================================
+            // BBS/BBC - Branch on bit set/clear
+            // =================================================================
+            0x03, 0x23, 0x43, 0x63, 0x83, 0xA3, 0xC3, 0xE3 => blk: { // BBS dp.n,rel
+                const dp = self.fetch();
+                const offset: i8 = @bitCast(self.fetch());
+                const bit: u3 = @truncate(opcode >> 5);
+                const value = self.readDp(dp);
+                if ((value & (@as(u8, 1) << bit)) != 0) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 7;
+                }
+                break :blk 5;
+            },
+            0x13, 0x33, 0x53, 0x73, 0x93, 0xB3, 0xD3, 0xF3 => blk: { // BBC dp.n,rel
+                const dp = self.fetch();
+                const offset: i8 = @bitCast(self.fetch());
+                const bit: u3 = @truncate(opcode >> 5);
+                const value = self.readDp(dp);
+                if ((value & (@as(u8, 1) << bit)) == 0) {
+                    self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
+                    break :blk 7;
+                }
+                break :blk 5;
+            },
+
+            // =================================================================
+            // TSET1/TCLR1 - Test and set/clear
+            // =================================================================
+            0x0E => blk: { // TSET1 !abs
+                const addr = self.fetch16();
+                const value = self.read(addr);
+                self.setNZ(self.a & value); // N/Z set from A AND memory
+                self.write(addr, value | self.a); // memory = memory OR A
+                break :blk 6;
+            },
+            0x4E => blk: { // TCLR1 !abs
+                const addr = self.fetch16();
+                const value = self.read(addr);
+                self.setNZ(self.a & value); // N/Z set from A AND memory
+                self.write(addr, value & ~self.a); // memory = memory AND (NOT A)
+                break :blk 6;
+            },
+
+            // =================================================================
+            // MUL/DIV
+            // =================================================================
+            0xCF => blk: { // MUL YA
+                const result: u16 = @as(u16, self.y) * @as(u16, self.a);
+                self.setYA(result);
+                self.setNZ(self.y); // N/Z based on high byte
+                break :blk 9;
+            },
+            0x9E => blk: { // DIV YA,X
+                const ya = self.getYA();
+                self.psw &= ~(PSW.V | PSW.H);
+                if (self.x == 0) {
+                    // Division by zero - results vary by implementation
+                    self.a = 0xFF;
+                    self.y = 0xFF;
+                    self.psw |= PSW.V;
+                } else {
+                    self.a = @truncate(ya / @as(u16, self.x));
+                    self.y = @truncate(ya % @as(u16, self.x));
+                    if (ya / @as(u16, self.x) > 0xFF) self.psw |= PSW.V;
+                }
+                self.setNZ(self.a);
+                break :blk 12;
+            },
+
+            // =================================================================
+            // DAA/DAS - BCD adjust
+            // =================================================================
+            0xDF => blk: { // DAA
+                if (self.flagC() or self.a > 0x99) {
+                    self.a +%= 0x60;
+                    self.psw |= PSW.C;
+                }
+                if (self.flagH() or (self.a & 0x0F) > 0x09) {
+                    self.a +%= 0x06;
+                }
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+            0xBE => blk: { // DAS
+                if (!self.flagC() or self.a > 0x99) {
+                    self.a -%= 0x60;
+                    self.psw &= ~PSW.C;
+                }
+                if (!self.flagH() or (self.a & 0x0F) > 0x09) {
+                    self.a -%= 0x06;
+                }
+                self.setNZ(self.a);
+                break :blk 3;
+            },
+
+            // =================================================================
+            // Misc
+            // =================================================================
+            0xEF => blk: { // SLEEP
+                // Halt CPU until interrupt (we just do nothing)
+                break :blk 3;
+            },
+            0xFF => blk: { // STOP
+                // Halt CPU until reset (we just do nothing)
+                break :blk 3;
+            },
+
+            // =================================================================
+            // Bit manipulation with C flag
+            // =================================================================
+            0x0A => blk: { // OR1 C,mem.bit
+                const addr_bits = self.fetch16();
+                const addr = addr_bits & 0x1FFF;
+                const bit: u3 = @truncate(addr_bits >> 13);
+                const value = self.read(addr);
+                if ((value & (@as(u8, 1) << bit)) != 0) {
+                    self.psw |= PSW.C;
+                }
+                break :blk 5;
+            },
+            0x2A => blk: { // OR1 C,/mem.bit
+                const addr_bits = self.fetch16();
+                const addr = addr_bits & 0x1FFF;
+                const bit: u3 = @truncate(addr_bits >> 13);
+                const value = self.read(addr);
+                if ((value & (@as(u8, 1) << bit)) == 0) {
+                    self.psw |= PSW.C;
+                }
+                break :blk 5;
+            },
+            0x4A => blk: { // AND1 C,mem.bit
+                const addr_bits = self.fetch16();
+                const addr = addr_bits & 0x1FFF;
+                const bit: u3 = @truncate(addr_bits >> 13);
+                const value = self.read(addr);
+                if ((value & (@as(u8, 1) << bit)) == 0) {
+                    self.psw &= ~PSW.C;
+                }
+                break :blk 4;
+            },
+            0x6A => blk: { // AND1 C,/mem.bit
+                const addr_bits = self.fetch16();
+                const addr = addr_bits & 0x1FFF;
+                const bit: u3 = @truncate(addr_bits >> 13);
+                const value = self.read(addr);
+                if ((value & (@as(u8, 1) << bit)) != 0) {
+                    self.psw &= ~PSW.C;
+                }
+                break :blk 4;
+            },
+            0x8A => blk: { // EOR1 C,mem.bit
+                const addr_bits = self.fetch16();
+                const addr = addr_bits & 0x1FFF;
+                const bit: u3 = @truncate(addr_bits >> 13);
+                const value = self.read(addr);
+                if ((value & (@as(u8, 1) << bit)) != 0) {
+                    self.psw ^= PSW.C;
+                }
+                break :blk 5;
+            },
+            0xEA => blk: { // NOT1 mem.bit
+                const addr_bits = self.fetch16();
+                const addr = addr_bits & 0x1FFF;
+                const bit: u3 = @truncate(addr_bits >> 13);
+                var value = self.read(addr);
+                value ^= (@as(u8, 1) << bit);
+                self.write(addr, value);
+                break :blk 5;
+            },
+            0xAA => blk: { // MOV1 C,mem.bit
+                const addr_bits = self.fetch16();
+                const addr = addr_bits & 0x1FFF;
+                const bit: u3 = @truncate(addr_bits >> 13);
+                const value = self.read(addr);
+                if ((value & (@as(u8, 1) << bit)) != 0) {
+                    self.psw |= PSW.C;
+                } else {
+                    self.psw &= ~PSW.C;
+                }
+                break :blk 4;
+            },
+            0xCA => blk: { // MOV1 mem.bit,C
+                const addr_bits = self.fetch16();
+                const addr = addr_bits & 0x1FFF;
+                const bit: u3 = @truncate(addr_bits >> 13);
+                var value = self.read(addr);
+                if (self.flagC()) {
+                    value |= (@as(u8, 1) << bit);
+                } else {
+                    value &= ~(@as(u8, 1) << bit);
+                }
+                self.write(addr, value);
+                break :blk 6;
+            },
+        };
+
+        self.cycles += cycles;
+        self.updateTimers(cycles);
+        return cycles;
+    }
+
+    // =========================================================================
+    // ARITHMETIC HELPERS
+    // =========================================================================
+
+    /// Compare two values (sets N, Z, C flags)
+    fn compare(self: *Spc700, a: u8, b: u8) void {
+        const result = a -% b;
+        self.setNZ(result);
+        // C is set if a >= b (no borrow)
+        if (a >= b) {
+            self.psw |= PSW.C;
+        } else {
+            self.psw &= ~PSW.C;
+        }
+    }
+
+    /// Add with carry, returns result and sets flags
+    fn adc(self: *Spc700, a: u8, b: u8) u8 {
+        const carry: u8 = if (self.flagC()) 1 else 0;
+        const result16 = @as(u16, a) + @as(u16, b) + @as(u16, carry);
+        const result: u8 = @truncate(result16);
+
+        self.psw &= ~(PSW.N | PSW.Z | PSW.C | PSW.V | PSW.H);
+        self.setNZ(result);
+        if (result16 > 0xFF) self.psw |= PSW.C;
+
+        // Overflow: sign of result differs from signs of both operands
+        const overflow = ((a ^ result) & (b ^ result) & 0x80) != 0;
+        if (overflow) self.psw |= PSW.V;
+
+        // Half-carry: carry from bit 3 to bit 4
+        if ((a & 0x0F) + (b & 0x0F) + carry > 0x0F) self.psw |= PSW.H;
+
+        return result;
+    }
+
+    /// Subtract with borrow, returns result and sets flags
+    fn sbc(self: *Spc700, a: u8, b: u8) u8 {
+        const borrow: u8 = if (self.flagC()) 0 else 1;
+        const result16 = @as(i16, a) - @as(i16, b) - @as(i16, borrow);
+        const result: u8 = @truncate(@as(u16, @bitCast(result16)));
+
+        self.psw &= ~(PSW.N | PSW.Z | PSW.C | PSW.V | PSW.H);
+        self.setNZ(result);
+        if (result16 >= 0) self.psw |= PSW.C; // No borrow
+
+        // Overflow: sign of result differs from sign of first operand when signs differ
+        const overflow = ((a ^ b) & (a ^ result) & 0x80) != 0;
+        if (overflow) self.psw |= PSW.V;
+
+        // Half-carry: no borrow from bit 4 to bit 3
+        if ((a & 0x0F) >= (b & 0x0F) + borrow) self.psw |= PSW.H;
+
+        return result;
     }
 
     // =========================================================================
@@ -921,9 +2558,9 @@ test "spc700 init" {
     try std.testing.expectEqual(@as(u16, 0xFFC0), spc.pc);
     try std.testing.expectEqual(@as(u8, 0), spc.psw);
 
-    // Check ready signal in ports
-    try std.testing.expectEqual(@as(u8, 0xAA), spc.port_out[0]);
-    try std.testing.expectEqual(@as(u8, 0xBB), spc.port_out[1]);
+    // Ports start at 0 - IPL ROM will write $AA/$BB after RAM clear
+    try std.testing.expectEqual(@as(u8, 0), spc.port_out[0]);
+    try std.testing.expectEqual(@as(u8, 0), spc.port_out[1]);
 
     // Check IPL ROM is enabled
     try std.testing.expect(spc.ipl_rom_enabled);

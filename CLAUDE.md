@@ -20,7 +20,17 @@ Zupernes is a SNES (Super Nintendo Entertainment System) emulator written in Zig
 - We always put it behind comptime debug so that none of that code is present in the final release
 - but it is so important to preserve it for the debug release
 - never remove debug code you made, it's always important
+- never "clean up" debug output - all debug traces should be kept, gated behind `comptime dbg.trace_*` flags
 - always check the sources below for knowledge about the code you're working on, and incorporate that knowledge into the code comments
+
+## Debugging Tips
+- Use `./test-run.sh <rom> <seconds> debug` to capture debug output
+- When analyzing debug output, capture it to a file ONCE then grep on that file repeatedly:
+  ```bash
+  ./test-run.sh "rom.sfc" 3 debug 2>&1 > /tmp/debug.log
+  grep "pattern" /tmp/debug.log  # much faster than re-running
+  ```
+- Debug flags are in `src/debug.zig` - enable specific traces as needed
 
 ## Build Commands
 
