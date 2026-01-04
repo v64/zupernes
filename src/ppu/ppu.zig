@@ -350,10 +350,22 @@ pub const Ppu = struct {
             quadrant_y = (tile_y / 32) & 1;
         }
 
-        // Base tilemap address (word address shifted left 10)
-        var tilemap_addr: u16 = (@as(u16, sc_reg & 0xFC) << 8);
+        // =============================================================================
+        // TILEMAP BASE ADDRESS CALCULATION
+        // =============================================================================
+        // BGxSC register format: AAAAAASS where:
+        //   - AAAAAA (bits 7:2) = tilemap base in 0x400 WORD units (2KB)
+        //   - SS (bits 1:0) = tilemap size (0=32x32, 1=64x32, 2=32x64, 3=64x64)
+        //
+        // The PPU uses word addresses internally, but our vram[] array is byte-indexed.
+        // Conversion: byte_addr = word_addr * 2
+        //
+        // Formula: base_addr = ((sc_reg & 0xFC) >> 2) * 0x400 words * 2 bytes
+        //        = (sc_reg & 0xFC) * 0x100 * 2 = (sc_reg & 0xFC) << 9
+        // =============================================================================
+        var tilemap_addr: u32 = @as(u32, sc_reg & 0xFC) << 9;
 
-        // Add quadrant offset (each quadrant is 2KB = 0x800)
+        // Add quadrant offset (each 32x32 quadrant is 32*32*2 = 2KB = 0x800 bytes)
         if (map_width_32 and quadrant_x != 0) {
             tilemap_addr +%= 0x800;
         }
@@ -366,9 +378,9 @@ pub const Ppu = struct {
         const local_tile_y = tile_y & 31;
 
         // Read tilemap entry (2 bytes per tile)
-        const tilemap_offset = tilemap_addr + (local_tile_y * 32 + local_tile_x) * 2;
-        const tile_lo = self.vram[tilemap_offset & 0xFFFF];
-        const tile_hi = self.vram[(tilemap_offset + 1) & 0xFFFF];
+        const tilemap_offset: u32 = tilemap_addr + @as(u32, local_tile_y * 32 + local_tile_x) * 2;
+        const tile_lo = self.vram[@as(usize, tilemap_offset) & 0xFFFF];
+        const tile_hi = self.vram[@as(usize, tilemap_offset + 1) & 0xFFFF];
         const tilemap_entry: u16 = @as(u16, tile_hi) << 8 | tile_lo;
 
         // Parse tilemap entry
@@ -395,17 +407,25 @@ pub const Ppu = struct {
             py = py % 8;
         }
 
-        // Get character data address
-        const chr_base: u16 = switch (bg) {
-            1 => (@as(u16, self.bg12nba & 0x0F) << 12),
-            2 => (@as(u16, self.bg12nba >> 4) << 12),
-            3 => (@as(u16, self.bg34nba & 0x0F) << 12),
-            4 => (@as(u16, self.bg34nba >> 4) << 12),
+        // =============================================================================
+        // CHARACTER (TILE GRAPHICS) BASE ADDRESS CALCULATION
+        // =============================================================================
+        // BG12NBA/BG34NBA register format: BBBBAAAA where:
+        //   - AAAA (bits 3:0) = BG1/BG3 character base in 0x1000 WORD units (8KB)
+        //   - BBBB (bits 7:4) = BG2/BG4 character base in 0x1000 WORD units (8KB)
+        //
+        // Conversion to byte address: byte_addr = value * 0x1000 * 2 = value << 13
+        // =============================================================================
+        const chr_base: u32 = switch (bg) {
+            1 => @as(u32, self.bg12nba & 0x0F) << 13,
+            2 => @as(u32, self.bg12nba >> 4) << 13,
+            3 => @as(u32, self.bg34nba & 0x0F) << 13,
+            4 => @as(u32, self.bg34nba >> 4) << 13,
             else => 0,
         };
 
         // Calculate bytes per tile row based on bpp
-        const bytes_per_row: u16 = switch (bpp) {
+        const bytes_per_row: u32 = switch (bpp) {
             2 => 2,
             4 => 4,
             8 => 8,
@@ -414,7 +434,7 @@ pub const Ppu = struct {
 
         // Calculate tile data address
         // Each 8x8 tile uses (8 * bytes_per_row) bytes
-        const tile_data_addr = chr_base + actual_tile * 8 * bytes_per_row;
+        const tile_data_addr: u32 = chr_base + @as(u32, actual_tile) * 8 * bytes_per_row;
 
         // Read pixel data from tile
         const pixel_color = self.getTilePixel(tile_data_addr, @intCast(px), @intCast(py), bpp);
@@ -440,7 +460,8 @@ pub const Ppu = struct {
     }
 
     /// Get a pixel value from tile data
-    fn getTilePixel(self: *Ppu, base_addr: u16, px: u8, py: u8, bpp: u8) u8 {
+    /// base_addr is a BYTE address into VRAM
+    fn getTilePixel(self: *Ppu, base_addr: u32, px: u8, py: u8, bpp: u8) u8 {
         var pixel: u8 = 0;
 
         // SNES uses planar format - bitplanes are interleaved
@@ -451,33 +472,33 @@ pub const Ppu = struct {
         const bit: u3 = @intCast(7 - px);
 
         // Bitplanes 0-1
-        const row_addr0 = base_addr + @as(u16, py) * 2;
-        const bp0 = self.vram[row_addr0 & 0xFFFF];
-        const bp1 = self.vram[(row_addr0 + 1) & 0xFFFF];
+        const row_addr0 = base_addr + @as(u32, py) * 2;
+        const bp0 = self.vram[@as(usize, row_addr0) & 0xFFFF];
+        const bp1 = self.vram[@as(usize, row_addr0 + 1) & 0xFFFF];
         pixel |= ((bp0 >> bit) & 1);
         pixel |= ((bp1 >> bit) & 1) << 1;
 
         if (bpp >= 4) {
             // Bitplanes 2-3
-            const row_addr2 = base_addr + 16 + @as(u16, py) * 2;
-            const bp2 = self.vram[row_addr2 & 0xFFFF];
-            const bp3 = self.vram[(row_addr2 + 1) & 0xFFFF];
+            const row_addr2 = base_addr + 16 + @as(u32, py) * 2;
+            const bp2 = self.vram[@as(usize, row_addr2) & 0xFFFF];
+            const bp3 = self.vram[@as(usize, row_addr2 + 1) & 0xFFFF];
             pixel |= ((bp2 >> bit) & 1) << 2;
             pixel |= ((bp3 >> bit) & 1) << 3;
         }
 
         if (bpp >= 8) {
             // Bitplanes 4-5
-            const row_addr4 = base_addr + 32 + @as(u16, py) * 2;
-            const bp4 = self.vram[row_addr4 & 0xFFFF];
-            const bp5 = self.vram[(row_addr4 + 1) & 0xFFFF];
+            const row_addr4 = base_addr + 32 + @as(u32, py) * 2;
+            const bp4 = self.vram[@as(usize, row_addr4) & 0xFFFF];
+            const bp5 = self.vram[@as(usize, row_addr4 + 1) & 0xFFFF];
             pixel |= ((bp4 >> bit) & 1) << 4;
             pixel |= ((bp5 >> bit) & 1) << 5;
 
             // Bitplanes 6-7
-            const row_addr6 = base_addr + 48 + @as(u16, py) * 2;
-            const bp6 = self.vram[row_addr6 & 0xFFFF];
-            const bp7 = self.vram[(row_addr6 + 1) & 0xFFFF];
+            const row_addr6 = base_addr + 48 + @as(u32, py) * 2;
+            const bp6 = self.vram[@as(usize, row_addr6) & 0xFFFF];
+            const bp7 = self.vram[@as(usize, row_addr6 + 1) & 0xFFFF];
             pixel |= ((bp6 >> bit) & 1) << 6;
             pixel |= ((bp7 >> bit) & 1) << 7;
         }
@@ -526,9 +547,20 @@ pub const Ppu = struct {
 
         const sizes = self.getSpriteSizes();
 
-        // OBJ character base address
-        const obj_base: u16 = (@as(u16, self.obsel & 0x07) << 13);
-        const obj_name_base: u16 = (@as(u16, (self.obsel >> 3) & 0x03) << 12) +% obj_base;
+        // =============================================================================
+        // SPRITE CHARACTER BASE ADDRESS CALCULATION
+        // =============================================================================
+        // OBSEL ($2101) register format:
+        //   - Bits 0-2: OBJ name base address in 0x4000 WORD units (16KB)
+        //   - Bits 3-4: OBJ name select (offset for second character table)
+        //   - Bits 5-7: OBJ size select
+        //
+        // Word-to-byte conversion: byte_addr = word_addr * 2
+        //   obj_base = (obsel & 0x07) * 0x4000 words * 2 = (obsel & 0x07) << 14
+        //   obj_name_offset = ((obsel >> 3) & 0x03) * 0x1000 words * 2 = ((obsel >> 3) & 0x03) << 13
+        // =============================================================================
+        const obj_base: u32 = @as(u32, self.obsel & 0x07) << 14;
+        const obj_name_base: u32 = (@as(u32, (self.obsel >> 3) & 0x03) << 13) +% obj_base;
 
         // Process sprites in reverse order (sprite 0 has highest priority)
         var sprite_count: u8 = 0;
@@ -578,9 +610,11 @@ pub const Ppu = struct {
             if (v_flip) py = height - 1 - py;
 
             // Get base tile number
+            // If name_select is set, add the name table offset to the tile number
+            // The offset in bytes divided by 32 (bytes per 4bpp tile) = tile offset
             var base_tile: u16 = tile;
             if (name_select) {
-                base_tile +%= (obj_name_base - obj_base) >> 4;
+                base_tile +%= @truncate((obj_name_base - obj_base) >> 5);
             }
 
             // Calculate which 8x8 tile row we're in
@@ -612,7 +646,8 @@ pub const Ppu = struct {
                 const tile_py: u8 = @intCast(@mod(py, 8));
 
                 // Read tile data (sprites are always 4bpp)
-                const tile_addr = obj_base +% (tile_num * 32);
+                // Each 4bpp 8x8 tile is 32 bytes
+                const tile_addr: u32 = obj_base +% (@as(u32, tile_num) * 32);
                 const pixel_color = self.getTilePixel(tile_addr, tile_px, tile_py, 4);
 
                 if (pixel_color == 0) continue; // Transparent

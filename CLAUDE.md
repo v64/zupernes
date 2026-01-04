@@ -11,6 +11,11 @@ ZuperNES is a SNES (Super Nintendo Entertainment System) emulator written in Zig
 - Graphics: sokol-zig (cross-platform with Metal backend)
 - Platform: macOS Apple Silicon (Metal)
 
+## Commit Messages
+- Never mention "Claude" or "Generated with" in commit messages
+- Never add "Co-Authored-By" lines to commits
+- Just write normal, descriptive commit messages
+
 ## Work Ethic
 - Document and comment on code liberally, context is important
 - Consider this project also as a learning doc
