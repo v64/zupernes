@@ -933,20 +933,28 @@ pub const Ppu = struct {
         // $2101 - OBSEL - OBJ Size and Character Data Address (W)
         // Register format: SSSNNBBB where:
         //   - BBB (bits 0-2): OBJ name base address
-        //   - NN (bits 3-4): OBJ name select (gap between character tables)
+        //   - NN (bits 3-4): OBJ name select (gap between first/second character tables)
         //   - SSS (bits 5-7): OBJ size select
         //
-        // Address calculation (from fullsnes "upper 3bit of 16bit address"):
-        //   - BBB forms bits 15-13 of the 16-bit WORD address
-        //   - Word address = BBB << 13, Byte address = BBB << 14
-        //   - Name select: NN << 12 words = NN << 13 bytes added for tiles 0x100-0x1FF
+        // Address calculation (from fullsnes):
+        //   - First Table:  NameBase * 8K words = BBB << 14 bytes
+        //   - Second Table: NameBase * 8K + (NameSelect + 1) * 4K words
+        //                 = BBB << 14 + (NN + 1) << 13 bytes
         //
-        // Example: If OBSEL = 0x22 (bits: 001 00 010):
+        // The "+1" is critical! Even with NN=0, the second table is offset by 4K words
+        // (8KB / 256 tiles) from the first table. This allows sprites to select between
+        // two 256-tile banks using the name_select bit in OAM attributes.
+        //
+        // Example: If OBSEL = 0x62 (bits: 011 00 010):
+        //   - BBB = 2, NN = 0, SSS = 3 (16x16/32x32)
         //   - obj_base = 2 << 14 = 0x8000 bytes
-        //   - obj_name_select = 0 << 13 = 0 (no gap)
+        //   - obj_name_gap = (0 + 1) << 13 = 0x2000 bytes = 256 tiles
+        //   - First table: tiles 0-255 at 0x8000
+        //   - Second table: tiles 0-255 at 0xA000 (selected via name_select bit)
         // =============================================================================
         const obj_base: u32 = @as(u32, self.obsel & 0x07) << 14;
-        const obj_name_base: u32 = (@as(u32, (self.obsel >> 3) & 0x03) << 13) +% obj_base;
+        // Gap between first and second character tables: (NN + 1) * 4K words = (NN + 1) * 8KB
+        const obj_name_gap: u32 = (@as(u32, ((self.obsel >> 3) & 0x03)) + 1) << 13;
 
         // Process sprites in reverse order (sprite 0 has highest priority)
         var sprite_count: u8 = 0;
@@ -997,13 +1005,12 @@ pub const Ppu = struct {
 
             // Get base tile number
             // If name_select is set (OAM attribute bit 0), use the second character table.
-            // The gap between tables is determined by OBSEL bits 3-4 (name select).
+            // The gap between tables is determined by OBSEL bits 3-4 (NN) as (NN+1)*4K words.
             // Each tile is 32 bytes (4bpp 8x8), so byte offset / 32 = tile offset.
             var base_tile: u16 = tile;
             if (name_select) {
-                // obj_name_base - obj_base gives the byte offset between tables
-                // Divide by 32 to get tile number offset
-                base_tile +%= @truncate((obj_name_base - obj_base) >> 5);
+                // Add the gap in tiles: obj_name_gap bytes / 32 bytes per tile
+                base_tile +%= @truncate(obj_name_gap >> 5);
             }
 
             // Calculate which 8x8 tile row we're in
