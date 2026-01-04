@@ -2546,9 +2546,13 @@ pub const Cpu = struct {
             0x4C => { // JMP addr
                 self.pc = self.fetchWord();
             },
-            0x5C => { // JMP long
-                self.pc = self.fetchWord();
-                self.pbr = self.fetchByte();
+            0x5C => { // JMP long (JML)
+                // IMPORTANT: Fetch all operand bytes BEFORE updating PC/PBR!
+                // Otherwise fetchByte for bank would read from wrong address.
+                const addr = self.fetchWord();
+                const bank = self.fetchByte();
+                self.pc = addr;
+                self.pbr = bank;
             },
             0x6C => { // JMP (addr)
                 const ptr = self.fetchWord();
