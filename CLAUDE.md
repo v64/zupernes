@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Zupernes is a SNES (Super Nintendo Entertainment System) emulator written in Zig, targeting macOS on Apple Silicon with Metal graphics.
+ZuperNES is a SNES (Super Nintendo Entertainment System) emulator written in Zig, targeting macOS on Apple Silicon with Metal graphics.
 
 **Tech Stack:**
 - Language: Zig 0.15.2

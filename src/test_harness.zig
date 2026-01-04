@@ -33,7 +33,7 @@ pub fn main() !void {
     const rom_dir = args.next() orelse "test/snes-test-roms";
     const golden_dir = args.next() orelse "test/golden";
 
-    std.debug.print("Zupernes Test Harness\n", .{});
+    std.debug.print("ZuperNES Test Harness\n", .{});
     std.debug.print("=====================\n\n", .{});
     std.debug.print("ROM directory: {s}\n", .{rom_dir});
     std.debug.print("Golden directory: {s}\n\n", .{golden_dir});

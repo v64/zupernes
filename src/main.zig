@@ -240,7 +240,7 @@ pub fn main() !void {
         pending_rom_data = rom_data;
         std.debug.print("Loaded ROM: {s} ({d} bytes)\n", .{ rom_path, rom_data.len });
     } else {
-        std.debug.print("Zupernes - SNES Emulator\n", .{});
+        std.debug.print("ZuperNES\n", .{});
         std.debug.print("Usage: zupernes <rom.sfc>\n", .{});
         std.debug.print("Starting without ROM...\n", .{});
     }
@@ -251,7 +251,7 @@ pub fn main() !void {
         .cleanup_cb = cleanup,
         .width = WINDOW_WIDTH,
         .height = WINDOW_HEIGHT,
-        .window_title = "Zupernes - SNES Emulator",
+        .window_title = "ZuperNES",
         .icon = .{ .sokol_default = true },
         .logger = .{ .func = slog.func },
     });

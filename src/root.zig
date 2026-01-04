@@ -1,4 +1,4 @@
-// Zupernes - SNES Emulator
+// ZuperNES - SNES Emulator
 // Core emulator library
 
 pub const Cpu = @import("cpu/cpu.zig").Cpu;
