@@ -211,6 +211,15 @@ pub const Bus = struct {
             } else {
                 return self.readRom(effective_bank, addr);
             }
+        } else if (effective_bank >= 0x7E and effective_bank <= 0x7F) {
+            // Banks $7E-$7F: Direct WRAM access (128KB total)
+            // $7E:0000-$FFFF = first 64KB of WRAM
+            // $7F:0000-$FFFF = second 64KB of WRAM
+            const wram_addr = (@as(u24, effective_bank - 0x7E) << 16) | addr;
+            if (wram_addr < self.wram.len) {
+                return self.wram[wram_addr];
+            }
+            return 0;
         } else {
             // ROM area
             return self.readRom(effective_bank, addr);

@@ -159,19 +159,17 @@ pub const Cpu = struct {
 
         // CPU trace controlled by debug.zig configuration
         if (comptime dbg.trace_cpu) {
-            if (dbg.shouldTracePC(trace_pc, self.instruction_count)) {
-                std.debug.print("[{d:0>6}] ${x:0>2}:{x:0>4} op=${x:0>2} A=${x:0>4} X=${x:0>4} Y=${x:0>4} S=${x:0>4} P=${x:0>2}\n", .{
-                    self.instruction_count,
-                    self.pbr,
-                    trace_pc,
-                    opcode,
-                    self.a,
-                    self.x,
-                    self.y,
-                    self.sp,
-                    self.p.toByte(),
-                });
-            }
+            std.debug.print("[{d:0>6}] ${x:0>2}:{x:0>4} op=${x:0>2} A=${x:0>4} X=${x:0>4} Y=${x:0>4} S=${x:0>4} P=${x:0>2}\n", .{
+                self.instruction_count,
+                self.pbr,
+                trace_pc,
+                opcode,
+                self.a,
+                self.x,
+                self.y,
+                self.sp,
+                self.p.toByte(),
+            });
         }
 
         self.instruction_count += 1;

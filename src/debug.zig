@@ -23,38 +23,8 @@ pub const enabled = build_options.debug_mode;
 // =============================================================================
 
 /// Trace CPU instructions (opcode, registers, flags)
+/// When enabled, traces ALL instructions - use with caution, very verbose!
 pub const trace_cpu = enabled and true;
-
-/// How many instructions to trace from boot (0 = unlimited when trace_cpu is on)
-pub const trace_cpu_limit: u64 = 50;
-
-/// Trace specific PC ranges (useful for debugging stuck loops)
-/// Add ranges here when investigating issues
-pub const trace_pc_ranges = [_][2]u16{
-    .{ 0x8095, 0x80A0 }, // APU transfer loop - currently stuck here
-    // .{ 0x8082, 0x8090 }, // APU boot check
-};
-
-/// Check if PC should be traced based on ranges
-pub fn shouldTracePC(pc: u16, instruction_count: u64) bool {
-    if (!trace_cpu) return false;
-
-    // Always trace first N instructions
-    if (trace_cpu_limit > 0 and instruction_count < trace_cpu_limit) {
-        return true;
-    }
-
-    // Check PC ranges (with instruction limit to avoid infinite output)
-    if (instruction_count < 10000) {
-        for (trace_pc_ranges) |range| {
-            if (pc >= range[0] and pc <= range[1]) {
-                return true;
-            }
-        }
-    }
-
-    return false;
-}
 
 // =============================================================================
 // APU DEBUGGING

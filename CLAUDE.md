@@ -77,6 +77,10 @@ The test ROMs output visual results. Our test harness should:
 
 ## Repository Structure
 
+- `docs/` - Reference documentation:
+  - `SMWDisC.txt` - Super Mario World disassembly with comments (use for debugging SMW)
+  - `spc700-hardware.md` - SPC700 registers, memory map, timers, boot protocol
+  - `spc700-instruction-set.md` - Complete SPC700 opcode reference
 - `test/snes-test-roms/` - Hardware accuracy test ROMs:
   - `scpu-a-dma-bug-*.sfc` - DMA timing bug tests
   - `hdma-*.sfc` - HDMA (H-blank DMA) glitch tests

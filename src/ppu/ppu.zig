@@ -832,7 +832,7 @@ pub const Ppu = struct {
 
     fn readCgram(self: *Ppu) u8 {
         const result = self.cgram[self.cgram_addr];
-        self.cgram_addr = (self.cgram_addr + 1) & 0x1FF;
+        self.cgram_addr +%= 1; // Wrapping add, mask implicit since u9
         return result;
     }
 
@@ -843,7 +843,7 @@ pub const Ppu = struct {
             self.cgram[self.cgram_addr - 1] = self.cgram_latch;
             self.cgram[self.cgram_addr] = value & 0x7F; // Only 15 bits used
         }
-        self.cgram_addr = (self.cgram_addr + 1) & 0x1FF;
+        self.cgram_addr +%= 1; // Wrapping add, mask implicit since u9
     }
 };
 

@@ -767,7 +767,12 @@ pub const Spc700 = struct {
                 }
                 self.port_out[0] = value;
             },
-            IoReg.PORT1 => self.port_out[1] = value,
+            IoReg.PORT1 => {
+                if (comptime dbg.trace_apu) {
+                    std.debug.print("[SPC] Write port1 = ${x:0>2}\n", .{value});
+                }
+                self.port_out[1] = value;
+            },
             IoReg.PORT2 => self.port_out[2] = value,
             IoReg.PORT3 => self.port_out[3] = value,
             IoReg.AUXIO4 => self.ram[0xF8] = value,
@@ -1000,10 +1005,31 @@ pub const Spc700 = struct {
                 self.setNZ(self.x);
                 break :blk 4;
             },
+            // -----------------------------------------------------------------
+            // MOV Y, !abs ($EC) - Load Y from absolute address
+            // -----------------------------------------------------------------
+            // 3 bytes: $EC, addr_lo, addr_hi
+            // 4 cycles
+            // Flags: N, Z (set based on loaded value)
+            //
+            // This instruction is commonly used in sound driver main loops to
+            // poll I/O ports for commands from the main CPU. For example:
+            //   $0549: EC F4 00   MOV Y, $00F4  ; Read port 0 into Y
+            //   $054C: F0 FB      BEQ $0549     ; If zero, no command, loop
+            //
+            // The sound driver waits in this loop until the main CPU writes
+            // a non-zero command value to port $2140 (maps to SPC700's $F4).
+            // -----------------------------------------------------------------
             0xEC => blk: { // MOV Y,!abs
                 const addr = self.fetch16();
                 self.y = self.read(addr);
                 self.setNZ(self.y);
+                if (comptime dbg.trace_apu) {
+                    // Log when polling I/O ports (useful for debugging stuck loops)
+                    if (addr >= 0x00F4 and addr <= 0x00F7) {
+                        std.debug.print("[SPC] MOV Y,!${x:0>4} = ${x:0>2} (polling port {d})\n", .{ addr, self.y, addr - 0x00F4 });
+                    }
+                }
                 break :blk 4;
             },
             0xF5 => blk: { // MOV A,!abs+X
@@ -1881,6 +1907,20 @@ pub const Spc700 = struct {
                 self.pc +%= @as(u16, @bitCast(@as(i16, offset)));
                 break :blk 4;
             },
+            // -----------------------------------------------------------------
+            // BEQ rel ($F0) - Branch if Equal (Zero flag set)
+            // -----------------------------------------------------------------
+            // 2 bytes: $F0, signed_offset
+            // 2 cycles (not taken) / 4 cycles (taken)
+            // Flags: none affected
+            //
+            // Commonly paired with MOV instructions to create polling loops:
+            //   MOV Y, $00F4   ; Read port 0
+            //   BEQ loop       ; If zero, keep waiting
+            //
+            // When the sound driver is "stuck" in a BEQ loop, it's actually
+            // working correctly - waiting for the main CPU to send commands.
+            // -----------------------------------------------------------------
             0xF0 => blk: { // BEQ rel
                 const offset: i8 = @bitCast(self.fetch());
                 if (self.flagZ()) {
