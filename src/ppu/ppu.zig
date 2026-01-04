@@ -201,78 +201,81 @@ pub const Ppu = struct {
                     }
 
                     // Debug: dump PPU state on frame 600 (~10 seconds in)
-                    if (self.frame_count == 600) {
-                        std.debug.print("\n=== PPU STATE DUMP (frame 600) ===\n", .{});
-                        std.debug.print("BGMODE: ${x:0>2} (mode {})\n", .{ self.bgmode, @as(u3, @truncate(self.bgmode)) });
-                        std.debug.print("TM (layer enable): ${x:0>2} (BG1={} BG2={} BG3={} BG4={} OBJ={})\n", .{
-                            self.tm,
-                            (self.tm & 0x01) != 0,
-                            (self.tm & 0x02) != 0,
-                            (self.tm & 0x04) != 0,
-                            (self.tm & 0x08) != 0,
-                            (self.tm & 0x10) != 0,
-                        });
-                        std.debug.print("BG12NBA: ${x:0>2}, BG34NBA: ${x:0>2}\n", .{ self.bg12nba, self.bg34nba });
-                        std.debug.print("BG1SC: ${x:0>2}, BG2SC: ${x:0>2}, BG3SC: ${x:0>2}\n", .{ self.bg1sc, self.bg2sc, self.bg3sc });
-                        std.debug.print("CGRAM[0] (backdrop): ${x:0>4}\n", .{self.getColor(0)});
-                        std.debug.print("CGRAM[0-7]: ", .{});
-                        for (0..8) |i| {
-                            std.debug.print("${x:0>4} ", .{self.getColor(@intCast(i))});
-                        }
-                        std.debug.print("\n", .{});
-                        std.debug.print("TMW (window mask): ${x:0>2}\n", .{self.tmw});
-                        std.debug.print("W12SEL: ${x:0>2}, W34SEL: ${x:0>2}\n", .{ self.w12sel, self.w34sel });
-                        std.debug.print("WH0-WH3: {}, {}, {}, {}\n", .{ self.wh0, self.wh1, self.wh2, self.wh3 });
-                        // Dump BG3 tile 0 data (first 16 bytes of 2bpp tile)
-                        const bg3_chr_base = @as(u32, self.bg34nba & 0x0F) << 13;
-                        std.debug.print("BG3 chr base: ${x:0>5}, tile 0 data: ", .{bg3_chr_base});
-                        for (0..16) |i| {
-                            std.debug.print("{x:0>2} ", .{self.vram[(bg3_chr_base + i) & 0xFFFF]});
-                        }
-                        std.debug.print("\n", .{});
+                    // Gated behind comptime so it compiles out in release builds
+                    if (comptime dbg.enabled) {
+                        if (self.frame_count == 600) {
+                            std.debug.print("\n=== PPU STATE DUMP (frame 600) ===\n", .{});
+                            std.debug.print("BGMODE: ${x:0>2} (mode {})\n", .{ self.bgmode, @as(u3, @truncate(self.bgmode)) });
+                            std.debug.print("TM (layer enable): ${x:0>2} (BG1={} BG2={} BG3={} BG4={} OBJ={})\n", .{
+                                self.tm,
+                                (self.tm & 0x01) != 0,
+                                (self.tm & 0x02) != 0,
+                                (self.tm & 0x04) != 0,
+                                (self.tm & 0x08) != 0,
+                                (self.tm & 0x10) != 0,
+                            });
+                            std.debug.print("BG12NBA: ${x:0>2}, BG34NBA: ${x:0>2}\n", .{ self.bg12nba, self.bg34nba });
+                            std.debug.print("BG1SC: ${x:0>2}, BG2SC: ${x:0>2}, BG3SC: ${x:0>2}\n", .{ self.bg1sc, self.bg2sc, self.bg3sc });
+                            std.debug.print("CGRAM[0] (backdrop): ${x:0>4}\n", .{self.getColor(0)});
+                            std.debug.print("CGRAM[0-7]: ", .{});
+                            for (0..8) |i| {
+                                std.debug.print("${x:0>4} ", .{self.getColor(@intCast(i))});
+                            }
+                            std.debug.print("\n", .{});
+                            std.debug.print("TMW (window mask): ${x:0>2}\n", .{self.tmw});
+                            std.debug.print("W12SEL: ${x:0>2}, W34SEL: ${x:0>2}\n", .{ self.w12sel, self.w34sel });
+                            std.debug.print("WH0-WH3: {}, {}, {}, {}\n", .{ self.wh0, self.wh1, self.wh2, self.wh3 });
+                            // Dump BG3 tile 0 data (first 16 bytes of 2bpp tile)
+                            const bg3_chr_base = @as(u32, self.bg34nba & 0x0F) << 13;
+                            std.debug.print("BG3 chr base: ${x:0>5}, tile 0 data: ", .{bg3_chr_base});
+                            for (0..16) |i| {
+                                std.debug.print("{x:0>2} ", .{self.vram[(bg3_chr_base + i) & 0xFFFF]});
+                            }
+                            std.debug.print("\n", .{});
 
-                        // Dump BG3 tilemap entries at a few positions
-                        // BG3SC format: AAAAAASS where AAAAAA is base addr in 0x400 word units
-                        const bg3_tilemap_base = @as(u32, self.bg3sc & 0xFC) << 9;
-                        std.debug.print("BG3 tilemap base: ${x:0>5}\n", .{bg3_tilemap_base});
-                        std.debug.print("BG3 tilemap row 0 tiles: ", .{});
-                        for (0..16) |i| {
-                            const offset = bg3_tilemap_base + i * 2;
-                            const lo = self.vram[offset & 0xFFFF];
-                            const hi = self.vram[(offset + 1) & 0xFFFF];
-                            const entry: u16 = @as(u16, hi) << 8 | lo;
-                            const tile_num = entry & 0x3FF;
-                            std.debug.print("{x:0>2} ", .{@as(u8, @truncate(tile_num))});
+                            // Dump BG3 tilemap entries at a few positions
+                            // BG3SC format: AAAAAASS where AAAAAA is base addr in 0x400 word units
+                            const bg3_tilemap_base = @as(u32, self.bg3sc & 0xFC) << 9;
+                            std.debug.print("BG3 tilemap base: ${x:0>5}\n", .{bg3_tilemap_base});
+                            std.debug.print("BG3 tilemap row 0 tiles: ", .{});
+                            for (0..16) |i| {
+                                const offset = bg3_tilemap_base + i * 2;
+                                const lo = self.vram[offset & 0xFFFF];
+                                const hi = self.vram[(offset + 1) & 0xFFFF];
+                                const entry: u16 = @as(u16, hi) << 8 | lo;
+                                const tile_num = entry & 0x3FF;
+                                std.debug.print("{x:0>2} ", .{@as(u8, @truncate(tile_num))});
+                            }
+                            std.debug.print("\n", .{});
+                            // Dump row 6 (y=50 falls into this row)
+                            std.debug.print("BG3 tilemap row 6 tiles: ", .{});
+                            for (0..16) |i| {
+                                const offset = bg3_tilemap_base + (6 * 32 + i) * 2;
+                                const lo = self.vram[offset & 0xFFFF];
+                                const hi = self.vram[(offset + 1) & 0xFFFF];
+                                const entry: u16 = @as(u16, hi) << 8 | lo;
+                                const tile_num = entry & 0x3FF;
+                                std.debug.print("{x:0>2} ", .{@as(u8, @truncate(tile_num))});
+                            }
+                            std.debug.print("\n", .{});
+                            // Dump BG3 scroll values
+                            std.debug.print("BG3 scroll: hofs={} vofs={}\n", .{ self.bg3hofs, self.bg3vofs });
+                            // Dump character data at different offsets to see what tile 0x55 looks like
+                            const tile_55_addr = bg3_chr_base + 0x55 * 16; // 2bpp = 16 bytes per tile
+                            std.debug.print("BG3 tile $55 addr: ${x:0>5}, data: ", .{tile_55_addr});
+                            for (0..16) |i| {
+                                std.debug.print("{x:0>2} ", .{self.vram[(tile_55_addr + i) & 0xFFFF]});
+                            }
+                            std.debug.print("\n", .{});
+                            // Also check tile $fc (might be transparent/empty)
+                            const tile_fc_addr = bg3_chr_base + 0xfc * 16;
+                            std.debug.print("BG3 tile $fc addr: ${x:0>5}, data: ", .{tile_fc_addr});
+                            for (0..16) |i| {
+                                std.debug.print("{x:0>2} ", .{self.vram[(tile_fc_addr + i) & 0xFFFF]});
+                            }
+                            std.debug.print("\n", .{});
+                            std.debug.print("=================================\n\n", .{});
                         }
-                        std.debug.print("\n", .{});
-                        // Dump row 6 (y=50 falls into this row)
-                        std.debug.print("BG3 tilemap row 6 tiles: ", .{});
-                        for (0..16) |i| {
-                            const offset = bg3_tilemap_base + (6 * 32 + i) * 2;
-                            const lo = self.vram[offset & 0xFFFF];
-                            const hi = self.vram[(offset + 1) & 0xFFFF];
-                            const entry: u16 = @as(u16, hi) << 8 | lo;
-                            const tile_num = entry & 0x3FF;
-                            std.debug.print("{x:0>2} ", .{@as(u8, @truncate(tile_num))});
-                        }
-                        std.debug.print("\n", .{});
-                        // Dump BG3 scroll values
-                        std.debug.print("BG3 scroll: hofs={} vofs={}\n", .{ self.bg3hofs, self.bg3vofs });
-                        // Dump character data at different offsets to see what tile 0x55 looks like
-                        const tile_55_addr = bg3_chr_base + 0x55 * 16; // 2bpp = 16 bytes per tile
-                        std.debug.print("BG3 tile $55 addr: ${x:0>5}, data: ", .{tile_55_addr});
-                        for (0..16) |i| {
-                            std.debug.print("{x:0>2} ", .{self.vram[(tile_55_addr + i) & 0xFFFF]});
-                        }
-                        std.debug.print("\n", .{});
-                        // Also check tile $fc (might be transparent/empty)
-                        const tile_fc_addr = bg3_chr_base + 0xfc * 16;
-                        std.debug.print("BG3 tile $fc addr: ${x:0>5}, data: ", .{tile_fc_addr});
-                        for (0..16) |i| {
-                            std.debug.print("{x:0>2} ", .{self.vram[(tile_fc_addr + i) & 0xFFFF]});
-                        }
-                        std.debug.print("\n", .{});
-                        std.debug.print("=================================\n\n", .{});
                     }
                 }
             }
