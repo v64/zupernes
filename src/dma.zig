@@ -1,6 +1,9 @@
 // DMA Controller - Direct Memory Access for SNES
 // Handles both General Purpose DMA (GPDMA) and Horizontal DMA (HDMA)
 
+const std = @import("std");
+const dbg = @import("debug.zig");
+
 pub const Dma = struct {
     channels: [8]DmaChannel,
 
@@ -50,31 +53,43 @@ pub const Dma = struct {
     };
 
     pub const DmaControl = packed struct(u8) {
-        // Transfer mode (0-7)
-        // 0: 1 byte,  1 register  (p)
-        // 1: 2 bytes, 2 registers (p, p+1)
-        // 2: 2 bytes, 1 register  (p, p)
-        // 3: 4 bytes, 2 registers (p, p, p+1, p+1)
-        // 4: 4 bytes, 4 registers (p, p+1, p+2, p+3)
-        // 5: 4 bytes, 2 registers (p, p+1, p, p+1) - same as mode 1 x2
-        // 6: 2 bytes, 1 register  (p, p) - same as mode 2
-        // 7: 4 bytes, 2 registers (p, p, p+1, p+1) - same as mode 3
+        // =============================================================================
+        // DMAPx ($43x0) - DMA/HDMA Parameters
+        // =============================================================================
+        // Bit layout: da-itppp
+        //   ppp (bits 0-2): Transfer pattern select
+        //   t   (bit 3):    A-bus address step (0=increment, 1=decrement)
+        //   i   (bit 4):    Fixed transfer (DMA) - A-bus address doesn't change
+        //   -   (bit 5):    Unused
+        //   a   (bit 6):    HDMA addressing mode (0=absolute/table, 1=indirect)
+        //   d   (bit 7):    Transfer direction (0=A→B / CPU→PPU, 1=B→A / PPU→CPU)
+        //
+        // Transfer patterns (ppp):
+        //   0: 1 byte,  1 register  (p)
+        //   1: 2 bytes, 2 registers (p, p+1)
+        //   2: 2 bytes, 1 register  (p, p)
+        //   3: 4 bytes, 2 registers (p, p, p+1, p+1)
+        //   4: 4 bytes, 4 registers (p, p+1, p+2, p+3)
+        //   5: 4 bytes, 2 registers (p, p+1, p, p+1) - same as mode 1 x2
+        //   6: 2 bytes, 1 register  (p, p) - same as mode 2
+        //   7: 4 bytes, 2 registers (p, p, p+1, p+1) - same as mode 3
+        // =============================================================================
         transfer_mode: u3 = 0,
 
         // A-bus address step: 0=increment, 1=decrement
         a_addr_decrement: bool = false,
 
-        // Unused bit
+        // Fixed transfer mode (DMA only): 0=normal, 1=A-bus address fixed
+        a_addr_fixed: bool = false,
+
+        // Unused bit 5
         _unused: bool = false,
 
-        // HDMA indirect mode (only for HDMA)
+        // HDMA indirect mode (HDMA only): 0=absolute table, 1=indirect table
         indirect: bool = false,
 
         // Transfer direction: 0=A→B (CPU→PPU), 1=B→A (PPU→CPU)
         direction: bool = false,
-
-        // Unused bit
-        _unused2: bool = false,
     };
 
     pub fn init() Dma {
@@ -186,6 +201,22 @@ pub const Dma = struct {
             const channel = &self.channels[i];
             const ctrl = channel.control;
 
+            // Debug: trace DMA transfers to VRAM (registers $2118/$2119)
+            if (comptime dbg.trace_dma) {
+                if (channel.b_addr == 0x18 or channel.b_addr == 0x19) {
+                    const vram_addr = bus.ppu.vram_addr;
+                    const vmain = bus.ppu.vmain;
+                    std.debug.print("[DMA] Ch{d} VRAM transfer: src=${x:0>6} dst=VRAM[${x:0>4}] size={d} mode={d} vmain=${x:0>2}\n", .{
+                        i,
+                        channel.a_addr,
+                        vram_addr,
+                        if (channel.byte_count == 0) @as(u32, 65536) else channel.byte_count,
+                        ctrl.transfer_mode,
+                        vmain,
+                    });
+                }
+            }
+
             // Count bytes to transfer (0 = 65536)
             var remaining: u32 = if (channel.byte_count == 0) 65536 else channel.byte_count;
             const transfer_size = getTransferSize(ctrl.transfer_mode);
@@ -228,7 +259,15 @@ pub const Dma = struct {
     }
 
     /// Initialize HDMA at start of frame (scanline 0)
+    /// HDMA (H-Blank DMA) transfers data to PPU registers at the start of each scanline
+    /// Used for effects like gradient backgrounds, window shaping (spotlight), IRQ timing, etc.
     pub fn initHdma(self: *Dma, bus: anytype) void {
+        if (comptime dbg.trace_hdma) {
+            if (self.hdma_enable != 0) {
+                std.debug.print("[HDMA] Init frame - channels enabled: ${x:0>2}\n", .{self.hdma_enable});
+            }
+        }
+
         self.hdma_terminated = 0;
 
         for (0..8) |i| {
@@ -245,6 +284,17 @@ pub const Dma = struct {
             channel.line_counter = bus.read(bank, channel.hdma_addr);
             channel.hdma_addr +%= 1;
 
+            if (comptime dbg.trace_hdma) {
+                std.debug.print("[HDMA] Ch{d} init: table=${x:0>2}:{x:0>4}, line_count=${x:0>2}, b_addr=${x:0>2}, mode={d}\n", .{
+                    i,
+                    bank,
+                    @as(u16, @truncate(channel.a_addr)),
+                    channel.line_counter,
+                    channel.b_addr,
+                    channel.control.transfer_mode,
+                });
+            }
+
             // Check for termination (line counter = 0)
             if (channel.line_counter == 0) {
                 self.hdma_terminated |= channel_bit;
@@ -260,11 +310,16 @@ pub const Dma = struct {
                 const hi = bus.read(bank, channel.hdma_addr);
                 channel.hdma_addr +%= 1;
                 channel.byte_count = (@as(u16, hi) << 8) | lo;
+
+                if (comptime dbg.trace_hdma) {
+                    std.debug.print("[HDMA] Ch{d} indirect addr: ${x:0>2}:{x:0>4}\n", .{ i, channel.indirect_bank, channel.byte_count });
+                }
             }
         }
     }
 
     /// Run HDMA at start of each scanline (H-blank)
+    /// Called once per visible scanline (0-224) when hdma_enable is non-zero
     pub fn runHdma(self: *Dma, bus: anytype) void {
         for (0..8) |i| {
             const channel_bit = @as(u8, 1) << @intCast(i);
@@ -279,6 +334,13 @@ pub const Dma = struct {
             if (channel.hdma_do_transfer) {
                 const transfer_size = getTransferSize(ctrl.transfer_mode);
                 const b_base: u16 = 0x2100 | @as(u16, channel.b_addr);
+
+                // Debug: trace all HDMA transfers to window registers
+                if (comptime dbg.trace_hdma) {
+                    if (channel.b_addr == 0x26) {
+                        std.debug.print("[HDMA] Ch{d} transfer to WH0/WH1, indirect={}, indirect_bank=${x:0>2}, byte_count=${x:0>4}, hdma_addr=${x:0>4}\n", .{ i, ctrl.indirect, channel.indirect_bank, channel.byte_count, channel.hdma_addr });
+                    }
+                }
 
                 for (0..transfer_size) |byte_idx| {
                     const b_offset = getBOffset(ctrl.transfer_mode, @intCast(byte_idx));
@@ -300,6 +362,13 @@ pub const Dma = struct {
                     if (!ctrl.direction) {
                         const value = bus.read(src_bank, src_addr);
                         bus.writePpuDma(b_addr, value);
+
+                        // Trace window register writes (WH0-WH3: $2126-$2129) which are used for spotlight effect
+                        if (comptime dbg.trace_hdma) {
+                            if (b_addr >= 0x2126 and b_addr <= 0x2129) {
+                                std.debug.print("[HDMA] Ch{d} write ${x:0>4}=${x:0>2} (WH{d}) from ${x:0>2}:{x:0>4}\n", .{ i, b_addr, value, b_addr - 0x2126, src_bank, src_addr });
+                            }
+                        }
                     } else {
                         const value = bus.readPpuDma(b_addr);
                         bus.write(src_bank, src_addr, value);

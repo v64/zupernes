@@ -388,8 +388,21 @@ pub const Bus = struct {
                 }
             },
 
-            // HDMA enable
+            // HDMA enable ($420C) - controls which DMA channels are used for HDMA
+            // HDMA transfers data to PPU registers every H-blank during visible scanlines
+            // Used for effects like gradient backgrounds, spotlight windows, etc.
             0x420C => {
+                if (comptime dbg.trace_hdma) {
+                    if (value != 0) {
+                        std.debug.print("[HDMA] Enable write $420C = ${x:0>2} (channels: ", .{value});
+                        for (0..8) |i| {
+                            if ((value & (@as(u8, 1) << @intCast(i))) != 0) {
+                                std.debug.print("{d} ", .{i});
+                            }
+                        }
+                        std.debug.print(")\n", .{});
+                    }
+                }
                 self.hdmaen = value;
                 self.dma.hdma_enable = value;
             },

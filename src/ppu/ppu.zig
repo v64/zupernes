@@ -199,6 +199,81 @@ pub const Ppu = struct {
                     if (comptime dbg.show_frame_counter) {
                         self.drawFrameCounter();
                     }
+
+                    // Debug: dump PPU state on frame 600 (~10 seconds in)
+                    if (self.frame_count == 600) {
+                        std.debug.print("\n=== PPU STATE DUMP (frame 600) ===\n", .{});
+                        std.debug.print("BGMODE: ${x:0>2} (mode {})\n", .{ self.bgmode, @as(u3, @truncate(self.bgmode)) });
+                        std.debug.print("TM (layer enable): ${x:0>2} (BG1={} BG2={} BG3={} BG4={} OBJ={})\n", .{
+                            self.tm,
+                            (self.tm & 0x01) != 0,
+                            (self.tm & 0x02) != 0,
+                            (self.tm & 0x04) != 0,
+                            (self.tm & 0x08) != 0,
+                            (self.tm & 0x10) != 0,
+                        });
+                        std.debug.print("BG12NBA: ${x:0>2}, BG34NBA: ${x:0>2}\n", .{ self.bg12nba, self.bg34nba });
+                        std.debug.print("BG1SC: ${x:0>2}, BG2SC: ${x:0>2}, BG3SC: ${x:0>2}\n", .{ self.bg1sc, self.bg2sc, self.bg3sc });
+                        std.debug.print("CGRAM[0] (backdrop): ${x:0>4}\n", .{self.getColor(0)});
+                        std.debug.print("CGRAM[0-7]: ", .{});
+                        for (0..8) |i| {
+                            std.debug.print("${x:0>4} ", .{self.getColor(@intCast(i))});
+                        }
+                        std.debug.print("\n", .{});
+                        std.debug.print("TMW (window mask): ${x:0>2}\n", .{self.tmw});
+                        std.debug.print("W12SEL: ${x:0>2}, W34SEL: ${x:0>2}\n", .{ self.w12sel, self.w34sel });
+                        std.debug.print("WH0-WH3: {}, {}, {}, {}\n", .{ self.wh0, self.wh1, self.wh2, self.wh3 });
+                        // Dump BG3 tile 0 data (first 16 bytes of 2bpp tile)
+                        const bg3_chr_base = @as(u32, self.bg34nba & 0x0F) << 13;
+                        std.debug.print("BG3 chr base: ${x:0>5}, tile 0 data: ", .{bg3_chr_base});
+                        for (0..16) |i| {
+                            std.debug.print("{x:0>2} ", .{self.vram[(bg3_chr_base + i) & 0xFFFF]});
+                        }
+                        std.debug.print("\n", .{});
+
+                        // Dump BG3 tilemap entries at a few positions
+                        // BG3SC format: AAAAAASS where AAAAAA is base addr in 0x400 word units
+                        const bg3_tilemap_base = @as(u32, self.bg3sc & 0xFC) << 9;
+                        std.debug.print("BG3 tilemap base: ${x:0>5}\n", .{bg3_tilemap_base});
+                        std.debug.print("BG3 tilemap row 0 tiles: ", .{});
+                        for (0..16) |i| {
+                            const offset = bg3_tilemap_base + i * 2;
+                            const lo = self.vram[offset & 0xFFFF];
+                            const hi = self.vram[(offset + 1) & 0xFFFF];
+                            const entry: u16 = @as(u16, hi) << 8 | lo;
+                            const tile_num = entry & 0x3FF;
+                            std.debug.print("{x:0>2} ", .{@as(u8, @truncate(tile_num))});
+                        }
+                        std.debug.print("\n", .{});
+                        // Dump row 6 (y=50 falls into this row)
+                        std.debug.print("BG3 tilemap row 6 tiles: ", .{});
+                        for (0..16) |i| {
+                            const offset = bg3_tilemap_base + (6 * 32 + i) * 2;
+                            const lo = self.vram[offset & 0xFFFF];
+                            const hi = self.vram[(offset + 1) & 0xFFFF];
+                            const entry: u16 = @as(u16, hi) << 8 | lo;
+                            const tile_num = entry & 0x3FF;
+                            std.debug.print("{x:0>2} ", .{@as(u8, @truncate(tile_num))});
+                        }
+                        std.debug.print("\n", .{});
+                        // Dump BG3 scroll values
+                        std.debug.print("BG3 scroll: hofs={} vofs={}\n", .{ self.bg3hofs, self.bg3vofs });
+                        // Dump character data at different offsets to see what tile 0x55 looks like
+                        const tile_55_addr = bg3_chr_base + 0x55 * 16; // 2bpp = 16 bytes per tile
+                        std.debug.print("BG3 tile $55 addr: ${x:0>5}, data: ", .{tile_55_addr});
+                        for (0..16) |i| {
+                            std.debug.print("{x:0>2} ", .{self.vram[(tile_55_addr + i) & 0xFFFF]});
+                        }
+                        std.debug.print("\n", .{});
+                        // Also check tile $fc (might be transparent/empty)
+                        const tile_fc_addr = bg3_chr_base + 0xfc * 16;
+                        std.debug.print("BG3 tile $fc addr: ${x:0>5}, data: ", .{tile_fc_addr});
+                        for (0..16) |i| {
+                            std.debug.print("{x:0>2} ", .{self.vram[(tile_fc_addr + i) & 0xFFFF]});
+                        }
+                        std.debug.print("\n", .{});
+                        std.debug.print("=================================\n\n", .{});
+                    }
                 }
             }
         }
@@ -219,6 +294,16 @@ pub const Ppu = struct {
 
         // Get background color from CGRAM[0]
         const backdrop = self.getColor(0);
+
+        // Trace window state during spotlight animation (after frame 240 when display begins)
+        // Log every frame at center scanline (112) to see window evolution
+        if (comptime dbg.trace_windows) {
+            if (self.frame_count >= 240 and self.frame_count <= 700 and y == 112) {
+                std.debug.print("[WIN] frame={d} WH0={d} WH1={d} W12SEL=${x:0>2} W34SEL=${x:0>2} WOBJSEL=${x:0>2} CGWSEL=${x:0>2}\n", .{
+                    self.frame_count, self.wh0, self.wh1, self.w12sel, self.w34sel, self.wobjsel, self.cgwsel,
+                });
+            }
+        }
 
         // Get background mode
         const mode: u3 = @truncate(self.bgmode);
@@ -273,13 +358,15 @@ pub const Ppu = struct {
                     // Mode 1: BG1/BG2 4bpp (16 colors), BG3 2bpp (4 colors)
                     // Render back to front: BG3 (lowest), BG2, BG1 (highest)
                     // Each layer only overwrites if it has a non-transparent pixel
-                    if ((self.tm & 0x04) != 0) {
+                    // Apply window masking per layer
+                    const x8: u8 = @intCast(x);
+                    if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
                         if (self.renderBgPixel(3, @intCast(x), y, 2)) |c| {
                             color = c.color;
                             bg_priority = c.priority;
                         }
                     }
-                    if ((self.tm & 0x02) != 0) {
+                    if ((self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
                         if (self.renderBgPixel(2, @intCast(x), y, 4)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
@@ -287,7 +374,7 @@ pub const Ppu = struct {
                             }
                         }
                     }
-                    if ((self.tm & 0x01) != 0) {
+                    if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
                         if (self.renderBgPixel(1, @intCast(x), y, 4)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
@@ -323,7 +410,61 @@ pub const Ppu = struct {
                 }
             }
 
-            self.framebuffer[start + x] = color;
+            // ==========================================================================
+            // COLOR MATH: Force main screen black based on color window
+            // ==========================================================================
+            // CGWSEL ($2130) bits 6-7 control "Force main screen black":
+            //   00 = Never force black
+            //   01 = Force black OUTSIDE color window
+            //   10 = Force black INSIDE color window
+            //   11 = Always force black
+            // This is used for spotlight/iris effects like SMW's title screen.
+            // ==========================================================================
+            const force_black_mode: u2 = @truncate(self.cgwsel >> 6);
+            const x8: u8 = @intCast(x);
+
+            var force_black = false;
+            switch (force_black_mode) {
+                0b00 => {}, // Never force black
+                0b01 => {
+                    // Force black OUTSIDE color window
+                    force_black = !self.isColorWindowActive(x8);
+                },
+                0b10 => {
+                    // Force black INSIDE color window
+                    force_black = self.isColorWindowActive(x8);
+                },
+                0b11 => {
+                    // Always force black
+                    force_black = true;
+                },
+            }
+
+            if (force_black) {
+                color = 0; // Force to black (backdrop will also be black)
+            }
+
+            // Apply master brightness from INIDISP bits 0-3
+            // Brightness 0 = black, 15 = full brightness
+            // Scale each color component: component = component * brightness / 15
+            const brightness: u16 = self.inidisp & 0x0F;
+            if (brightness == 0) {
+                // Brightness 0 = completely black
+                self.framebuffer[start + x] = 0;
+            } else if (brightness < 15) {
+                // Partial brightness - scale each 5-bit color component
+                // SNES color format: 0bbbbbgg gggrrrrr (15-bit BGR)
+                const r: u16 = color & 0x1F;
+                const g: u16 = (color >> 5) & 0x1F;
+                const b: u16 = (color >> 10) & 0x1F;
+                const scaled_r: u16 = (r * brightness) / 15;
+                const scaled_g: u16 = (g * brightness) / 15;
+                const scaled_b: u16 = (b * brightness) / 15;
+                self.framebuffer[start + x] = scaled_r | (scaled_g << 5) | (scaled_b << 10);
+            } else {
+                // Full brightness - no scaling needed
+                self.framebuffer[start + x] = color;
+            }
         }
     }
 
@@ -437,6 +578,14 @@ pub const Ppu = struct {
 
         // Parse tilemap entry
         const tile_num: u16 = tilemap_entry & 0x3FF;
+
+        // Debug: trace BG3 tile reading on frame 600
+        // Trace first few positions to verify tile reading
+        if (comptime dbg.trace_bg_render) {
+            if (bg == 3 and self.frame_count == 600 and y < 5 and x < 24 and (x % 8 == 0)) {
+                std.debug.print("[BG3] x={d:3} y={d:3} tile({d},{d}) entry=${x:0>4} tile={x:0>3}\n", .{ x, y, tile_x, tile_y, tilemap_entry, tile_num });
+            }
+        }
         const palette: u8 = @truncate((tilemap_entry >> 10) & 0x07);
         const tile_priority = (tilemap_entry >> 13) & 1;
         const h_flip = ((tilemap_entry >> 14) & 1) != 0;
@@ -500,6 +649,19 @@ pub const Ppu = struct {
         // Calculate tile data address
         // Each 8x8 tile uses (8 * bytes_per_row) bytes
         const tile_data_addr: u32 = chr_base + @as(u32, actual_tile) * 8 * bytes_per_row;
+
+        // Debug: trace the actual tile address being used
+        if (comptime dbg.trace_bg_render) {
+            if (bg == 3 and self.frame_count == 600 and x == 16 and y == 50) {
+                std.debug.print("  actual_tile=${x:0>3} chr_base=${x:0>5} tile_data_addr=${x:0>5}\n", .{ actual_tile, chr_base, tile_data_addr });
+                std.debug.print("  First 4 bytes at tile_data_addr: {x:0>2} {x:0>2} {x:0>2} {x:0>2}\n", .{
+                    self.vram[@as(usize, tile_data_addr) & 0xFFFF],
+                    self.vram[@as(usize, tile_data_addr + 1) & 0xFFFF],
+                    self.vram[@as(usize, tile_data_addr + 2) & 0xFFFF],
+                    self.vram[@as(usize, tile_data_addr + 3) & 0xFFFF],
+                });
+            }
+        }
 
         // Read pixel data from tile
         const pixel_color = self.getTilePixel(tile_data_addr, @intCast(px), @intCast(py), bpp);
@@ -667,6 +829,63 @@ pub const Ppu = struct {
         }
 
         return masked;
+    }
+
+    // ==========================================================================
+    // COLOR WINDOW
+    // ==========================================================================
+    // The color window is used for color math effects like "force main screen
+    // black" which creates spotlight/iris effects. It uses the same window
+    // positions (WH0-WH3) as BG/OBJ windows but has separate enable/invert
+    // settings in WOBJSEL bits 4-7 and logic in WOBJLOG bits 2-3.
+    //
+    // Returns true if the color window is "active" at position x.
+    // This is used by CGWSEL bits 6-7 to determine where to force black.
+    // ==========================================================================
+    fn isColorWindowActive(self: *Ppu, x: u8) bool {
+        // Color window settings are in WOBJSEL bits 4-7
+        // Bit 4: Window 1 invert for color
+        // Bit 5: Window 1 enable for color
+        // Bit 6: Window 2 invert for color
+        // Bit 7: Window 2 enable for color
+        const w1_enable = (self.wobjsel & 0x20) != 0;
+        const w1_invert = (self.wobjsel & 0x10) != 0;
+        const w2_enable = (self.wobjsel & 0x80) != 0;
+        const w2_invert = (self.wobjsel & 0x40) != 0;
+
+        // Color window logic is in WOBJLOG bits 2-3
+        const w_log: u2 = @truncate((self.wobjlog >> 2) & 0x03);
+
+        // Calculate window 1 state
+        var w1_inside: bool = false;
+        if (w1_enable) {
+            w1_inside = (x >= self.wh0 and x <= self.wh1);
+            if (w1_invert) w1_inside = !w1_inside;
+        }
+
+        // Calculate window 2 state
+        var w2_inside: bool = false;
+        if (w2_enable) {
+            w2_inside = (x >= self.wh2 and x <= self.wh3);
+            if (w2_invert) w2_inside = !w2_inside;
+        }
+
+        // Combine windows based on logic
+        var active: bool = false;
+        if (w1_enable and w2_enable) {
+            active = switch (w_log) {
+                0 => w1_inside or w2_inside, // OR
+                1 => w1_inside and w2_inside, // AND
+                2 => w1_inside != w2_inside, // XOR
+                3 => w1_inside == w2_inside, // XNOR
+            };
+        } else if (w1_enable) {
+            active = w1_inside;
+        } else if (w2_enable) {
+            active = w2_inside;
+        }
+
+        return active;
     }
 
     const SpritePixel = struct {
@@ -1043,7 +1262,15 @@ pub const Ppu = struct {
             0x2122 => self.writeCgram(value),
             // Window mask settings
             0x2123 => self.w12sel = value,
-            0x2124 => self.w34sel = value,
+            0x2124 => {
+                if (comptime dbg.trace_windows) {
+                    // Log ALL writes to W34SEL during spotlight frames
+                    if (self.frame_count >= 500 and self.frame_count <= 650) {
+                        std.debug.print("[W34SEL] = ${x:0>2} at frame {d}\n", .{ value, self.frame_count });
+                    }
+                }
+                self.w34sel = value;
+            },
             0x2125 => self.wobjsel = value,
             // Window positions
             0x2126 => self.wh0 = value,

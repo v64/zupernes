@@ -24,14 +24,14 @@ pub const enabled = build_options.debug_mode;
 
 /// Trace CPU instructions (opcode, registers, flags)
 /// When enabled, traces ALL instructions - use with caution, very verbose!
-pub const trace_cpu = enabled and true;
+pub const trace_cpu = enabled and false;
 
 // =============================================================================
 // APU DEBUGGING
 // =============================================================================
 
 /// Trace APU port reads/writes (useful for debugging APU handshake issues)
-pub const trace_apu = enabled and true;
+pub const trace_apu = enabled and false;
 
 /// Print APU read
 pub fn apuRead(addr: u16, value: u8, ports: [4]u8) void {
@@ -66,10 +66,13 @@ pub const trace_hdma = enabled and false;
 pub const trace_ppu_regs = enabled and false;
 
 /// Trace BG rendering (for debugging tile issues)
-pub const trace_bg_render = enabled and false;
+pub const trace_bg_render = enabled and true;
 
 /// Trace PPU rendering (very verbose!)
 pub const trace_ppu_render = enabled and false;
+
+/// Trace window masking (useful for debugging spotlight/circle effects)
+pub const trace_windows = enabled and true;
 
 // =============================================================================
 // MEMORY DEBUGGING
