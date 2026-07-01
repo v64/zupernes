@@ -2,6 +2,7 @@ const std = @import("std");
 const sokol = @import("sokol");
 const sapp = sokol.app;
 const sgfx = sokol.gfx;
+const saudio = sokol.audio;
 const slog = sokol.log;
 const build_options = @import("build_options");
 
@@ -87,6 +88,14 @@ export fn init() void {
         .load_action = .CLEAR,
         .clear_value = .{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1.0 },
     };
+
+    // Audio output: the S-DSP produces stereo 16-bit at exactly 32kHz.
+    // CoreAudio accepts arbitrary sample rates, so no resampling needed.
+    saudio.setup(.{
+        .sample_rate = 32000,
+        .num_channels = 2,
+        .logger = .{ .func = slog.func },
+    });
 }
 
 var frame_count: u32 = if (DEBUG) 0 else undefined;
@@ -111,6 +120,28 @@ export fn frame() void {
                     cpu.total_cycles,
                     state.emulator.bus.nmitimen,
                 });
+            }
+        }
+
+        // Push this frame's audio to the sound device. The DSP generates
+        // ~533 stereo frames per video frame; convert i16 -> f32 for sokol.
+        // saudio.expect() throttles us to what the device buffer can take,
+        // so emulation and audio clocks can drift slightly without pops
+        // from overfeeding (underruns produce brief silence instead).
+        {
+            var chunk: [2048][2]i16 = undefined;
+            var fbuf: [4096]f32 = undefined;
+            var budget = saudio.expect();
+            while (budget > 0) {
+                const want = @min(@as(usize, @intCast(budget)), chunk.len);
+                const n = state.emulator.readAudioSamples(chunk[0..want]);
+                if (n == 0) break;
+                for (0..n) |s| {
+                    fbuf[s * 2 + 0] = @as(f32, @floatFromInt(chunk[s][0])) / 32768.0;
+                    fbuf[s * 2 + 1] = @as(f32, @floatFromInt(chunk[s][1])) / 32768.0;
+                }
+                _ = saudio.push(&fbuf[0], @intCast(n));
+                budget -= @intCast(n);
             }
         }
 
@@ -154,6 +185,7 @@ export fn frame() void {
 }
 
 export fn cleanup() void {
+    saudio.shutdown();
     sgfx.shutdown();
 }
 

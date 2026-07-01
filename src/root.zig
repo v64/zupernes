@@ -180,6 +180,12 @@ pub const Emulator = struct {
         return self.ppu.getFramebuffer();
     }
 
+    /// Drain decoded audio from the APU: stereo i16 frames at 32kHz.
+    /// Returns the number of frames written into dst.
+    pub fn readAudioSamples(self: *Emulator, dst: [][2]i16) usize {
+        return self.bus.apu.readSamples(dst);
+    }
+
     /// Set the live button state for a controller (0 = pad 1, 1 = pad 2).
     /// Button layout matches the $4219:$4218 auto-read register pair:
     ///   bit 15: B      bit 11: Up      bit 7: A

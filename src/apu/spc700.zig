@@ -31,6 +31,7 @@
 
 const std = @import("std");
 const dbg = @import("../debug.zig");
+const Dsp = @import("dsp.zig").Dsp;
 
 // =============================================================================
 // SPC700 REGISTERS
@@ -518,7 +519,12 @@ pub const Spc700 = struct {
     psw: u8, // Program status word (flags)
 
     // Memory
-    ram: [65536]u8, // 64KB audio RAM
+    ram: [65536]u8, // 64KB audio RAM (shared with the DSP for BRR samples and echo)
+
+    // The S-DSP lives "inside" the SPC700 from the memory map's point of
+    // view (reached only through $F2/$F3), and it shares our RAM, so we
+    // own it directly - no pointer setup needed.
+    dsp: Dsp,
 
     // I/O Ports (bidirectional communication with main CPU)
     // These are the SPC700's view of the ports:
@@ -556,6 +562,7 @@ pub const Spc700 = struct {
             .psw = 0x00, // All flags clear
 
             .ram = [_]u8{0} ** 65536,
+            .dsp = Dsp.init(),
 
             // Ports - start at 0, IPL ROM will write $AA/$BB after RAM clear
             // Do NOT pre-initialize to $AA/$BB - the IPL ROM must write these
@@ -2445,26 +2452,24 @@ pub const Spc700 = struct {
     }
 
     // =========================================================================
-    // DSP ACCESS (STUB)
+    // DSP ACCESS
     // =========================================================================
-    // TODO: Implement S-DSP emulation for actual audio output
+    // The DSP's 128 registers are reached through $F2 (address) / $F3
+    // (data). See dsp.zig for the full register map and synthesis logic.
 
     fn readDsp(self: *Spc700, addr: u8) u8 {
-        _ = self;
-        // DSP registers are not yet implemented
-        // Most are write-only anyway; ENVX, OUTX, ENDX are readable
-        if (comptime dbg.enabled) {
-            std.debug.print("[SPC700] DSP read: ${x:0>2}\n", .{addr});
+        const value = self.dsp.read(addr);
+        if (comptime dbg.trace_apu) {
+            std.debug.print("[SPC700] DSP read: ${x:0>2} = ${x:0>2}\n", .{ addr, value });
         }
-        return 0;
+        return value;
     }
 
     fn writeDsp(self: *Spc700, addr: u8, value: u8) void {
-        _ = self;
-        // DSP registers are not yet implemented
-        if (comptime dbg.enabled) {
+        if (comptime dbg.trace_apu) {
             std.debug.print("[SPC700] DSP write: ${x:0>2} = ${x:0>2}\n", .{ addr, value });
         }
+        self.dsp.write(addr, value);
     }
 
     // =========================================================================

@@ -119,6 +119,7 @@ pub fn main() !void {
     var every: u32 = 0;
     var every_dir: []const u8 = "";
     var dump_path: ?[]const u8 = null;
+    var wav_path: ?[]const u8 = null;
 
     var i: usize = 4;
     while (i < args.len) : (i += 1) {
@@ -132,6 +133,9 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, args[i], "--dump")) {
             i += 1;
             dump_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--wav")) {
+            i += 1;
+            wav_path = args[i];
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
             return error.BadArgs;
@@ -147,6 +151,10 @@ pub fn main() !void {
     emulator.setup();
     try emulator.loadRom(rom_data);
 
+    // Audio capture: at 32kHz a frame is ~533 samples; collect them all
+    var audio: std.ArrayListUnmanaged([2]i16) = .empty;
+    defer audio.deinit(allocator);
+
     var frame: u32 = 0;
     while (frame < total_frames) : (frame += 1) {
         // Apply any scheduled input for this frame. Multiple overlapping
@@ -160,6 +168,15 @@ pub fn main() !void {
         emulator.setJoypad(0, pad);
 
         emulator.runFrame();
+
+        if (wav_path != null) {
+            var chunk: [2048][2]i16 = undefined;
+            while (true) {
+                const n = emulator.readAudioSamples(&chunk);
+                if (n == 0) break;
+                try audio.appendSlice(allocator, chunk[0..n]);
+            }
+        }
 
         if (every != 0 and frame % every == 0) {
             var path_buf: [512]u8 = undefined;
@@ -175,6 +192,39 @@ pub fn main() !void {
         try dumpState(path);
         std.debug.print("Wrote PPU state dump to {s}\n", .{path});
     }
+
+    if (wav_path) |path| {
+        try writeWav(path, audio.items);
+        std.debug.print("Wrote {d} audio frames ({d:.1}s) to {s}\n", .{
+            audio.items.len,
+            @as(f64, @floatFromInt(audio.items.len)) / 32000.0,
+            path,
+        });
+    }
+}
+
+/// Write captured audio as a standard 16-bit stereo 32kHz WAV file.
+fn writeWav(path: []const u8, frames: []const [2]i16) !void {
+    const file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+
+    const data_bytes: u32 = @intCast(frames.len * 4);
+    var header: [44]u8 = undefined;
+    @memcpy(header[0..4], "RIFF");
+    std.mem.writeInt(u32, header[4..8], 36 + data_bytes, .little);
+    @memcpy(header[8..12], "WAVE");
+    @memcpy(header[12..16], "fmt ");
+    std.mem.writeInt(u32, header[16..20], 16, .little); // fmt chunk size
+    std.mem.writeInt(u16, header[20..22], 1, .little); // PCM
+    std.mem.writeInt(u16, header[22..24], 2, .little); // stereo
+    std.mem.writeInt(u32, header[24..28], 32000, .little); // sample rate
+    std.mem.writeInt(u32, header[28..32], 32000 * 4, .little); // byte rate
+    std.mem.writeInt(u16, header[32..34], 4, .little); // block align
+    std.mem.writeInt(u16, header[34..36], 16, .little); // bits per sample
+    @memcpy(header[36..40], "data");
+    std.mem.writeInt(u32, header[40..44], data_bytes, .little);
+    try file.writeAll(&header);
+    try file.writeAll(std.mem.sliceAsBytes(frames));
 }
 
 /// Dump complete PPU state (registers + VRAM + CGRAM + OAM) to a file for

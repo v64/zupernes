@@ -60,6 +60,10 @@ pub const Apu = struct {
     /// In 16.16 fixed point: 3.496 * 65536 = 229,146
     cycles_per_spc: u32 = 229146,
 
+    /// SPC700 cycles accumulated toward the next DSP sample (one stereo
+    /// sample every 32 SPC cycles = 32kHz)
+    dsp_timer: u32 = 0,
+
     pub fn init() Apu {
         return Apu{
             .spc = Spc700.init(),
@@ -107,7 +111,21 @@ pub const Apu = struct {
         while (self.cycle_counter >= @as(i32, @intCast(self.cycles_per_spc))) {
             const spc_cycles = self.step();
             self.cycle_counter -= @intCast(spc_cycles * self.cycles_per_spc);
+
+            // Clock the S-DSP: it produces one stereo sample every 32
+            // SPC700 cycles (1.024 MHz / 32 = 32000 Hz)
+            self.dsp_timer += spc_cycles;
+            while (self.dsp_timer >= 32) {
+                self.dsp_timer -= 32;
+                self.spc.dsp.tick(&self.spc.ram);
+            }
         }
+    }
+
+    /// Drain decoded audio (stereo i16 frames at 32kHz) for the frontend.
+    /// Returns the number of frames written into dst.
+    pub fn readSamples(self: *Apu, dst: [][2]i16) usize {
+        return self.spc.dsp.readSamples(dst);
     }
 
     /// Execute one SPC700 instruction, returns cycles consumed
