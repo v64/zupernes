@@ -621,13 +621,34 @@ pub const Ppu = struct {
                     }
                 },
                 2, 3, 4, 5, 6 => {
-                    // Other modes - just render BG1 for now
-                    if ((self.tm & 0x01) != 0) {
-                        const bpp: u8 = if (mode == 3 or mode == 4) 8 else 4;
-                        if (self.renderBgPixel(1, @intCast(x), y, bpp)) |c| {
+                    // Modes 2-6: two BG layers with mode-specific depths.
+                    //   Mode 2: BG1 4bpp, BG2 4bpp (+ offset-per-tile, TODO)
+                    //   Mode 3: BG1 8bpp, BG2 4bpp
+                    //   Mode 4: BG1 8bpp, BG2 2bpp (+ offset-per-tile, TODO)
+                    //   Mode 5: BG1 4bpp, BG2 2bpp (hires - drawn lo-res here)
+                    //   Mode 6: BG1 4bpp only   (hires + offset-per-tile)
+                    // Render back-to-front: BG2 first, then BG1 on top when
+                    // its pixel is opaque and priority allows.
+                    const x8: u8 = @intCast(x);
+                    const bg2_bpp: u8 = switch (mode) {
+                        2, 3 => 4,
+                        else => 2,
+                    };
+                    if (mode != 6 and (self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
+                        if (self.renderBgPixel(2, @intCast(x), y, bg2_bpp)) |c| {
                             color = c.color;
                             bg_priority = c.priority;
-                            bg_layer = 1;
+                            bg_layer = 2;
+                        }
+                    }
+                    if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
+                        const bpp: u8 = if (mode == 3 or mode == 4) 8 else 4;
+                        if (self.renderBgPixel(1, @intCast(x), y, bpp)) |c| {
+                            if (c.priority >= bg_priority or bg_layer == 0) {
+                                color = c.color;
+                                bg_priority = c.priority;
+                                bg_layer = 1;
+                            }
                         }
                     }
                 },
@@ -1224,10 +1245,14 @@ pub const Ppu = struct {
                 }
             },
             2, 3, 4, 5, 6 => {
-                // Other modes - just render BG1/BG2 for now
-                if ((self.ts & 0x02) != 0) {
-                    const bpp: u8 = if (mode == 3 or mode == 4) 8 else 4;
-                    if (self.renderBgPixel(2, x, y, bpp)) |c| {
+                // Modes 2-6 subscreen: BG2 depth varies by mode (see the
+                // main-screen render for the full table); mode 6 has no BG2
+                if (mode != 6 and (self.ts & 0x02) != 0) {
+                    const bg2_bpp: u8 = switch (mode) {
+                        2, 3 => 4,
+                        else => 2,
+                    };
+                    if (self.renderBgPixel(2, x, y, bg2_bpp)) |c| {
                         color = c.color;
                     }
                 }
