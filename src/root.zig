@@ -7,6 +7,9 @@ pub const Ppu = @import("ppu/ppu.zig").Ppu;
 pub const Cartridge = @import("cartridge.zig").Cartridge;
 pub const Dma = @import("dma.zig").Dma;
 
+const zupernes_dots_per_line = @import("ppu/ppu.zig").DOTS_PER_SCANLINE;
+const zupernes_lines_per_frame = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
+
 pub const Emulator = struct {
     cpu: Cpu,
     ppu: Ppu,
@@ -49,17 +52,81 @@ pub const Emulator = struct {
 
     /// Run one CPU instruction
     pub fn step(self: *Emulator) void {
+        // Sync the level-triggered IRQ line: if the H/V timer flag was
+        // acknowledged (game read $4211) or disabled, drop the pending IRQ.
+        if (!self.bus.irq_flag) {
+            self.cpu.irq_pending = false;
+        }
+
         const cycles = self.cpu.step();
 
-        // Run APU (SPC700) to stay synchronized with main CPU
-        // The SPC700 runs at 1.024 MHz, main CPU at ~3.58 MHz
-        // Ratio: 3.58/1.024 ≈ 3.5 CPU cycles per SPC cycle
+        // Run APU (SPC700) to stay synchronized with main CPU.
+        // cpu.step() counts cycles in ~3.58 MHz CPU clocks; the APU's
+        // fixed-point ratio (3.496 CPU clocks per SPC700 cycle) expects
+        // exactly that unit.
         self.bus.runApu(cycles);
 
-        // Track current scanline before tick
+        // Track current position before tick (for scanline-transition and
+        // IRQ-point crossing detection below)
         const prev_scanline = self.ppu.scanline;
+        const prev_dot = self.ppu.dot;
 
-        self.ppu.tick(cycles * 4); // PPU runs at 4x CPU clock
+        // Advance the PPU. One CPU cycle is ~6 master clocks (memory access
+        // speed actually varies: 6 for internal/fast, 8 for SlowROM/WRAM,
+        // 12 for $4016/$4017 - per-access accounting is future cycle-
+        // accuracy work), and one PPU dot is 4 master clocks. This gives
+        // the correct ~227 CPU cycles per 1364-master-cycle scanline.
+        self.ppu.tick(cycles * 6);
+
+        // ======================================================================
+        // H/V TIMER IRQ ($4200 bits 4-5, $4207-$420A)
+        // ======================================================================
+        // The PPU's H/V counters trigger an IRQ when they pass the point
+        // configured in HTIME/VTIME:
+        //   H-IRQ only:  every scanline at H = HTIME
+        //   V-IRQ only:  once per frame at V = VTIME, H = ~2
+        //   H+V IRQ:     once per frame at V = VTIME, H = HTIME
+        // We detect whether the (scanline, dot) position crossed the trigger
+        // point during this instruction. Out-of-range HTIME (>340) or VTIME
+        // (>261) values simply never match - that's how games "disable" the
+        // timer without touching NMITIMEN.
+        // ======================================================================
+        const irq_mode = self.bus.nmitimen & 0x30;
+        if (irq_mode != 0) {
+            const dots_per_line: u32 = @intCast(zupernes_dots_per_line);
+            const total: u32 = dots_per_line * @as(u32, @intCast(zupernes_lines_per_frame));
+            const prev_pos: u32 = @as(u32, prev_scanline) * dots_per_line + prev_dot;
+            const cur_pos: u32 = @as(u32, self.ppu.scanline) * dots_per_line + self.ppu.dot;
+            // Unwrap across the frame boundary so cur is always >= prev
+            const cur_unwrapped = if (cur_pos >= prev_pos) cur_pos else cur_pos + total;
+
+            var crossed = false;
+            if (irq_mode == 0x10) {
+                // H-IRQ every line: find the first position after prev_pos
+                // whose dot component equals HTIME
+                const h: u32 = self.bus.htime;
+                if (h < dots_per_line) {
+                    const line_start = (prev_pos / dots_per_line) * dots_per_line;
+                    const candidate = line_start + h;
+                    const target = if (candidate > prev_pos) candidate else candidate + dots_per_line;
+                    crossed = target <= cur_unwrapped;
+                }
+            } else {
+                // V-IRQ (with or without H component): a single point per frame
+                const h: u32 = if (irq_mode == 0x20) 2 else self.bus.htime;
+                const v: u32 = self.bus.vtime;
+                if (h < dots_per_line and v < zupernes_lines_per_frame) {
+                    const point = v * dots_per_line + h;
+                    const target = if (point > prev_pos) point else point + total;
+                    crossed = target <= cur_unwrapped;
+                }
+            }
+
+            if (crossed) {
+                self.bus.irq_flag = true;
+                self.cpu.triggerIrq();
+            }
+        }
 
         // Check for scanline transitions
         if (self.ppu.scanline != prev_scanline) {

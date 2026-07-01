@@ -106,6 +106,14 @@ pub const Bus = struct {
     // loop would never see it go low during VBlank.
     nmi_flag: bool,
 
+    // IRQ flag for TIMEUP ($4211) bit 7. Set when the H/V timer fires
+    // (per NMITIMEN bits 4-5 and HTIME/VTIME), cleared when the CPU
+    // reads $4211 or when both IRQ enables are turned off. This IS the
+    // IRQ line level: the CPU is interrupted as long as it's set (and
+    // the I flag is clear) - games acknowledge by reading $4211 inside
+    // the handler.
+    irq_flag: bool,
+
     // =========================================================================
     // APU I/O PORTS ($2140-$2143) - SPC700 Communication Interface
     // =========================================================================
@@ -202,6 +210,7 @@ pub const Bus = struct {
             .joy1_shift = 0,
             .joy2_shift = 0,
             .nmi_flag = false,
+            .irq_flag = false,
             // APU with SPC700 CPU - initialized with IPL ROM ready signal
             // The SPC700 starts executing at $FFC0 (IPL ROM) and will
             // write $AA/$BB to ports 0/1 to signal readiness
@@ -403,7 +412,15 @@ pub const Bus = struct {
                 self.nmi_flag = false;
                 return flag | 0x02; // Version bits: CPU version 2
             },
-            0x4211 => return 0x00, // TIMEUP - IRQ flag (H/V IRQ not yet implemented)
+            0x4211 => {
+                // TIMEUP - H/V timer IRQ flag (bit 7), cleared on read.
+                // Reading this register acknowledges the IRQ and drops the
+                // IRQ line (the emulator syncs cpu.irq_pending from
+                // irq_flag each step).
+                const flag: u8 = if (self.irq_flag) 0x80 else 0x00;
+                self.irq_flag = false;
+                return flag;
+            },
             0x4212 => {
                 // HVBJOY - PPU status
                 // Bit 7: VBlank (1 during scanlines 225-261)
@@ -443,7 +460,14 @@ pub const Bus = struct {
 
     fn writeSystemRegister(self: *Bus, addr: u16, value: u8) void {
         switch (addr) {
-            0x4200 => self.nmitimen = value,
+            0x4200 => {
+                self.nmitimen = value;
+                // Disabling both H/V IRQ sources (bits 4-5) acknowledges
+                // any pending timer IRQ - hardware drops the line.
+                if ((value & 0x30) == 0) {
+                    self.irq_flag = false;
+                }
+            },
 
             // Hardware multiplication
             0x4202 => self.wrmpya = value,

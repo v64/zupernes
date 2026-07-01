@@ -5,8 +5,19 @@ const dbg = @import("../debug.zig");
 
 pub const SCREEN_WIDTH: usize = 256;
 pub const SCREEN_HEIGHT: usize = 224; // Can be 224 or 239 depending on overscan
+// =============================================================================
+// NTSC TIMING
+// =============================================================================
+// Master clock: 21.477 MHz. One PPU dot = 4 master cycles, one scanline =
+// 341 dots = 1364 master cycles, one frame = 262 scanlines.
+// (Hardware subtleties not yet modeled: dots 323/327 are 6 master cycles
+// each on most lines - the 341 dots really span 1364, not 341*4=1364...
+// conveniently 341*4 IS 1364, the extra-long dots compensate for two
+// missing ones; and non-interlace odd frames drop 4 cycles on line 240.)
+// =============================================================================
 pub const SCANLINES_PER_FRAME: usize = 262; // NTSC
-pub const DOTS_PER_SCANLINE: usize = 340;
+pub const DOTS_PER_SCANLINE: usize = 341;
+pub const MASTER_CYCLES_PER_DOT: u32 = 4;
 
 pub const Ppu = struct {
     // VRAM - 64KB
@@ -80,6 +91,36 @@ pub const Ppu = struct {
     scroll_latch: u8,
     scroll_latch_set: bool,
 
+    // =========================================================================
+    // MODE 7 REGISTERS - Affine transformation state
+    // =========================================================================
+    // Mode 7 replaces the tile-grid BG1 with a single 1024x1024 pixel plane
+    // (128x128 tiles of 8x8, 8bpp) that is sampled through a 2x2 affine
+    // matrix - this is how the SNES does rotation and scaling (F-Zero,
+    // Mario Kart, SMW boss rooms...).
+    //
+    // For each screen pixel (X,Y) the PPU computes a texture coordinate:
+    //   [ u ]   [ A B ] [ X + hofs - cx ]   [ cx ]
+    //   [ v ] = [ C D ] [ Y + vofs - cy ] + [ cy ]
+    // where A-D are 8.8 signed fixed-point and cx/cy is the rotation center.
+    //
+    // All matrix/center registers are "write twice" (low byte then high
+    // byte) through a shared latch (m7_latch), separate from the BG scroll
+    // latch. M7HOFS/M7VOFS share addresses with BG1HOFS/BG1VOFS ($210D/E)
+    // but latch independently and hold 13-bit signed values.
+    // =========================================================================
+    m7sel: u8, // $211A - Screen flip (bits 0-1) and screen-over mode (bits 6-7)
+    m7a: i16, // $211B - Matrix A (8.8 fixed point, also MPY multiplicand)
+    m7b: i16, // $211C - Matrix B (also MPY multiplier via last byte written)
+    m7c: i16, // $211D - Matrix C
+    m7d: i16, // $211E - Matrix D
+    m7x: i16, // $211F - Center X (13-bit signed)
+    m7y: i16, // $2120 - Center Y (13-bit signed)
+    m7hofs: i16, // $210D - Mode 7 horizontal scroll (13-bit signed)
+    m7vofs: i16, // $210E - Mode 7 vertical scroll (13-bit signed)
+    m7_latch: u8, // Shared write-twice latch for all Mode 7 registers
+    mpy_result: i32, // MPYL/M/H ($2134-$2136): m7a * (signed high byte of m7b)
+
     // Internal state
     vram_addr: u16,
     cgram_addr: u9,
@@ -91,6 +132,11 @@ pub const Ppu = struct {
     scanline: u16,
     dot: u16,
     frame_count: u64,
+
+    // Master-cycle remainder carried between tick() calls (0-3). The PPU
+    // advances in whole dots but the CPU hands us master cycles that are
+    // rarely a multiple of 4.
+    master_accum: u32,
 
     // Latch for VRAM reads
     vram_read_buffer: u8,
@@ -143,6 +189,17 @@ pub const Ppu = struct {
             .coldata = 0,
             .scroll_latch = 0,
             .scroll_latch_set = false,
+            .m7sel = 0,
+            .m7a = 0,
+            .m7b = 0,
+            .m7c = 0,
+            .m7d = 0,
+            .m7x = 0,
+            .m7y = 0,
+            .m7hofs = 0,
+            .m7vofs = 0,
+            .m7_latch = 0,
+            .mpy_result = 0,
             .vram_addr = 0,
             .cgram_addr = 0,
             .oam_addr = 0,
@@ -150,6 +207,7 @@ pub const Ppu = struct {
             .vram_prefetch = 0,
             .scanline = 0,
             .dot = 0,
+            .master_accum = 0,
             .frame_count = 0,
             .vram_read_buffer = 0,
         };
@@ -159,6 +217,7 @@ pub const Ppu = struct {
         self.inidisp = 0x80;
         self.scanline = 0;
         self.dot = 0;
+        self.master_accum = 0;
         self.vram_addr = 0;
         self.cgram_addr = 0;
         self.oam_addr = 0;
@@ -176,10 +235,14 @@ pub const Ppu = struct {
     }
 
     /// Advance PPU by given number of master clock cycles
-    pub fn tick(self: *Ppu, cycles: u32) void {
-        var remaining = cycles;
-        while (remaining > 0) {
-            remaining -= 1;
+    /// Advance the PPU by the given number of MASTER clock cycles.
+    /// Internally the PPU state machine moves one dot (4 master cycles) at
+    /// a time; leftover cycles accumulate for the next call so no time is
+    /// lost between CPU instructions.
+    pub fn tick(self: *Ppu, master_cycles: u32) void {
+        self.master_accum += master_cycles;
+        while (self.master_accum >= MASTER_CYCLES_PER_DOT) {
+            self.master_accum -= MASTER_CYCLES_PER_DOT;
             self.dot += 1;
 
             if (self.dot >= DOTS_PER_SCANLINE) {
@@ -569,8 +632,16 @@ pub const Ppu = struct {
                     }
                 },
                 7 => {
-                    // Mode 7 - affine transform (not implemented yet)
-                    color = backdrop;
+                    // Mode 7 - affine-transformed 8bpp plane on BG1.
+                    // (EXTBG/$2133 bit 6 would add a BG2 view of the same
+                    // plane with per-pixel priority - not yet implemented.)
+                    if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, @intCast(x))) {
+                        if (self.renderMode7Pixel(@intCast(x), y)) |c| {
+                            color = c.color;
+                            bg_priority = c.priority;
+                            bg_layer = 1;
+                        }
+                    }
                 },
             }
 
@@ -682,11 +753,21 @@ pub const Ppu = struct {
                 // water reflections, shadows, and the SMW title screen sky.
                 const use_subscreen = (self.cgwsel & 0x02) != 0;
 
+                // Hardware rule: with "add subscreen" selected, if the
+                // subscreen has NO opaque pixel at this position (all layers
+                // transparent), the FIXED COLOR is used instead - and the
+                // half-math divide is suppressed. Games rely on this for
+                // solid color fills: SMB1 (All-Stars) draws its sky as
+                // backdrop + COLDATA blue with an empty subscreen.
                 var blend_color: u16 = undefined;
+                var subscreen_transparent = false;
                 if (use_subscreen) {
-                    // Render subscreen pixel for this position
-                    // Subscreen uses TS register for layer enable instead of TM
-                    blend_color = self.renderSubscreenPixel(@intCast(x), y, mode, backdrop);
+                    if (self.renderSubscreenPixel(@intCast(x), y, mode)) |sub| {
+                        blend_color = sub;
+                    } else {
+                        blend_color = self.coldata;
+                        subscreen_transparent = true;
+                    }
                 } else {
                     // Use fixed color from COLDATA register
                     blend_color = self.coldata;
@@ -714,9 +795,11 @@ pub const Ppu = struct {
                     b += bb;
                 }
 
-                // Half color math (CGADSUB bit 6) - divide result by 2
-                // This is used for transparency effects
-                const half_math = (self.cgadsub & 0x40) != 0;
+                // Half color math (CGADSUB bit 6) - divide result by 2.
+                // Used for 50% transparency effects. NOT applied when the
+                // subscreen fell back to fixed color (hardware behavior),
+                // nor when the main pixel was forced black by the window.
+                const half_math = (self.cgadsub & 0x40) != 0 and !subscreen_transparent and !force_black;
                 if (half_math) {
                     r = @divTrunc(r, 2);
                     g = @divTrunc(g, 2);
@@ -760,6 +843,109 @@ pub const Ppu = struct {
         color: u16,
         priority: u8,
     };
+
+    /// Sign-extend a 13-bit value (Mode 7 scroll/center registers).
+    fn sign13(value: u16) i16 {
+        const v = value & 0x1FFF;
+        if ((v & 0x1000) != 0) {
+            return @bitCast(v | 0xE000);
+        }
+        return @bitCast(v);
+    }
+
+    /// Update the PPU multiplication result (MPYL/M/H).
+    /// The PPU1 chip contains a 16x8 signed multiplier that is "free" for
+    /// games to use - it computes continuously from M7A x M7B without
+    /// consuming CPU time (unlike the CPU's own multiply at $4202/$4203).
+    fn updateMpy(self: *Ppu, multiplier: i8) void {
+        self.mpy_result = @as(i32, self.m7a) * @as(i32, multiplier);
+    }
+
+    /// Render one Mode 7 pixel.
+    ///
+    /// The Mode 7 plane is stored interleaved in VRAM: the LOW byte of each
+    /// word is the 128x128 tilemap (one byte per tile, no flip/palette
+    /// bits), the HIGH byte is 8bpp tile pixel data. Word address for the
+    /// tilemap entry of tile (tx,ty) is ty*128+tx; word address of pixel
+    /// (px,py) inside tile T is T*64 + py*8 + px.
+    ///
+    /// Per-pixel transform (from fullsnes/bsnes, all i32 math):
+    ///   ox = CLIP(m7hofs - m7x), oy = CLIP(m7vofs - m7y)
+    ///   u = ((m7a*ox & ~63) + (m7b*oy & ~63) + (m7b*sy & ~63) + (m7x<<8) + m7a*sx) >> 8
+    ///   v = ((m7c*ox & ~63) + (m7d*oy & ~63) + (m7d*sy & ~63) + (m7y<<8) + m7c*sx) >> 8
+    /// where CLIP clamps the 13-bit difference to +/-1024 (a hardware
+    /// quirk: the middle terms only keep 10 fractional-truncated bits),
+    /// and sx/sy are the (optionally flipped) screen coordinates.
+    fn renderMode7Pixel(self: *Ppu, x: u16, y: u16) ?BgPixelResult {
+        // M7SEL bits 0-1: horizontal/vertical screen flip
+        const sx: i32 = if ((self.m7sel & 0x01) != 0) 255 - @as(i32, x) else @as(i32, x);
+        const sy: i32 = if ((self.m7sel & 0x02) != 0) 255 - @as(i32, y) else @as(i32, y);
+
+        const ox = mode7Clip(@as(i32, self.m7hofs) - @as(i32, self.m7x));
+        const oy = mode7Clip(@as(i32, self.m7vofs) - @as(i32, self.m7y));
+
+        const a = @as(i32, self.m7a);
+        const b = @as(i32, self.m7b);
+        const c = @as(i32, self.m7c);
+        const d = @as(i32, self.m7d);
+
+        // 8.8 fixed-point texture coordinates. The &~63 truncation on the
+        // precomputed terms matches hardware rounding behavior.
+        const u_fp = ((a * ox) & ~@as(i32, 63)) +
+            ((b * oy) & ~@as(i32, 63)) +
+            ((b * sy) & ~@as(i32, 63)) +
+            (@as(i32, self.m7x) << 8) +
+            (a * sx);
+        const v_fp = ((c * ox) & ~@as(i32, 63)) +
+            ((d * oy) & ~@as(i32, 63)) +
+            ((d * sy) & ~@as(i32, 63)) +
+            (@as(i32, self.m7y) << 8) +
+            (c * sx);
+
+        var u = u_fp >> 8;
+        var v = v_fp >> 8;
+
+        // The plane is 1024x1024 pixels. M7SEL bits 6-7 decide what happens
+        // outside it ("screen over"):
+        //   0/1: wrap around
+        //   2:   transparent
+        //   3:   repeat tile 0 (only the pixel coords wrap within a tile)
+        const out_of_bounds = (u & ~@as(i32, 1023)) != 0 or (v & ~@as(i32, 1023)) != 0;
+        const screen_over = self.m7sel >> 6;
+        if (out_of_bounds and screen_over == 2) return null;
+        u &= 1023;
+        v &= 1023;
+
+        var tile: u16 = 0; // Screen-over mode 3: out-of-bounds uses tile 0
+        if (!out_of_bounds or screen_over != 3) {
+            const tx: u32 = @intCast(u >> 3);
+            const ty: u32 = @intCast(v >> 3);
+            // Tilemap entry: LOW byte of word (ty*128+tx)
+            tile = self.vram[(ty * 128 + tx) * 2];
+        }
+
+        // Pixel: HIGH byte of word (tile*64 + py*8 + px)
+        const px: u32 = @intCast(u & 7);
+        const py: u32 = @intCast(v & 7);
+        const color_index = self.vram[(@as(u32, tile) * 64 + py * 8 + px) * 2 + 1];
+
+        if (color_index == 0) return null; // Color 0 = transparent
+
+        return BgPixelResult{
+            .color = self.getColor(color_index),
+            .priority = 0, // Mode 7 BG1 has a single priority level
+        };
+    }
+
+    /// Mode 7 hardware clamp: the scroll-minus-center difference is a
+    /// 13-bit value clipped to the range -1024..+1023 before entering the
+    /// matrix multiply.
+    fn mode7Clip(value: i32) i32 {
+        if ((value & 0x2000) != 0) {
+            return value | ~@as(i32, 1023);
+        }
+        return value & 1023;
+    }
 
     /// Render a single BG pixel
     fn renderBgPixel(self: *Ppu, bg: u8, x: u16, y: u16, bpp: u8) ?BgPixelResult {
@@ -985,8 +1171,12 @@ pub const Ppu = struct {
     /// Unlike the main screen which composites layers back-to-front with priority,
     /// the subscreen result is simply blended with the main screen via color math.
     /// ==========================================================================
-    fn renderSubscreenPixel(self: *Ppu, x: u16, y: u16, mode: u3, backdrop: u16) u16 {
-        var color: u16 = backdrop;
+    /// Render the subscreen pixel at (x, y), or null if every enabled
+    /// subscreen layer is transparent there. The distinction matters:
+    /// a fully-transparent subscreen makes "add subscreen" color math
+    /// fall back to the fixed color instead of adding the backdrop.
+    fn renderSubscreenPixel(self: *Ppu, x: u16, y: u16, mode: u3) ?u16 {
+        var color: ?u16 = null;
 
         // Note: Subscreen doesn't use window masking for layer enable
         // (though the color window affects where color math applies)
@@ -1049,7 +1239,12 @@ pub const Ppu = struct {
                 }
             },
             7 => {
-                // Mode 7 - not implemented for subscreen
+                // Mode 7 on the subscreen
+                if ((self.ts & 0x01) != 0) {
+                    if (self.renderMode7Pixel(x, y)) |c| {
+                        color = c.color;
+                    }
+                }
             },
         }
 
@@ -1545,9 +1740,11 @@ pub const Ppu = struct {
 
     pub fn readRegister(self: *Ppu, addr: u16) u8 {
         return switch (addr) {
-            0x2134 => 0, // MPYL - Multiplication result low
-            0x2135 => 0, // MPYM - Multiplication result mid
-            0x2136 => 0, // MPYH - Multiplication result high
+            // PPU multiplier result: m7a (16-bit signed) * m7b high byte
+            // (8-bit signed), 24-bit signed result
+            0x2134 => @truncate(@as(u32, @bitCast(self.mpy_result))), // MPYL
+            0x2135 => @truncate(@as(u32, @bitCast(self.mpy_result)) >> 8), // MPYM
+            0x2136 => @truncate(@as(u32, @bitCast(self.mpy_result)) >> 16), // MPYH
             0x2137 => 0, // SLHV - Software latch
             0x2138 => self.readOam(),
             0x2139 => self.readVramLow(),
@@ -1583,15 +1780,21 @@ pub const Ppu = struct {
             0x210B => self.bg12nba = value,
             0x210C => self.bg34nba = value,
             // BG scroll registers (double-write, first write is low 8 bits, second is high 5 bits)
+            // $210D/$210E also feed the Mode 7 scroll registers through the
+            // separate Mode 7 latch (13-bit signed values).
             0x210D => {
                 self.bg1hofs = (@as(u16, value) << 8) | (self.bg1hofs >> 8);
                 self.bg1hofs = (self.bg1hofs & 0xFF00) | self.scroll_latch;
                 self.scroll_latch = value;
+                self.m7hofs = sign13((@as(u16, value) << 8) | self.m7_latch);
+                self.m7_latch = value;
             },
             0x210E => {
                 self.bg1vofs = (@as(u16, value) << 8) | (self.bg1vofs >> 8);
                 self.bg1vofs = (self.bg1vofs & 0xFF00) | self.scroll_latch;
                 self.scroll_latch = value;
+                self.m7vofs = sign13((@as(u16, value) << 8) | self.m7_latch);
+                self.m7_latch = value;
             },
             0x210F => {
                 self.bg2hofs = (@as(u16, value) << 8) | (self.bg2hofs >> 8);
@@ -1636,6 +1839,39 @@ pub const Ppu = struct {
             },
             0x2118 => self.writeVramLow(value),
             0x2119 => self.writeVramHigh(value),
+            // Mode 7 registers - all write-twice through m7_latch except M7SEL
+            0x211A => self.m7sel = value,
+            0x211B => {
+                // M7A - full 16-bit signed 8.8 fixed point
+                self.m7a = @bitCast((@as(u16, value) << 8) | self.m7_latch);
+                self.m7_latch = value;
+                // Writing M7A latches the multiplicand for the PPU multiplier
+                self.updateMpy(@as(i8, @bitCast(@as(u8, @truncate(@as(u16, @bitCast(self.m7b)) >> 8)))));
+            },
+            0x211C => {
+                self.m7b = @bitCast((@as(u16, value) << 8) | self.m7_latch);
+                self.m7_latch = value;
+                // The PPU multiplier computes m7a * (signed 8-bit) every time
+                // the M7B high byte is written; games read the 24-bit result
+                // from MPYL/M/H as a free hardware multiply during Mode 7
+                self.updateMpy(@as(i8, @bitCast(value)));
+            },
+            0x211D => {
+                self.m7c = @bitCast((@as(u16, value) << 8) | self.m7_latch);
+                self.m7_latch = value;
+            },
+            0x211E => {
+                self.m7d = @bitCast((@as(u16, value) << 8) | self.m7_latch);
+                self.m7_latch = value;
+            },
+            0x211F => {
+                self.m7x = sign13((@as(u16, value) << 8) | self.m7_latch);
+                self.m7_latch = value;
+            },
+            0x2120 => {
+                self.m7y = sign13((@as(u16, value) << 8) | self.m7_latch);
+                self.m7_latch = value;
+            },
             0x2121 => {
                 self.cgram_addr = @as(u9, value) << 1;
             },
