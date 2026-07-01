@@ -84,6 +84,32 @@ pub fn build(b: *std.Build) void {
         run_test_harness.addArgs(args);
     }
 
+    // Headless screenshot tool - runs a ROM for N frames without a window
+    // and dumps the framebuffer as PPM. Used for automated visual testing:
+    //   zig build screenshot -- rom.sfc 300 /tmp/out.ppm --input 120:S
+    const screenshot = b.addExecutable(.{
+        .name = "screenshot",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/screenshot.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zupernes", .module = emu_mod },
+            },
+        }),
+    });
+
+    b.installArtifact(screenshot);
+
+    const screenshot_step = b.step("screenshot", "Run headless and dump framebuffer to PPM");
+    const run_screenshot = b.addRunArtifact(screenshot);
+    screenshot_step.dependOn(&run_screenshot.step);
+    run_screenshot.step.dependOn(b.getInstallStep());
+
+    if (b.args) |args| {
+        run_screenshot.addArgs(args);
+    }
+
     // Unit tests
     const emu_tests = b.addTest(.{
         .root_module = emu_mod,

@@ -157,6 +157,54 @@ export fn cleanup() void {
     sgfx.shutdown();
 }
 
+// =============================================================================
+// KEYBOARD -> SNES CONTROLLER MAPPING
+// =============================================================================
+// Layout (roughly matching a real pad held in two hands):
+//   Arrow keys = D-pad          Enter = Start    Right Shift = Select
+//   Z = B (jump)   A = Y (run/carry)   X = A (spin)   S = X
+//   Q = L shoulder   W = R shoulder
+// Button bit layout matches Emulator.setJoypad ($4219:$4218 order).
+// =============================================================================
+var joypad_state: u16 = 0;
+
+fn keyToButton(key: sapp.Keycode) u16 {
+    return switch (key) {
+        .Z => 0x8000, // B
+        .A => 0x4000, // Y
+        .RIGHT_SHIFT => 0x2000, // Select
+        .ENTER => 0x1000, // Start
+        .UP => 0x0800,
+        .DOWN => 0x0400,
+        .LEFT => 0x0200,
+        .RIGHT => 0x0100,
+        .X => 0x0080, // A
+        .S => 0x0040, // X
+        .Q => 0x0020, // L
+        .W => 0x0010, // R
+        else => 0,
+    };
+}
+
+export fn event(ev: [*c]const sapp.Event) void {
+    const e = ev[0];
+    switch (e.type) {
+        .KEY_DOWN => {
+            if (e.key_code == .ESCAPE) {
+                sapp.requestQuit();
+                return;
+            }
+            joypad_state |= keyToButton(e.key_code);
+            state.emulator.setJoypad(0, joypad_state);
+        },
+        .KEY_UP => {
+            joypad_state &= ~keyToButton(e.key_code);
+            state.emulator.setJoypad(0, joypad_state);
+        },
+        else => {},
+    }
+}
+
 fn shaderDesc() sgfx.ShaderDesc {
     var desc: sgfx.ShaderDesc = .{};
 
@@ -249,6 +297,7 @@ pub fn main() !void {
         .init_cb = init,
         .frame_cb = frame,
         .cleanup_cb = cleanup,
+        .event_cb = event,
         .width = WINDOW_WIDTH,
         .height = WINDOW_HEIGHT,
         .window_title = "ZuperNES",

@@ -66,6 +66,47 @@ pub const Bus = struct {
     memsel: u8, // $420D - FastROM enable
 
     // =========================================================================
+    // JOYPAD (Controller) STATE
+    // =========================================================================
+    // The SNES supports two ways to read controllers:
+    //
+    // 1. MANUAL SERIAL READ ($4016/$4017):
+    //    Inherited from the NES. Writing 1 then 0 to $4016 latches the
+    //    current button state into a shift register in each controller.
+    //    Each subsequent read of $4016 (pad 1) or $4017 (pad 2) returns one
+    //    button bit in bit 0, in the order:
+    //      B, Y, Select, Start, Up, Down, Left, Right, A, X, L, R,
+    //    then 4 zero bits (signature), then 1s forever.
+    //
+    // 2. AUTO-JOYPAD READ ($4218-$421F):
+    //    When NMITIMEN ($4200) bit 0 is set, the hardware performs the
+    //    serial read automatically at the start of VBlank and stores the
+    //    results in $4218/$4219 (pad 1 lo/hi) through $421E/$421F (pad 4).
+    //    Register layout (16-bit, JOY1H:JOY1L):
+    //      $4219 (high): B Y Select Start Up Down Left Right
+    //      $4218 (low):  A X L R 0 0 0 0
+    //    Nearly all games (including SMW) use this method.
+    //
+    // We store the live button state as a 16-bit word in the $4219:$4218
+    // layout (B = bit 15 ... R-shoulder = bit 4). The frontend sets this
+    // via Emulator.setJoypad() once per frame.
+    // =========================================================================
+    joypad1: u16, // Live button state for controller 1
+    joypad2: u16, // Live button state for controller 2
+    joy1_latch: u16, // Auto-read latched value (what $4218/$4219 return)
+    joy2_latch: u16,
+    joypad_strobe: bool, // $4016 write bit 0 - while high, shift register reloads
+    joy1_shift: u32, // Manual-read shift registers (bit 31 = next bit out... we
+    joy2_shift: u32, // shift left and return the MSB, padding with 1s)
+
+    // NMI flag for RDNMI ($4210) bit 7. Set when VBlank begins, cleared
+    // when the CPU reads $4210 or when VBlank ends. Games spin on this
+    // flag to synchronize with the display, so the read-clear behavior
+    // matters: without it, a "wait for NMI flag to go low then high"
+    // loop would never see it go low during VBlank.
+    nmi_flag: bool,
+
+    // =========================================================================
     // APU I/O PORTS ($2140-$2143) - SPC700 Communication Interface
     // =========================================================================
     // The SNES audio subsystem (APU) consists of a Sony SPC700 8-bit CPU with
@@ -153,6 +194,14 @@ pub const Bus = struct {
             .rddiv = 0,
             .rdmpy = 0,
             .memsel = 0, // SlowROM by default
+            .joypad1 = 0,
+            .joypad2 = 0,
+            .joy1_latch = 0,
+            .joy2_latch = 0,
+            .joypad_strobe = false,
+            .joy1_shift = 0,
+            .joy2_shift = 0,
+            .nmi_flag = false,
             // APU with SPC700 CPU - initialized with IPL ROM ready signal
             // The SPC700 starts executing at $FFC0 (IPL ROM) and will
             // write $AA/$BB to ports 0/1 to signal readiness
@@ -185,6 +234,10 @@ pub const Bus = struct {
             } else if (addr >= 0x2140 and addr <= 0x2143) {
                 // $2140-$2143: APU I/O ports
                 return self.readApuPort(addr);
+            } else if (addr == 0x2180) {
+                // WMDATA read - returns WRAM byte at the port address and
+                // auto-increments (used by games to stream WRAM via DMA)
+                return self.readWramPort();
             } else if (addr < 0x2200) {
                 // $2100-$21FF: PPU registers (except APU ports)
                 return self.ppu.readRegister(addr);
@@ -235,10 +288,16 @@ pub const Bus = struct {
                 self.wram[addr] = value;
             } else if (addr >= 0x2140 and addr <= 0x2143) {
                 self.writeApuPort(addr, value);
+            } else if (addr >= 0x2180 and addr <= 0x2183) {
+                // WRAM data/address port - must be checked BEFORE the generic
+                // PPU range below, since $2180 sits inside $2100-$21FF but is
+                // a CPU-side register, not a PPU one.
+                self.writeWramRegister(addr, value);
             } else if (addr >= 0x2100 and addr < 0x2200) {
                 self.ppu.writeRegister(addr, value);
-            } else if (addr >= 0x2180 and addr <= 0x2183) {
-                self.writeWramRegister(addr, value);
+            } else if (addr == 0x4016) {
+                // JOYSER0 write - controller strobe/latch
+                self.writeJoypadStrobe(value);
             } else if (addr >= 0x4200 and addr < 0x4400) {
                 self.writeSystemRegister(addr, value);
             }
@@ -320,26 +379,45 @@ pub const Bus = struct {
             // PPU status
             0x4210 => {
                 // RDNMI - NMI flag (bit 7), CPU version (bits 0-3)
-                // Bit 7 is set at start of VBlank, cleared on read
-                const in_vblank = self.ppu.scanline >= 225;
-                return if (in_vblank) 0x82 else 0x02;
+                // Bit 7 is set at the start of VBlank and cleared when this
+                // register is read (acknowledge). Games poll this to detect
+                // VBlank edges, so the read-clear latch behavior is required
+                // for correctness (returning "in vblank" level instead of the
+                // latched edge can hang wait loops).
+                const flag: u8 = if (self.nmi_flag) 0x80 else 0x00;
+                self.nmi_flag = false;
+                return flag | 0x02; // Version bits: CPU version 2
             },
-            0x4211 => return 0x00, // TIMEUP - IRQ flag
+            0x4211 => return 0x00, // TIMEUP - IRQ flag (H/V IRQ not yet implemented)
             0x4212 => {
                 // HVBJOY - PPU status
                 // Bit 7: VBlank (1 during scanlines 225-261)
                 // Bit 6: HBlank (1 during dots 274-339)
                 // Bit 0: Auto-joypad read in progress
+                //
+                // Real hardware takes ~3 scanlines (225-227) to serially clock
+                // 16 bits out of each controller. Well-behaved games wait for
+                // bit 0 to clear before reading $4218-$421F, so we model that
+                // busy window even though our latch is instantaneous.
                 var status: u8 = 0;
                 if (self.ppu.scanline >= 225) status |= 0x80; // VBlank
                 if (self.ppu.dot >= 274) status |= 0x40; // HBlank
+                if ((self.nmitimen & 0x01) != 0 and
+                    self.ppu.scanline >= 225 and self.ppu.scanline < 228)
+                {
+                    status |= 0x01; // Auto-joypad read in progress
+                }
                 return status;
             },
-            0x4016 => return 0, // JOYSER0
-            0x4017 => return 0, // JOYSER1
 
-            // H/V counters
-            0x4218...0x421F => return 0, // Joypad auto-read results
+            // Auto-joypad read results, latched at start of VBlank.
+            // Layout: $4218/$4219 = pad 1 low/high, $421A/$421B = pad 2.
+            // Pads 3/4 (multitap) are not connected - return 0.
+            0x4218 => return @truncate(self.joy1_latch),
+            0x4219 => return @truncate(self.joy1_latch >> 8),
+            0x421A => return @truncate(self.joy2_latch),
+            0x421B => return @truncate(self.joy2_latch >> 8),
+            0x421C...0x421F => return 0,
 
             // DMA registers ($4300-$437F)
             0x4300...0x437F => return self.dma.readRegister(addr),
@@ -418,14 +496,61 @@ pub const Bus = struct {
     }
 
     fn readJoypad(self: *Bus, addr: u16) u8 {
-        _ = self;
-        // TODO: Implement joypad
+        // Manual (NES-style) serial controller read.
+        // Each read returns one button bit in bit 0 and advances the shift
+        // register. While the strobe is held high, the register continuously
+        // reloads, so reads return the first button (B) repeatedly.
         switch (addr) {
-            0x4016 => return 0, // JOYSER0
-            0x4017 => return 0, // JOYSER1
-            0x4218...0x421F => return 0, // JOY1-4
+            0x4016 => {
+                // JOYSER0 - controller port 1
+                if (self.joypad_strobe) self.reloadShiftRegisters();
+                const bit: u8 = @truncate(self.joy1_shift >> 31);
+                self.joy1_shift = (self.joy1_shift << 1) | 1; // Pad with 1s after 16 bits
+                return bit;
+            },
+            0x4017 => {
+                // JOYSER1 - controller port 2
+                // Bits 2-4 read as 1 on real hardware (open bus quirk of port 2)
+                if (self.joypad_strobe) self.reloadShiftRegisters();
+                const bit: u8 = @truncate(self.joy2_shift >> 31);
+                self.joy2_shift = (self.joy2_shift << 1) | 1;
+                return bit | 0x1C;
+            },
             else => return 0,
         }
+    }
+
+    /// Write to $4016 (JOYSER0) - controller strobe/latch.
+    /// Writing bit0=1 makes the controllers continuously load their button
+    /// state; writing bit0=0 freezes it so serial reads can shift it out.
+    fn writeJoypadStrobe(self: *Bus, value: u8) void {
+        const strobe = (value & 1) != 0;
+        if (self.joypad_strobe and !strobe) {
+            // Falling edge: latch current state for shifting
+            self.reloadShiftRegisters();
+        }
+        self.joypad_strobe = strobe;
+    }
+
+    /// Load live button state into the manual-read shift registers.
+    /// The 16-bit state (B first) goes in the top bits of a 32-bit register;
+    /// the bits below are set to 1 so that reads past the 16th return 1
+    /// ("controller connected" signature per SNES convention).
+    fn reloadShiftRegisters(self: *Bus) void {
+        self.joy1_shift = (@as(u32, self.joypad1) << 16) | 0xFFFF;
+        self.joy2_shift = (@as(u32, self.joypad2) << 16) | 0xFFFF;
+    }
+
+    /// Latch controller state into the auto-read registers ($4218-$421B).
+    /// Called by the emulator at the start of VBlank when auto-joypad read
+    /// is enabled (NMITIMEN bit 0). On hardware this takes ~3 scanlines of
+    /// serial clocking; we latch instantly and report "busy" via HVBJOY.
+    pub fn autoJoypadRead(self: *Bus) void {
+        self.joy1_latch = self.joypad1;
+        self.joy2_latch = self.joypad2;
+        // The auto-read leaves the manual shift registers empty (it clocks
+        // them through), but games using auto-read don't mix modes, so we
+        // don't model that detail.
     }
 
     /// DMA read from A-bus (full 24-bit address)
@@ -443,13 +568,27 @@ pub const Bus = struct {
     }
 
     /// DMA read from B-bus (PPU register at $21xx)
+    /// The B-bus also exposes the WRAM port ($2180) and APU ports
+    /// ($2140-$2143), not just PPU registers - route accordingly.
     pub fn readPpuDma(self: *Bus, addr: u16) u8 {
+        if (addr == 0x2180) return self.readWramPort();
+        if (addr >= 0x2140 and addr <= 0x2143) return self.readApuPort(addr);
         return self.ppu.readRegister(addr);
     }
 
     /// DMA write to B-bus (PPU register at $21xx)
+    /// Games commonly DMA to $2180 (WMDATA) to clear or copy blocks of WRAM.
     pub fn writePpuDma(self: *Bus, addr: u16, value: u8) void {
+        if (addr >= 0x2180 and addr <= 0x2183) return self.writeWramRegister(addr, value);
+        if (addr >= 0x2140 and addr <= 0x2143) return self.writeApuPort(addr, value);
         self.ppu.writeRegister(addr, value);
+    }
+
+    /// Read from the WRAM data port ($2180) and auto-increment the address.
+    fn readWramPort(self: *Bus) u8 {
+        const value = self.wram[self.wram_addr & 0x1FFFF];
+        self.wram_addr = (self.wram_addr + 1) & 0x1FFFF;
+        return value;
     }
 
     fn writeWramRegister(self: *Bus, addr: u16, value: u8) void {

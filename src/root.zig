@@ -69,11 +69,28 @@ pub const Emulator = struct {
                 self.bus.dma.initHdma(&self.bus);
             }
 
-            // Trigger NMI at start of VBlank (scanline 225) if enabled
+            // Start of VBlank (scanline 225):
             if (self.ppu.scanline == 225) {
+                // Set the RDNMI ($4210) flag - it latches regardless of
+                // whether NMI generation is enabled, and is cleared when
+                // the CPU reads $4210 (or when VBlank ends, below).
+                self.bus.nmi_flag = true;
+
+                // Auto-joypad read: hardware serially clocks the controllers
+                // into $4218-$421F at VBlank start when NMITIMEN bit 0 is set
+                if ((self.bus.nmitimen & 0x01) != 0) {
+                    self.bus.autoJoypadRead();
+                }
+
+                // Trigger NMI if enabled (NMITIMEN bit 7)
                 if ((self.bus.nmitimen & 0x80) != 0) {
                     self.cpu.triggerNmi();
                 }
+            }
+
+            // End of VBlank: the RDNMI flag clears itself even if never read
+            if (self.ppu.scanline == 0) {
+                self.bus.nmi_flag = false;
             }
 
             // Run HDMA at H-blank (start of each scanline during visible area)
@@ -94,6 +111,21 @@ pub const Emulator = struct {
     /// Get the current framebuffer for rendering
     pub fn getFramebuffer(self: *Emulator) []const u16 {
         return self.ppu.getFramebuffer();
+    }
+
+    /// Set the live button state for a controller (0 = pad 1, 1 = pad 2).
+    /// Button layout matches the $4219:$4218 auto-read register pair:
+    ///   bit 15: B      bit 11: Up      bit 7: A
+    ///   bit 14: Y      bit 10: Down    bit 6: X
+    ///   bit 13: Select bit  9: Left    bit 5: L
+    ///   bit 12: Start  bit  8: Right   bit 4: R
+    /// (bits 3-0 are always 0 for a standard controller)
+    pub fn setJoypad(self: *Emulator, pad: u1, buttons: u16) void {
+        if (pad == 0) {
+            self.bus.joypad1 = buttons & 0xFFF0;
+        } else {
+            self.bus.joypad2 = buttons & 0xFFF0;
+        }
     }
 };
 
