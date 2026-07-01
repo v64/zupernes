@@ -1681,13 +1681,16 @@ pub const Ppu = struct {
     }
 
     fn prefetchVram(self: *Ppu) void {
-        const addr = self.getVramAddr();
+        const addr: usize = self.getVramAddr();
         self.vram_prefetch = @as(u16, self.vram[addr * 2 + 1]) << 8 | self.vram[addr * 2];
     }
 
     fn getVramAddr(self: *Ppu) u16 {
-        // Apply address remapping based on VMAIN
-        const addr = self.vram_addr;
+        // Apply address remapping based on VMAIN.
+        // VRAM is 32K words; the address register is 16 bits but the top bit
+        // is ignored (addresses $8000-$FFFF mirror $0000-$7FFF). Masking here
+        // also keeps the byte-index math (addr * 2) from overflowing.
+        const addr = self.vram_addr & 0x7FFF;
         return switch ((self.vmain >> 2) & 3) {
             0 => addr,
             1 => (addr & 0xFF00) | ((addr & 0x00E0) >> 5) | ((addr & 0x001F) << 3),

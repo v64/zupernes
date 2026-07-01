@@ -251,15 +251,20 @@ pub const Bus = struct {
                 // $4200-$43FF: DMA, PPU2 status, etc.
                 return self.readSystemRegister(addr);
             } else if (addr < 0x8000) {
-                // $4400-$7FFF: Expansion
+                // $4400-$7FFF: Expansion area.
+                // On HiROM boards, banks $20-$3F map SRAM at $6000-$7FFF.
+                if (addr >= 0x6000 and effective_bank >= 0x20 and self.isHiRom()) {
+                    return self.readSram(effective_bank, addr);
+                }
                 return 0;
             } else {
                 // $8000-$FFFF: ROM
                 return self.readRom(effective_bank, addr);
             }
         } else if (effective_bank >= 0x70 and effective_bank <= 0x7D) {
-            // SRAM
-            if (addr < 0x8000) {
+            // LoROM: SRAM in the lower half, ROM above.
+            // HiROM: this whole range mirrors ROM banks $C0-$FF.
+            if (addr < 0x8000 and !self.isHiRom()) {
                 return self.readSram(effective_bank, addr);
             } else {
                 return self.readRom(effective_bank, addr);
@@ -300,9 +305,12 @@ pub const Bus = struct {
                 self.writeJoypadStrobe(value);
             } else if (addr >= 0x4200 and addr < 0x4400) {
                 self.writeSystemRegister(addr, value);
+            } else if (addr >= 0x6000 and addr < 0x8000 and effective_bank >= 0x20 and self.isHiRom()) {
+                // HiROM SRAM window (banks $20-$3F, $6000-$7FFF)
+                self.writeSram(effective_bank, addr, value);
             }
         } else if (effective_bank >= 0x70 and effective_bank <= 0x7D) {
-            if (addr < 0x8000) {
+            if (addr < 0x8000 and !self.isHiRom()) {
                 self.writeSram(effective_bank, addr, value);
             }
         } else if (effective_bank >= 0x7E and effective_bank <= 0x7F) {
@@ -312,6 +320,13 @@ pub const Bus = struct {
                 self.wram[wram_addr] = value;
             }
         }
+    }
+
+    fn isHiRom(self: *const Bus) bool {
+        if (self.cartridge) |cart| {
+            return cart.cart_type != .LoROM;
+        }
+        return false;
     }
 
     fn readRom(self: *Bus, bank: u8, addr: u16) u8 {
