@@ -118,6 +118,7 @@ pub fn main() !void {
     defer inputs.deinit(allocator);
     var every: u32 = 0;
     var every_dir: []const u8 = "";
+    var dump_path: ?[]const u8 = null;
 
     var i: usize = 4;
     while (i < args.len) : (i += 1) {
@@ -128,6 +129,9 @@ pub fn main() !void {
             every = try std.fmt.parseInt(u32, args[i + 1], 10);
             every_dir = args[i + 2];
             i += 2;
+        } else if (std.mem.eql(u8, args[i], "--dump")) {
+            i += 1;
+            dump_path = args[i];
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
             return error.BadArgs;
@@ -166,4 +170,53 @@ pub fn main() !void {
 
     try writePpm(emulator.getFramebuffer(), out_path);
     std.debug.print("Wrote {s} after {d} frames\n", .{ out_path, total_frames });
+
+    if (dump_path) |path| {
+        try dumpState(path);
+        std.debug.print("Wrote PPU state dump to {s}\n", .{path});
+    }
+}
+
+/// Dump complete PPU state (registers + VRAM + CGRAM + OAM) to a file for
+/// offline analysis. Format: text header with register values, then raw
+/// binary sections. This lets us inspect exactly what the game put in
+/// video memory at any point, and diff against known-good emulators.
+fn dumpState(path: []const u8) !void {
+    const file = try std.fs.cwd().createFile(path, .{});
+    defer file.close();
+
+    const ppu = &emulator.ppu;
+    var buf: [4096]u8 = undefined;
+    const header = try std.fmt.bufPrint(&buf,
+        \\ZUPERNES-DUMP-V1
+        \\frame={d}
+        \\inidisp={x:0>2} bgmode={x:0>2} mosaic={x:0>2}
+        \\bg1sc={x:0>2} bg2sc={x:0>2} bg3sc={x:0>2} bg4sc={x:0>2}
+        \\bg12nba={x:0>2} bg34nba={x:0>2}
+        \\bg1hofs={d} bg1vofs={d} bg2hofs={d} bg2vofs={d}
+        \\bg3hofs={d} bg3vofs={d} bg4hofs={d} bg4vofs={d}
+        \\tm={x:0>2} ts={x:0>2} tmw={x:0>2} tsw={x:0>2}
+        \\cgwsel={x:0>2} cgadsub={x:0>2}
+        \\w12sel={x:0>2} w34sel={x:0>2} wobjsel={x:0>2}
+        \\wh0={d} wh1={d} wh2={d} wh3={d}
+        \\obsel={x:0>2}
+        \\BINARY: vram[65536] cgram[512] oam[544]
+        \\
+    , .{
+        ppu.frame_count,
+        ppu.inidisp,       ppu.bgmode,   ppu.mosaic,
+        ppu.bg1sc,         ppu.bg2sc,    ppu.bg3sc,    ppu.bg4sc,
+        ppu.bg12nba,       ppu.bg34nba,
+        ppu.bg1hofs,       ppu.bg1vofs,  ppu.bg2hofs,  ppu.bg2vofs,
+        ppu.bg3hofs,       ppu.bg3vofs,  ppu.bg4hofs,  ppu.bg4vofs,
+        ppu.tm,            ppu.ts,       ppu.tmw,      ppu.tsw,
+        ppu.cgwsel,        ppu.cgadsub,
+        ppu.w12sel,        ppu.w34sel,   ppu.wobjsel,
+        ppu.wh0,           ppu.wh1,      ppu.wh2,      ppu.wh3,
+        ppu.obsel,
+    });
+    try file.writeAll(header);
+    try file.writeAll(&ppu.vram);
+    try file.writeAll(&ppu.cgram);
+    try file.writeAll(&ppu.oam);
 }

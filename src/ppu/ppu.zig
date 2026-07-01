@@ -867,13 +867,6 @@ pub const Ppu = struct {
         // Parse tilemap entry
         const tile_num: u16 = tilemap_entry & 0x3FF;
 
-        // DIAGNOSTIC TEST: Check if tilemap entry $0000 should be fully transparent
-        // Some games use $0000 entries as "empty space" expecting tile 0 to be blank.
-        // If tile 0's chr data isn't actually blank, this causes visual artifacts.
-        // TODO: Investigate if this is correct SNES behavior or a data loading issue.
-        if (tilemap_entry == 0x0000) {
-            return null; // Treat $0000 tilemap entries as fully transparent
-        }
 
         // Debug: trace BG3 tile reading on frame 600
         // Trace first few positions to verify tile reading

@@ -56,10 +56,13 @@ pub const Dma = struct {
         // =============================================================================
         // DMAPx ($43x0) - DMA/HDMA Parameters
         // =============================================================================
-        // Bit layout: da-itppp
+        // Bit layout: da-ssppp
         //   ppp (bits 0-2): Transfer pattern select
-        //   t   (bit 3):    A-bus address step (0=increment, 1=decrement)
-        //   i   (bit 4):    Fixed transfer (DMA) - A-bus address doesn't change
+        //   ss  (bits 3-4): A-bus address step:
+        //                     0 = increment, 2 = decrement, 1 or 3 = FIXED
+        //                   (Note: this is a 2-bit field, not independent
+        //                   "decrement" and "fixed" flags! Bit 3 alone means
+        //                   fixed - the mode games use for DMA memory fills.)
         //   -   (bit 5):    Unused
         //   a   (bit 6):    HDMA addressing mode (0=absolute/table, 1=indirect)
         //   d   (bit 7):    Transfer direction (0=A→B / CPU→PPU, 1=B→A / PPU→CPU)
@@ -76,11 +79,9 @@ pub const Dma = struct {
         // =============================================================================
         transfer_mode: u3 = 0,
 
-        // A-bus address step: 0=increment, 1=decrement
-        a_addr_decrement: bool = false,
-
-        // Fixed transfer mode (DMA only): 0=normal, 1=A-bus address fixed
-        a_addr_fixed: bool = false,
+        // A-bus address step field (bits 4:3):
+        //   0 = increment, 2 = decrement, 1 or 3 = fixed (no change)
+        a_step: u2 = 0,
 
         // Unused bit 5
         _unused: bool = false,
@@ -240,11 +241,17 @@ pub const Dma = struct {
                     bus.writeDma(channel.a_addr, value);
                 }
 
-                // Update A-bus address
-                if (!ctrl.a_addr_decrement) {
-                    channel.a_addr +%= 1;
-                } else {
-                    channel.a_addr -%= 1;
+                // Update A-bus address according to the step field.
+                // Fixed mode (step 1 or 3) keeps the address constant - this
+                // is how games do memory fills: point at a single constant
+                // byte and DMA it repeatedly (e.g. clearing VRAM with $00).
+                // Note: only the 16-bit offset changes; the bank byte is NOT
+                // affected by increment/decrement on real hardware (a 64KB
+                // transfer wraps within the bank).
+                if ((ctrl.a_step & 1) == 0) {
+                    const offset: u16 = @truncate(channel.a_addr);
+                    const new_offset = if (ctrl.a_step == 0) offset +% 1 else offset -% 1;
+                    channel.a_addr = (channel.a_addr & 0xFF0000) | new_offset;
                 }
 
                 byte_index = (byte_index + 1) % transfer_size;
