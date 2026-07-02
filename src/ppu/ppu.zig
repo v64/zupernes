@@ -19,6 +19,72 @@ pub const SCANLINES_PER_FRAME: usize = 262; // NTSC
 pub const DOTS_PER_SCANLINE: usize = 341;
 pub const MASTER_CYCLES_PER_DOT: u32 = 4;
 
+// =============================================================================
+// COMPTIME-GENERATED LOOKUP TABLES
+// =============================================================================
+// Zig evaluates these initializers entirely at compile time: the loops below
+// run inside the compiler, and only the finished tables are embedded in the
+// binary's read-only data section. This is the idiomatic Zig way to trade a
+// little binary size for zero runtime table-building cost and no per-pixel
+// arithmetic. (Contrast with the S-DSP's GAUSS/RATE_TABLE in apu/dsp.zig,
+// which are hand-written literals because they mirror data physically baked
+// into the chip - those must NOT be generated from a formula.)
+// =============================================================================
+
+/// Master brightness LUT: BRIGHTNESS_LUT[brightness][component] = scaled component.
+///
+/// INIDISP ($2100) bits 0-3 select a master brightness of 0 (black) to 15
+/// (full). Hardware scales every color component linearly: out = in * b / 15.
+/// Doing that per pixel costs three integer divisions - one of the slowest
+/// ALU operations - on all 57,344 pixels of every frame. This 16x32-entry
+/// table (1KB, permanently L1-resident) replaces them with three loads.
+///
+/// Row 0 is all zeros (screen black) and row 15 is the identity, so the
+/// render loop needs no special-case branches for those either.
+const BRIGHTNESS_LUT: [16][32]u16 = blk: {
+    var table: [16][32]u16 = undefined;
+    for (0..16) |b| {
+        for (0..32) |c| {
+            table[b][c] = @intCast((c * b) / 15);
+        }
+    }
+    break :blk table;
+};
+
+/// Bitplane spread LUT: each bit of the input byte moves to every SECOND bit
+/// of the output (bit n -> bit 2n), leaving a zero between each data bit.
+///
+/// Why: SNES tiles are stored PLANAR - a row of 8 pixels is split across
+/// 2/4/8 separate "bitplane" bytes, where plane byte k holds bit k of all
+/// 8 pixels. To get one pixel's color index you must gather one bit from
+/// every plane. Done naively that's a shift+mask+shift+or PER PLANE PER
+/// PIXEL (see getTilePixel's history in git).
+///
+/// With this table, two planes are combined in one step:
+///     merged = PLANE_SPREAD[plane0] | PLANE_SPREAD[plane1] << 1
+/// yields a u16 holding all eight 2-bit pixel values of the row at once
+/// (pixel x lives at bits [2*(7-x) +: 2], because bitplane bit 7 is the
+/// leftmost pixel). One shift+mask then extracts any pixel - and a future
+/// line-buffer renderer can decode the whole row from `merged` with no
+/// further VRAM reads, which is the groundwork this table really lays.
+const PLANE_SPREAD: [256]u16 = blk: {
+    // The compiler limits comptime loop iterations (default 1000) to catch
+    // accidental infinite loops during compilation; 256 bytes x 8 bits
+    // exceeds it, so raise the quota for this block.
+    @setEvalBranchQuota(256 * 8 * 2);
+    var table: [256]u16 = undefined;
+    for (0..256) |byte| {
+        var spread: u16 = 0;
+        for (0..8) |bit| {
+            if ((byte >> bit) & 1 != 0) {
+                spread |= 1 << (bit * 2);
+            }
+        }
+        table[byte] = spread;
+    }
+    break :blk table;
+};
+
 pub const Ppu = struct {
     // VRAM - 64KB
     vram: [64 * 1024]u8,
@@ -524,6 +590,13 @@ pub const Ppu = struct {
         // Get background color from CGRAM[0]
         const backdrop = self.getColor(0);
 
+        // Select the master-brightness row once per scanline (INIDISP can't
+        // change mid-line in our scanline-granularity model; when mid-line
+        // register changes land - see NEXTSTEPS.md - this moves into the
+        // change-replay logic). &-of-array-row so the pixel loop indexes
+        // through a pointer instead of recomputing the row address.
+        const bright: *const [32]u16 = &BRIGHTNESS_LUT[self.inidisp & 0x0F];
+
         // Trace window state during spotlight animation (after frame 240 when display begins)
         // Log every frame at center scanline (112) to see window evolution
         if (comptime dbg.trace_windows) {
@@ -836,27 +909,17 @@ pub const Ppu = struct {
                 color = @as(u16, @intCast(r)) | (@as(u16, @intCast(g)) << 5) | (@as(u16, @intCast(b)) << 10);
             }
 
-            // Apply master brightness from INIDISP bits 0-3
-            // Brightness 0 = black, 15 = full brightness
-            // Scale each color component: component = component * brightness / 15
-            const brightness: u16 = self.inidisp & 0x0F;
-            if (brightness == 0) {
-                // Brightness 0 = completely black
-                self.framebuffer[start + x] = 0;
-            } else if (brightness < 15) {
-                // Partial brightness - scale each 5-bit color component
-                // SNES color format: 0bbbbbgg gggrrrrr (15-bit BGR)
-                const r: u16 = color & 0x1F;
-                const g: u16 = (color >> 5) & 0x1F;
-                const b: u16 = (color >> 10) & 0x1F;
-                const scaled_r: u16 = (r * brightness) / 15;
-                const scaled_g: u16 = (g * brightness) / 15;
-                const scaled_b: u16 = (b * brightness) / 15;
-                self.framebuffer[start + x] = scaled_r | (scaled_g << 5) | (scaled_b << 10);
-            } else {
-                // Full brightness - no scaling needed
-                self.framebuffer[start + x] = color;
-            }
+            // Apply master brightness from INIDISP bits 0-3.
+            // Brightness 0 = black, 15 = full; hardware scales each 5-bit
+            // component as component * brightness / 15. The comptime
+            // BRIGHTNESS_LUT (row selected once per scanline above) replaces
+            // the three per-pixel integer divisions with three table loads,
+            // branch-free: row 0 is all zeros and row 15 is the identity, so
+            // the old special cases fall out of the same lookup.
+            // SNES color format: 0bbbbbgg gggrrrrr (15-bit BGR)
+            self.framebuffer[start + x] = bright[color & 0x1F] |
+                (bright[(color >> 5) & 0x1F] << 5) |
+                (bright[(color >> 10) & 0x1F] << 10);
         }
     }
 
@@ -1281,46 +1344,48 @@ pub const Ppu = struct {
 
     /// Get a pixel value from tile data
     /// base_addr is a BYTE address into VRAM
+    ///
+    /// SNES uses planar format - bitplanes come in pairs, and a tile stores
+    /// each row's pair bytes adjacently:
+    ///   2bpp: bp0, bp1 for each row (16 bytes per tile)
+    ///   4bpp: all rows of bp0/bp1, then all rows of bp2/bp3 (32 bytes)
+    ///   8bpp: bp0/1, bp2/3, bp4/5, bp6/7 sections of 16 bytes each (64 bytes)
+    ///
+    /// Each plane PAIR is merged via the comptime PLANE_SPREAD table into a
+    /// u16 holding all eight 2-bit pixel slices of the row, then the wanted
+    /// pixel's slice is extracted with a single shift+mask. Pixel px=0 is the
+    /// LEFTMOST pixel, which lives in bit 7 of each plane byte - hence the
+    /// (7 - px) in the shift amount.
     fn getTilePixel(self: *Ppu, base_addr: u32, px: u8, py: u8, bpp: u8) u8 {
-        var pixel: u8 = 0;
-
-        // SNES uses planar format - bitplanes are interleaved
-        // 2bpp: bp0, bp1 for each row (16 bytes per tile)
-        // 4bpp: bp0, bp1, then bp2, bp3 (32 bytes per tile)
-        // 8bpp: bp0-1, bp2-3, bp4-5, bp6-7 (64 bytes per tile)
-
-        const bit: u3 = @intCast(7 - px);
+        const shift: u4 = @intCast((7 - px) * 2);
+        const row = @as(u32, py) * 2;
 
         // Bitplanes 0-1
-        const row_addr0 = base_addr + @as(u32, py) * 2;
-        const bp0 = self.vram[@as(usize, row_addr0) & 0xFFFF];
-        const bp1 = self.vram[@as(usize, row_addr0 + 1) & 0xFFFF];
-        pixel |= ((bp0 >> bit) & 1);
-        pixel |= ((bp1 >> bit) & 1) << 1;
+        const bp0 = self.vram[@as(usize, base_addr + row) & 0xFFFF];
+        const bp1 = self.vram[@as(usize, base_addr + row + 1) & 0xFFFF];
+        const merged01 = PLANE_SPREAD[bp0] | (PLANE_SPREAD[bp1] << 1);
+        var pixel: u8 = @truncate((merged01 >> shift) & 3);
 
         if (bpp >= 4) {
-            // Bitplanes 2-3
-            const row_addr2 = base_addr + 16 + @as(u32, py) * 2;
-            const bp2 = self.vram[@as(usize, row_addr2) & 0xFFFF];
-            const bp3 = self.vram[@as(usize, row_addr2 + 1) & 0xFFFF];
-            pixel |= ((bp2 >> bit) & 1) << 2;
-            pixel |= ((bp3 >> bit) & 1) << 3;
+            // Bitplanes 2-3 (next 16-byte section of the tile)
+            const bp2 = self.vram[@as(usize, base_addr + 16 + row) & 0xFFFF];
+            const bp3 = self.vram[@as(usize, base_addr + 16 + row + 1) & 0xFFFF];
+            const merged23 = PLANE_SPREAD[bp2] | (PLANE_SPREAD[bp3] << 1);
+            pixel |= @as(u8, @truncate((merged23 >> shift) & 3)) << 2;
         }
 
         if (bpp >= 8) {
             // Bitplanes 4-5
-            const row_addr4 = base_addr + 32 + @as(u32, py) * 2;
-            const bp4 = self.vram[@as(usize, row_addr4) & 0xFFFF];
-            const bp5 = self.vram[@as(usize, row_addr4 + 1) & 0xFFFF];
-            pixel |= ((bp4 >> bit) & 1) << 4;
-            pixel |= ((bp5 >> bit) & 1) << 5;
+            const bp4 = self.vram[@as(usize, base_addr + 32 + row) & 0xFFFF];
+            const bp5 = self.vram[@as(usize, base_addr + 32 + row + 1) & 0xFFFF];
+            const merged45 = PLANE_SPREAD[bp4] | (PLANE_SPREAD[bp5] << 1);
+            pixel |= @as(u8, @truncate((merged45 >> shift) & 3)) << 4;
 
             // Bitplanes 6-7
-            const row_addr6 = base_addr + 48 + @as(u32, py) * 2;
-            const bp6 = self.vram[@as(usize, row_addr6) & 0xFFFF];
-            const bp7 = self.vram[@as(usize, row_addr6 + 1) & 0xFFFF];
-            pixel |= ((bp6 >> bit) & 1) << 6;
-            pixel |= ((bp7 >> bit) & 1) << 7;
+            const bp6 = self.vram[@as(usize, base_addr + 48 + row) & 0xFFFF];
+            const bp7 = self.vram[@as(usize, base_addr + 48 + row + 1) & 0xFFFF];
+            const merged67 = PLANE_SPREAD[bp6] | (PLANE_SPREAD[bp7] << 1);
+            pixel |= @as(u8, @truncate((merged67 >> shift) & 3)) << 6;
         }
 
         return pixel;
@@ -2044,4 +2109,61 @@ pub const Ppu = struct {
 test "ppu init" {
     const ppu = Ppu.init();
     _ = ppu;
+}
+
+test "brightness LUT matches hardware formula" {
+    // The LUT must be exactly component * brightness / 15 for every entry,
+    // with row 0 all-black and row 15 the identity (those two properties are
+    // what lets the render loop drop its special-case branches).
+    for (0..16) |b| {
+        for (0..32) |c| {
+            const expected: u16 = @intCast((c * b) / 15);
+            try std.testing.expectEqual(expected, BRIGHTNESS_LUT[b][c]);
+        }
+    }
+    try std.testing.expectEqual(@as(u16, 0), BRIGHTNESS_LUT[0][31]);
+    try std.testing.expectEqual(@as(u16, 31), BRIGHTNESS_LUT[15][31]);
+}
+
+test "plane spread LUT interleaves bits" {
+    // Every input bit n must land at output bit 2n and nowhere else.
+    try std.testing.expectEqual(@as(u16, 0x0000), PLANE_SPREAD[0x00]);
+    try std.testing.expectEqual(@as(u16, 0x5555), PLANE_SPREAD[0xFF]); // all 8 bits -> even positions
+    try std.testing.expectEqual(@as(u16, 0x4000), PLANE_SPREAD[0x80]); // bit 7 -> bit 14
+    try std.testing.expectEqual(@as(u16, 0x0001), PLANE_SPREAD[0x01]); // bit 0 -> bit 0
+    // Spot-check a mixed pattern: 0b1010_0110 -> bits 7,5,2,1
+    try std.testing.expectEqual(@as(u16, 0x4000 | 0x0400 | 0x0010 | 0x0004), PLANE_SPREAD[0xA6]);
+}
+
+test "getTilePixel decodes planar tiles via spread LUT" {
+    // Build one 4bpp tile row by hand and verify every pixel decodes to the
+    // same color index the planar format defines. Row 0 planes:
+    //   bp0 = 0b10110100  bp1 = 0b01100010  bp2 = 0b00010110  bp3 = 0b10000001
+    // Pixel x takes bit (7-x) from each plane; e.g. x=0 -> bp3..bp0 bits
+    // 1,0,0,1 -> color 0b1001 = 9.
+    var ppu = Ppu.init();
+    ppu.vram[0] = 0b10110100; // bp0, row 0
+    ppu.vram[1] = 0b01100010; // bp1, row 0
+    ppu.vram[16] = 0b00010110; // bp2, row 0
+    ppu.vram[17] = 0b10000001; // bp3, row 0
+
+    const expected = [8]u8{ 9, 2, 3, 5, 0, 5, 6, 8 };
+    for (0..8) |x| {
+        const bit: u3 = @intCast(7 - x);
+        // Cross-check the expectation against the definition itself
+        const from_planes: u8 = ((ppu.vram[0] >> bit) & 1) |
+            ((ppu.vram[1] >> bit) & 1) << 1 |
+            ((ppu.vram[16] >> bit) & 1) << 2 |
+            ((ppu.vram[17] >> bit) & 1) << 3;
+        try std.testing.expectEqual(expected[x], from_planes);
+        try std.testing.expectEqual(expected[x], ppu.getTilePixel(0, @intCast(x), 0, 4));
+    }
+
+    // 2bpp reads only the first plane pair
+    try std.testing.expectEqual(@as(u8, 1), ppu.getTilePixel(0, 0, 0, 2));
+
+    // 8bpp: planes 4-7 for row 0 live at +32/+33 and +48/+49
+    ppu.vram[32] = 0b10000000; // bp4: pixel 0 gets bit 4
+    ppu.vram[49] = 0b10000000; // bp7: pixel 0 gets bit 7
+    try std.testing.expectEqual(@as(u8, 9 | 0x10 | 0x80), ppu.getTilePixel(0, 0, 0, 8));
 }

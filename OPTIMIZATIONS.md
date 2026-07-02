@@ -33,10 +33,25 @@ value, not configuration). Hoist configuration out of the pixel loop;
 precompute window intervals per scanline (the window is just 1-2 spans —
 resolve to a per-line boolean array or span list once).
 
-### Brightness scaling division (`applyBrightness`, ppu.zig)
-`(component * brightness) / 15` per channel per pixel. A 32x16-entry
-lookup table (5-bit component x 4-bit brightness) eliminates the divides,
-or apply brightness once in the frontend shader instead of the emulator.
+### Brightness scaling division (DONE - measured neutral)
+`(component * brightness) / 15` per channel per pixel, replaced with the
+comptime-generated `BRIGHTNESS_LUT` in ppu.zig (row hoisted per scanline,
+branch-free pixel write). Also `getTilePixel` bitplane extraction now goes
+through the comptime `PLANE_SPREAD` table.
+
+**Measured result (SMW, 2000 frames, ReleaseFast, M-series): 4.0s before,
+4.0s after — no change.** Two lessons worth recording:
+1. LLVM already strength-reduces division by a *constant* (`/15`) into a
+   multiply-shift at ReleaseFast, so the divides we "eliminated" were
+   never real divides in the optimized binary. Constant divisors are cheap;
+   only *variable* divisors deserve LUT treatment on speed grounds.
+2. The render loop's time is dominated by the per-pixel tile refetch item
+   above, so nothing downstream of it can move the total. That item is
+   THE next performance lever for the PPU.
+The LUT versions are kept anyway: output is proven byte-identical, the
+code is branch-free and simpler, and `PLANE_SPREAD` is the building block
+the line-buffer renderer needs (it yields all 8 pixels of a plane-pair row
+in one lookup pair - decode-per-row instead of decode-per-pixel).
 
 ## Frontend
 
