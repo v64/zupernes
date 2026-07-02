@@ -15,16 +15,27 @@ loop (at most 2 iterations for any realistic instruction length). When we
 move to dot-accurate rendering this loop gets real work per dot, so the
 cheap version matters even more as the baseline.
 
-### Per-pixel tile refetch in `renderBgPixel()` (ppu.zig)
-Every screen pixel re-reads scroll registers, recomputes the tilemap
-address, refetches the tilemap entry, and re-decodes CHR bitplanes — even
-though 8 consecutive pixels share one tile. Options, in increasing effort:
-1. Cache the last (bg, tile_x, tile_y) fetch — trivial, ~8x fewer fetches.
-2. Render each enabled BG into a per-scanline line buffer tile-by-tile,
-   decoding each tile row once (bitplane extraction via lookup table),
-   then do priority resolution over the line buffers.
-Option 2 is also the natural structure for correct per-mode priority and
-offset-per-tile modes, so do it as part of the renderer rework, not after.
+### Per-pixel tile refetch in `renderBgPixel()` (DONE - 30% whole-emulator win)
+Every screen pixel re-read scroll registers, recomputed the tilemap
+address, refetched the tilemap entry, and re-decoded CHR bitplanes - even
+though 8 consecutive pixels share one tile. Fixed with the line-buffer
+renderer (`renderBgLine` in ppu.zig): each BG enabled on main OR sub
+screen renders once per scanline into a `BgLine` buffer, walking the line
+in 8-pixel tile runs - one tilemap fetch and one `decodeTileRow` (via the
+comptime PLANE_SPREAD table) per run. Compositing then just reads buffers,
+and the subscreen shares them (it shows the same layers, selected by TS).
+
+**Measured (SMW, 2000 frames, ReleaseFast): 4.05s -> 2.82s, a 30% speedup
+of the ENTIRE emulator** - CPU/APU/DSP included, so the PPU render path
+itself shrank several-fold. Verified byte-identical over 57 captures
+(SMW title->overworld->level, All-Stars into SMB1, both Mode 7 ROMs), and
+a property test pins `renderBgLine` to the retained per-pixel reference
+implementation (`renderBgPixel`) over randomized VRAM/register state.
+
+Still per-pixel and worth revisiting later: sprite tile fetches in
+`renderSprites` (already line-buffered, but calls getTilePixel per pixel),
+and Mode 7 (inherently per-pixel - affine - but the two VRAM byte reads
+per pixel could skip the tilemap re-read when u/v stays in one tile).
 
 ### Per-pixel layer dispatch in `renderScanline()` (ppu.zig)
 The mode switch, TM tests, and window mask checks run per pixel. All of

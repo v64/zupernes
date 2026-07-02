@@ -614,6 +614,52 @@ pub const Ppu = struct {
         var sprite_buffer: [SCREEN_WIDTH]?SpritePixel = undefined;
         self.renderSprites(y, &sprite_buffer);
 
+        // ======================================================================
+        // BG LINE-BUFFER PASS
+        // ======================================================================
+        // Render every BG layer enabled on the main screen (TM) OR the
+        // subscreen (TS) into its line buffer once. The per-pixel compositing
+        // loop below then only reads buffered pixels - the expensive tilemap
+        // walk and bitplane decode happen once per 8-pixel tile run instead
+        // of once per pixel per screen. Layers disabled on both screens keep
+        // undefined buffers; the TM/TS guards below never read them.
+        // Mode 7 is absent here: its affine transform gives every pixel an
+        // independent VRAM address, so buffering rows buys nothing - it
+        // stays per-pixel via renderMode7Pixel().
+        // ======================================================================
+        var bg_lines: [4]BgLine = undefined;
+        {
+            const enabled = self.tm | self.ts;
+            switch (mode) {
+                0 => {
+                    // Mode 0: 4 layers, all 2bpp
+                    for (1..5) |bg| {
+                        if ((enabled & (@as(u8, 1) << @intCast(bg - 1))) != 0) {
+                            self.renderBgLine(@intCast(bg), y, 2, &bg_lines[bg - 1]);
+                        }
+                    }
+                },
+                1 => {
+                    // Mode 1: BG1/BG2 4bpp, BG3 2bpp
+                    if ((enabled & 0x01) != 0) self.renderBgLine(1, y, 4, &bg_lines[0]);
+                    if ((enabled & 0x02) != 0) self.renderBgLine(2, y, 4, &bg_lines[1]);
+                    if ((enabled & 0x04) != 0) self.renderBgLine(3, y, 2, &bg_lines[2]);
+                },
+                2, 3, 4, 5, 6 => {
+                    // Modes 2-6: BG1/BG2 with mode-specific depths (see the
+                    // compositing switch below for the per-mode table)
+                    const bg1_bpp: u8 = if (mode == 3 or mode == 4) 8 else 4;
+                    const bg2_bpp: u8 = switch (mode) {
+                        2, 3 => 4,
+                        else => 2,
+                    };
+                    if ((enabled & 0x01) != 0) self.renderBgLine(1, y, bg1_bpp, &bg_lines[0]);
+                    if (mode != 6 and (enabled & 0x02) != 0) self.renderBgLine(2, y, bg2_bpp, &bg_lines[1]);
+                },
+                7 => {}, // per-pixel affine path below
+            }
+        }
+
         // Render each pixel
         for (0..SCREEN_WIDTH) |x| {
             var color: u16 = backdrop;
@@ -627,14 +673,14 @@ pub const Ppu = struct {
                     // Apply window masking per layer
                     const x8: u8 = @intCast(x);
                     if ((self.tm & 0x08) != 0 and !self.isWindowMasked(3, x8)) {
-                        if (self.renderBgPixel(4, @intCast(x), y, 2)) |c| {
+                        if (bg_lines[3].pixel(x)) |c| {
                             color = c.color;
                             bg_priority = c.priority;
                             bg_layer = 4;
                         }
                     }
                     if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
-                        if (self.renderBgPixel(3, @intCast(x), y, 2)) |c| {
+                        if (bg_lines[2].pixel(x)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
@@ -643,7 +689,7 @@ pub const Ppu = struct {
                         }
                     }
                     if ((self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
-                        if (self.renderBgPixel(2, @intCast(x), y, 2)) |c| {
+                        if (bg_lines[1].pixel(x)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
@@ -652,7 +698,7 @@ pub const Ppu = struct {
                         }
                     }
                     if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
-                        if (self.renderBgPixel(1, @intCast(x), y, 2)) |c| {
+                        if (bg_lines[0].pixel(x)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
@@ -668,14 +714,14 @@ pub const Ppu = struct {
                     // Apply window masking per layer
                     const x8: u8 = @intCast(x);
                     if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
-                        if (self.renderBgPixel(3, @intCast(x), y, 2)) |c| {
+                        if (bg_lines[2].pixel(x)) |c| {
                             color = c.color;
                             bg_priority = c.priority;
                             bg_layer = 3;
                         }
                     }
                     if ((self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
-                        if (self.renderBgPixel(2, @intCast(x), y, 4)) |c| {
+                        if (bg_lines[1].pixel(x)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
@@ -684,7 +730,7 @@ pub const Ppu = struct {
                         }
                     }
                     if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
-                        if (self.renderBgPixel(1, @intCast(x), y, 4)) |c| {
+                        if (bg_lines[0].pixel(x)) |c| {
                             if (c.priority >= bg_priority) {
                                 color = c.color;
                                 bg_priority = c.priority;
@@ -703,20 +749,15 @@ pub const Ppu = struct {
                     // Render back-to-front: BG2 first, then BG1 on top when
                     // its pixel is opaque and priority allows.
                     const x8: u8 = @intCast(x);
-                    const bg2_bpp: u8 = switch (mode) {
-                        2, 3 => 4,
-                        else => 2,
-                    };
                     if (mode != 6 and (self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
-                        if (self.renderBgPixel(2, @intCast(x), y, bg2_bpp)) |c| {
+                        if (bg_lines[1].pixel(x)) |c| {
                             color = c.color;
                             bg_priority = c.priority;
                             bg_layer = 2;
                         }
                     }
                     if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
-                        const bpp: u8 = if (mode == 3 or mode == 4) 8 else 4;
-                        if (self.renderBgPixel(1, @intCast(x), y, bpp)) |c| {
+                        if (bg_lines[0].pixel(x)) |c| {
                             if (c.priority >= bg_priority or bg_layer == 0) {
                                 color = c.color;
                                 bg_priority = c.priority;
@@ -856,7 +897,7 @@ pub const Ppu = struct {
                 var blend_color: u16 = undefined;
                 var subscreen_transparent = false;
                 if (use_subscreen) {
-                    if (self.renderSubscreenPixel(@intCast(x), y, mode)) |sub| {
+                    if (self.renderSubscreenPixel(&bg_lines, @intCast(x), y, mode)) |sub| {
                         blend_color = sub;
                     } else {
                         blend_color = self.coldata;
@@ -1032,6 +1073,247 @@ pub const Ppu = struct {
     }
 
     /// Render a single BG pixel
+    // ==========================================================================
+    // LINE-BUFFER BACKGROUND RENDERING
+    // ==========================================================================
+    // The PPU renders each enabled BG layer into a per-scanline line buffer,
+    // tile run by tile run, instead of resolving every screen pixel
+    // independently. The motivation is that 8 consecutive pixels share one
+    // tilemap entry and one CHR row: fetching and decoding them once per run
+    // does 1/8th the work of the per-pixel approach (which re-read the
+    // tilemap entry and re-extracted bitplanes for every single pixel).
+    //
+    // This structure is also what the hardware conceptually does during
+    // H-blank prefetch, and it is the natural home for upcoming accuracy
+    // features: offset-per-tile (modes 2/4/6) replaces a run's scroll values
+    // per column, and per-mode priority reordering happens at composite time
+    // over the finished buffers.
+    //
+    // renderBgPixel() below is KEPT as the reference implementation: a unit
+    // test cross-checks renderBgLine() against it over randomized VRAM and
+    // register state, so the fast path can never silently diverge from the
+    // readable one.
+    // ==========================================================================
+
+    /// One BG layer's pixels for the current scanline.
+    const BgLine = struct {
+        /// Sentinel in `prio` marking a transparent pixel (real priorities
+        /// are only 0/1, so 0xFF can never collide).
+        const transparent: u8 = 0xFF;
+
+        color: [SCREEN_WIDTH]u16, // resolved 15-bit CGRAM colors
+        prio: [SCREEN_WIDTH]u8, // tile priority bit, or `transparent`
+
+        /// View one buffered pixel in the same shape renderBgPixel returns,
+        /// so the compositing code reads buffers and the reference
+        /// implementation interchangeably.
+        inline fn pixel(line: *const BgLine, x: usize) ?BgPixelResult {
+            if (line.prio[x] == transparent) return null;
+            return .{ .color = line.color[x], .priority = line.prio[x] };
+        }
+    };
+
+    /// Decode one 8-pixel row of a planar tile into color indices.
+    /// Each bitplane pair collapses to a u16 via the comptime PLANE_SPREAD
+    /// table (all eight 2-bit slices at once); this routine is the
+    /// decode-per-row payoff that table was built for. `base_addr` is the
+    /// tile's BYTE address in VRAM, `py` the row within the tile (0-7).
+    fn decodeTileRow(self: *const Ppu, base_addr: u32, py: u8, bpp: u8) [8]u8 {
+        const row = @as(u32, py) * 2;
+        const m01 = PLANE_SPREAD[self.vram[@as(usize, base_addr + row) & 0xFFFF]] |
+            (PLANE_SPREAD[self.vram[@as(usize, base_addr + row + 1) & 0xFFFF]] << 1);
+        var m23: u16 = 0;
+        var m45: u16 = 0;
+        var m67: u16 = 0;
+        if (bpp >= 4) {
+            m23 = PLANE_SPREAD[self.vram[@as(usize, base_addr + 16 + row) & 0xFFFF]] |
+                (PLANE_SPREAD[self.vram[@as(usize, base_addr + 16 + row + 1) & 0xFFFF]] << 1);
+        }
+        if (bpp >= 8) {
+            m45 = PLANE_SPREAD[self.vram[@as(usize, base_addr + 32 + row) & 0xFFFF]] |
+                (PLANE_SPREAD[self.vram[@as(usize, base_addr + 32 + row + 1) & 0xFFFF]] << 1);
+            m67 = PLANE_SPREAD[self.vram[@as(usize, base_addr + 48 + row) & 0xFFFF]] |
+                (PLANE_SPREAD[self.vram[@as(usize, base_addr + 48 + row + 1) & 0xFFFF]] << 1);
+        }
+
+        var out: [8]u8 = undefined;
+        inline for (0..8) |i| {
+            // Pixel 0 is the LEFTMOST pixel and lives in bit 7 of each plane
+            // byte, i.e. slice 7 of the spread word - hence (7 - i).
+            const shift: u4 = @intCast((7 - i) * 2);
+            var p: u8 = @truncate((m01 >> shift) & 3);
+            p |= @as(u8, @truncate((m23 >> shift) & 3)) << 2;
+            p |= @as(u8, @truncate((m45 >> shift) & 3)) << 4;
+            p |= @as(u8, @truncate((m67 >> shift) & 3)) << 6;
+            out[i] = p;
+        }
+        return out;
+    }
+
+    /// Render one full scanline of a BG layer into `line`.
+    ///
+    /// All layer configuration (scroll, tilemap base, tile size, CHR base)
+    /// is hoisted out of the pixel loop - it cannot change mid-line in our
+    /// scanline-granularity model (mid-line register writes are future
+    /// accuracy work; see NEXTSTEPS.md). The scanline is then walked in runs
+    /// of up to 8 pixels that share a single 8x8 tile row, so the tilemap
+    /// entry fetch and bitplane decode happen once per run.
+    ///
+    /// The address math below intentionally mirrors renderBgPixel() line for
+    /// line - see the register-format documentation there for the full
+    /// derivation of the tilemap and character base calculations.
+    fn renderBgLine(self: *Ppu, bg: u8, y: u16, bpp: u8, line: *BgLine) void {
+        // Start fully transparent; only opaque pixels are written below.
+        @memset(&line.prio, BgLine.transparent);
+
+        // ---- Per-layer configuration (constant across the line) ----
+        const hofs: u16 = switch (bg) {
+            1 => self.bg1hofs,
+            2 => self.bg2hofs,
+            3 => self.bg3hofs,
+            4 => self.bg4hofs,
+            else => 0,
+        };
+        const vofs: u16 = switch (bg) {
+            1 => self.bg1vofs,
+            2 => self.bg2vofs,
+            3 => self.bg3vofs,
+            4 => self.bg4vofs,
+            else => 0,
+        };
+        const sc_reg: u8 = switch (bg) {
+            1 => self.bg1sc,
+            2 => self.bg2sc,
+            3 => self.bg3sc,
+            4 => self.bg4sc,
+            else => 0,
+        };
+        // BGMODE bits 4-7: 16x16 tile enable per layer
+        const tile_size_bit: u3 = switch (bg) {
+            1 => 4,
+            2 => 5,
+            3 => 6,
+            4 => 7,
+            else => 4,
+        };
+        const large_tiles = ((self.bgmode >> tile_size_bit) & 1) != 0;
+        const tile_size: u16 = if (large_tiles) 16 else 8;
+        // BG12NBA/BG34NBA nibbles select the CHR base in 8KB steps
+        const chr_base: u32 = switch (bg) {
+            1 => @as(u32, self.bg12nba & 0x0F) << 13,
+            2 => @as(u32, self.bg12nba >> 4) << 13,
+            3 => @as(u32, self.bg34nba & 0x0F) << 13,
+            4 => @as(u32, self.bg34nba >> 4) << 13,
+            else => 0,
+        };
+        const bytes_per_row: u32 = switch (bpp) {
+            2 => 2,
+            4 => 4,
+            8 => 8,
+            else => 2,
+        };
+        const palette_shift: u16 = switch (bpp) {
+            2 => 4, // 2bpp palettes are 4 colors apart
+            4 => 16, // 4bpp palettes are 16 colors apart
+            else => 0, // 8bpp uses the full 256-color palette
+        };
+        const map_width_32 = (sc_reg & 0x01) != 0;
+        const map_height_32 = (sc_reg & 0x02) != 0;
+        const map_base: u32 = @as(u32, sc_reg & 0xFC) << 9;
+
+        // Vertical position is constant for the whole line
+        const sy = (y +% vofs) & 0x3FF;
+        const tile_y = sy / tile_size;
+        const quadrant_y: u16 = (tile_y / 32) & 1;
+        const local_tile_y: u32 = tile_y & 31;
+
+        var x: u16 = 0;
+        while (x < SCREEN_WIDTH) {
+            const sx = (x +% hofs) & 0x3FF;
+            // Run length: pixels remaining in this 8-aligned CHR row. Runs
+            // never straddle a tile (8-blocks nest in 16px tiles) nor the
+            // 1024-pixel map wrap (1024 is 8-aligned), so everything fetched
+            // below is valid for the whole run.
+            const run: u16 = @min(8 - (sx & 7), SCREEN_WIDTH - x);
+
+            // ---- Tilemap entry fetch (once per run) ----
+            const tile_x = sx / tile_size;
+            const quadrant_x: u16 = (tile_x / 32) & 1;
+            var tilemap_addr = map_base;
+            if (map_width_32 and quadrant_x != 0) {
+                tilemap_addr +%= 0x800;
+            }
+            if (map_height_32 and quadrant_y != 0) {
+                tilemap_addr +%= if (map_width_32) 0x1000 else 0x800;
+            }
+            const tilemap_offset: u32 = tilemap_addr + (local_tile_y * 32 + (tile_x & 31)) * 2;
+            const tile_lo = self.vram[@as(usize, tilemap_offset) & 0xFFFF];
+            const tile_hi = self.vram[@as(usize, tilemap_offset + 1) & 0xFFFF];
+            const tilemap_entry: u16 = @as(u16, tile_hi) << 8 | tile_lo;
+
+            const tile_num: u16 = tilemap_entry & 0x3FF;
+            const palette: u8 = @truncate((tilemap_entry >> 10) & 0x07);
+            const tile_priority: u8 = @intCast((tilemap_entry >> 13) & 1);
+            const h_flip = ((tilemap_entry >> 14) & 1) != 0;
+            const v_flip = ((tilemap_entry >> 15) & 1) != 0;
+
+            if (comptime dbg.trace_bg_render) {
+                if (bg == 3 and self.frame_count == 600 and y < 5 and x < 24) {
+                    std.debug.print("[BG3] x={d:3} y={d:3} tile({d},{d}) entry=${x:0>4} tile={x:0>3}\n", .{ x, y, tile_x, tile_y, tilemap_entry, tile_num });
+                }
+            }
+
+            // ---- Locate the 8x8 CHR row (once per run) ----
+            var py = sy % tile_size;
+            if (v_flip) py = tile_size - 1 - py;
+
+            // Horizontal flip mirrors the pixel order within the tile; the
+            // run's pixels all land in one 8-pixel half either way, so the
+            // sub-tile choice is constant and only the walk direction flips.
+            const px_first = sx % tile_size;
+            const px0: u16 = if (h_flip) tile_size - 1 - px_first else px_first;
+
+            var actual_tile = tile_num;
+            if (large_tiles) {
+                // 16x16 tiles are four adjacent 8x8 tiles: +1 to the right,
+                // +16 below (the CHR layout is a 16-tile-wide grid)
+                actual_tile += @intCast(px0 / 8);
+                actual_tile += @intCast((py / 8) * 16);
+                py = py % 8;
+            }
+
+            const tile_data_addr: u32 = chr_base + @as(u32, actual_tile) * 8 * bytes_per_row;
+
+            if (comptime dbg.trace_bg_render) {
+                if (bg == 3 and self.frame_count == 600 and x <= 16 and x + run > 16 and y == 50) {
+                    std.debug.print("  actual_tile=${x:0>3} chr_base=${x:0>5} tile_data_addr=${x:0>5}\n", .{ actual_tile, chr_base, tile_data_addr });
+                }
+            }
+
+            const row = self.decodeTileRow(tile_data_addr, @intCast(py), bpp);
+            const palette_base: u16 = @as(u16, palette) * palette_shift;
+
+            // ---- Emit the run ----
+            // Walk the decoded row forward or backward depending on h_flip.
+            var px: u16 = px0 & 7;
+            for (0..run) |i| {
+                const color_index = row[px];
+                if (color_index != 0) { // color 0 is transparent
+                    line.color[x + i] = self.getColor(@intCast(palette_base + color_index));
+                    line.prio[x + i] = tile_priority;
+                }
+                if (h_flip) px -%= 1 else px +%= 1;
+            }
+            x += run;
+        }
+    }
+
+    /// Reference (per-pixel) BG renderer. No longer used for actual frame
+    /// output - renderBgLine() above is the production path - but kept
+    /// permanently: the "renderBgLine matches renderBgPixel" test verifies
+    /// the two agree on every pixel over randomized state, and this version
+    /// is the more readable specification of the address math (see the
+    /// register-format documentation blocks inside).
     fn renderBgPixel(self: *Ppu, bg: u8, x: u16, y: u16, bpp: u8) ?BgPixelResult {
         // Get scroll offsets for this BG
         const hofs: u16 = switch (bg) {
@@ -1259,7 +1541,10 @@ pub const Ppu = struct {
     /// subscreen layer is transparent there. The distinction matters:
     /// a fully-transparent subscreen makes "add subscreen" color math
     /// fall back to the fixed color instead of adding the backdrop.
-    fn renderSubscreenPixel(self: *Ppu, x: u16, y: u16, mode: u3) ?u16 {
+    /// Reads the same per-scanline BG line buffers the main screen uses -
+    /// the subscreen shows the SAME rendered layers, just selected by TS
+    /// instead of TM, so one buffer pass serves both screens.
+    fn renderSubscreenPixel(self: *Ppu, bg_lines: *const [4]BgLine, x: u16, y: u16, mode: u3) ?u16 {
         var color: ?u16 = null;
 
         // Note: Subscreen doesn't use window masking for layer enable
@@ -1269,22 +1554,22 @@ pub const Ppu = struct {
             0 => {
                 // Mode 0: 4 BG layers, 2bpp each
                 if ((self.ts & 0x08) != 0) {
-                    if (self.renderBgPixel(4, x, y, 2)) |c| {
+                    if (bg_lines[3].pixel(x)) |c| {
                         color = c.color;
                     }
                 }
                 if ((self.ts & 0x04) != 0) {
-                    if (self.renderBgPixel(3, x, y, 2)) |c| {
+                    if (bg_lines[2].pixel(x)) |c| {
                         color = c.color;
                     }
                 }
                 if ((self.ts & 0x02) != 0) {
-                    if (self.renderBgPixel(2, x, y, 2)) |c| {
+                    if (bg_lines[1].pixel(x)) |c| {
                         color = c.color;
                     }
                 }
                 if ((self.ts & 0x01) != 0) {
-                    if (self.renderBgPixel(1, x, y, 2)) |c| {
+                    if (bg_lines[0].pixel(x)) |c| {
                         color = c.color;
                     }
                 }
@@ -1292,42 +1577,37 @@ pub const Ppu = struct {
             1 => {
                 // Mode 1: BG1/BG2 4bpp, BG3 2bpp
                 if ((self.ts & 0x04) != 0) {
-                    if (self.renderBgPixel(3, x, y, 2)) |c| {
+                    if (bg_lines[2].pixel(x)) |c| {
                         color = c.color;
                     }
                 }
                 if ((self.ts & 0x02) != 0) {
-                    if (self.renderBgPixel(2, x, y, 4)) |c| {
+                    if (bg_lines[1].pixel(x)) |c| {
                         color = c.color;
                     }
                 }
                 if ((self.ts & 0x01) != 0) {
-                    if (self.renderBgPixel(1, x, y, 4)) |c| {
+                    if (bg_lines[0].pixel(x)) |c| {
                         color = c.color;
                     }
                 }
             },
             2, 3, 4, 5, 6 => {
-                // Modes 2-6 subscreen: BG2 depth varies by mode (see the
-                // main-screen render for the full table); mode 6 has no BG2
+                // Modes 2-6 subscreen: mode 6 has no BG2 (depths are baked
+                // into the buffers by the line-buffer pass)
                 if (mode != 6 and (self.ts & 0x02) != 0) {
-                    const bg2_bpp: u8 = switch (mode) {
-                        2, 3 => 4,
-                        else => 2,
-                    };
-                    if (self.renderBgPixel(2, x, y, bg2_bpp)) |c| {
+                    if (bg_lines[1].pixel(x)) |c| {
                         color = c.color;
                     }
                 }
                 if ((self.ts & 0x01) != 0) {
-                    const bpp: u8 = if (mode == 3 or mode == 4) 8 else 4;
-                    if (self.renderBgPixel(1, x, y, bpp)) |c| {
+                    if (bg_lines[0].pixel(x)) |c| {
                         color = c.color;
                     }
                 }
             },
             7 => {
-                // Mode 7 on the subscreen
+                // Mode 7 on the subscreen - per-pixel affine, not buffered
                 if ((self.ts & 0x01) != 0) {
                     if (self.renderMode7Pixel(x, y)) |c| {
                         color = c.color;
@@ -2133,6 +2413,69 @@ test "plane spread LUT interleaves bits" {
     try std.testing.expectEqual(@as(u16, 0x0001), PLANE_SPREAD[0x01]); // bit 0 -> bit 0
     // Spot-check a mixed pattern: 0b1010_0110 -> bits 7,5,2,1
     try std.testing.expectEqual(@as(u16, 0x4000 | 0x0400 | 0x0010 | 0x0004), PLANE_SPREAD[0xA6]);
+}
+
+test "renderBgLine matches renderBgPixel reference" {
+    // Property test: the fast line-buffer renderer must agree with the
+    // readable per-pixel reference on EVERY pixel, across randomized VRAM
+    // contents and register configurations (scroll values, tilemap sizes,
+    // 8x8/16x16 tiles, flips, all depths). This is what allows renderBgLine
+    // to be optimized aggressively without fear of silent divergence.
+    var ppu = Ppu.init();
+
+    // Deterministic xorshift PRNG - tests must be reproducible, and comptime
+    // Zig has no ambient randomness anyway.
+    var rng: u32 = 0x2F6E2B1;
+    const next = struct {
+        fn next(state: *u32) u32 {
+            state.* ^= state.* << 13;
+            state.* ^= state.* >> 17;
+            state.* ^= state.* << 5;
+            return state.*;
+        }
+    }.next;
+
+    for (&ppu.vram) |*b| b.* = @truncate(next(&rng));
+    for (&ppu.cgram) |*b| b.* = @truncate(next(&rng));
+
+    var line: Ppu.BgLine = undefined;
+    var config: u32 = 0;
+    while (config < 32) : (config += 1) {
+        // Randomize the full layer configuration each round
+        ppu.bgmode = @truncate(next(&rng)); // includes 16x16 tile bits
+        ppu.bg1sc = @truncate(next(&rng));
+        ppu.bg2sc = @truncate(next(&rng));
+        ppu.bg3sc = @truncate(next(&rng));
+        ppu.bg4sc = @truncate(next(&rng));
+        ppu.bg12nba = @truncate(next(&rng));
+        ppu.bg34nba = @truncate(next(&rng));
+        ppu.bg1hofs = @truncate(next(&rng) & 0x3FF);
+        ppu.bg1vofs = @truncate(next(&rng) & 0x3FF);
+        ppu.bg2hofs = @truncate(next(&rng) & 0x3FF);
+        ppu.bg2vofs = @truncate(next(&rng) & 0x3FF);
+        ppu.bg3hofs = @truncate(next(&rng) & 0x3FF);
+        ppu.bg3vofs = @truncate(next(&rng) & 0x3FF);
+        ppu.bg4hofs = @truncate(next(&rng) & 0x3FF);
+        ppu.bg4vofs = @truncate(next(&rng) & 0x3FF);
+
+        const bpps = [3]u8{ 2, 4, 8 };
+        const bpp = bpps[next(&rng) % 3];
+        const bg: u8 = @intCast(1 + next(&rng) % 4);
+        const y: u16 = @intCast(next(&rng) % SCREEN_HEIGHT);
+
+        ppu.renderBgLine(bg, y, bpp, &line);
+        for (0..SCREEN_WIDTH) |x| {
+            const expected = ppu.renderBgPixel(bg, @intCast(x), y, bpp);
+            const got = line.pixel(x);
+            if (expected) |e| {
+                try std.testing.expect(got != null);
+                try std.testing.expectEqual(e.color, got.?.color);
+                try std.testing.expectEqual(e.priority, got.?.priority);
+            } else {
+                try std.testing.expect(got == null);
+            }
+        }
+    }
 }
 
 test "getTilePixel decodes planar tiles via spread LUT" {
