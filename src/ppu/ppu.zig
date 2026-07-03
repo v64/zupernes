@@ -2129,6 +2129,15 @@ pub const Ppu = struct {
     }
 
     pub fn writeRegister(self: *Ppu, addr: u16, value: u8) void {
+        // Trace mid-frame Mode 7 reprogramming (BGMODE + matrix/center/scroll)
+        // in a narrow frame window - see dbg.trace_mode7
+        if (comptime dbg.trace_mode7) {
+            if ((addr == 0x2105 or (addr >= 0x211A and addr <= 0x2120)) and
+                self.frame_count >= dbg.trace_frame_min and self.frame_count <= dbg.trace_frame_max)
+            {
+                std.debug.print("[M7] f={d} line={d} dot={d} ${x:0>4}=${x:0>2}\n", .{ self.frame_count, self.scanline, self.dot, addr, value });
+            }
+        }
         switch (addr) {
             0x2100 => self.inidisp = value,
             0x2101 => self.obsel = value,

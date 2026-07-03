@@ -1,6 +1,9 @@
 // ZuperNES - SNES Emulator
 // Core emulator library
 
+const std = @import("std");
+const dbg = @import("debug.zig");
+
 pub const Cpu = @import("cpu/cpu.zig").Cpu;
 pub const Bus = @import("bus.zig").Bus;
 pub const Ppu = @import("ppu/ppu.zig").Ppu;
@@ -40,6 +43,8 @@ pub const Emulator = struct {
         self.cpu.reset(); // Reset CPU state and read reset vector from ROM
         self.ppu.reset(); // Reset PPU registers and state
         self.bus.dma.reset(); // Reset DMA channel state
+        self.bus.dsp1.reset(); // Reset DSP-1 coprocessor (keeps its microcode)
+        self.bus.dsp_accum = 0;
         self.last_scanline = 0;
         // Note: APU ports (apu_out) keep their boot signature ($AA, $BB)
         // This is correct - APU reset would reinitialize them, not clear them
@@ -47,6 +52,38 @@ pub const Emulator = struct {
 
     pub fn loadRom(self: *Emulator, rom_data: []const u8) !void {
         try self.bus.loadCartridge(rom_data);
+
+        // If the cartridge header announces a DSP coprocessor, try to load
+        // the uPD77C25 microcode dump from disk. Nearly all DSP-1 games use
+        // the DSP-1B revision (Super Mario Kart included); plain DSP-1 is
+        // the fallback for the few early boards (original Pilotwings).
+        // Missing microcode is not fatal - the game just hangs at its DSP
+        // handshake exactly as it did before this feature existed.
+        self.bus.dsp1_present = false;
+        if (self.bus.cartridge.?.has_dsp) {
+            const candidates = [_][]const u8{
+                "test/dsp/dsp1b.rom",
+                "test/dsp/dsp1.rom",
+                "dsp1b.rom",
+                "dsp1.rom",
+            };
+            var buf: [8192]u8 = undefined;
+            for (candidates) |path| {
+                const data = std.fs.cwd().readFile(path, &buf) catch continue;
+                if (self.bus.dsp1.loadRom(data)) |_| {
+                    self.bus.dsp1_present = true;
+                    break;
+                } else |_| {}
+            }
+            if (!self.bus.dsp1_present) {
+                std.debug.print(
+                    "Cartridge requires a DSP coprocessor but no microcode found\n" ++
+                        "(looked for test/dsp/dsp1b.rom - see NEXTSTEPS.md); game may hang\n",
+                    .{},
+                );
+            }
+        }
+
         self.reset();
     }
 
@@ -65,6 +102,14 @@ pub const Emulator = struct {
         // fixed-point ratio (3.496 CPU clocks per SPC700 cycle) expects
         // exactly that unit.
         self.bus.runApu(cycles);
+
+        // Clock the DSP-1 coprocessor. The uPD77C25 executes one instruction
+        // every 4 clocks of its 8.192MHz crystal = 2.048 MIPS. Relative to
+        // the 21.477MHz master clock that's 2.048/21.477 ~= 2/21 instructions
+        // per master cycle. The accumulator lives on the Bus because DMA
+        // must also tick the DSP (see Bus.tickDsp). Games poll the DSP's
+        // RQM bit, so small ratio error is absorbed by the handshake.
+        self.bus.tickDsp(cycles * 6);
 
         // Track current position before tick (for scanline-transition and
         // IRQ-point crossing detection below)
@@ -208,4 +253,5 @@ test {
     _ = @import("ppu/ppu.zig");
     _ = @import("cartridge.zig");
     _ = @import("dma.zig");
+    _ = @import("coproc/upd7725.zig");
 }

@@ -29,6 +29,7 @@ const Ppu = @import("ppu/ppu.zig").Ppu;
 const Cartridge = @import("cartridge.zig").Cartridge;
 const Dma = @import("dma.zig").Dma;
 const Apu = @import("apu/apu.zig").Apu;
+const Upd7725 = @import("coproc/upd7725.zig").Upd7725;
 const dbg = @import("debug.zig");
 
 pub const Bus = struct {
@@ -183,6 +184,49 @@ pub const Bus = struct {
     // The full APU emulation (SPC700 + DSP)
     apu: Apu,
 
+    // =========================================================================
+    // DSP-1 CARTRIDGE COPROCESSOR (NEC uPD77C25)
+    // =========================================================================
+    // Games like Super Mario Kart and Pilotwings ship with a math coprocessor
+    // on the cartridge, low-level emulated in coproc/upd7725.zig running the
+    // real microcode dump. The SNES sees exactly two registers, mapped by
+    // board type:
+    //   HiROM boards (Super Mario Kart):
+    //     banks $00-$1F (+ mirrors $80-$9F): $6000-$6FFF = DR, $7000-$7FFF = SR
+    //   LoROM boards (Pilotwings, Super Air Diver...):
+    //     banks $30-$3F (+ mirrors $B0-$BF): $8000-$BFFF = DR, $C000-$FFFF = SR
+    // dsp1_present is set at cartridge load when the ROM header's chip-type
+    // byte announces a DSP ($03-$05) AND the microcode file was found.
+    // =========================================================================
+    dsp1: Upd7725,
+    dsp1_present: bool,
+    // Fixed-point accumulator for the DSP clock (2.048MHz vs 21.477MHz
+    // master: 2 instructions per 21 master cycles). Lives on the Bus so
+    // that BOTH the per-CPU-instruction path (root.zig) and the DMA byte
+    // loop (dma.zig) can advance the DSP - on hardware the coprocessor
+    // keeps running during DMA, and games depend on it: Super Mario Kart
+    // DMA-reads DSP-1 results at exactly the pace the microcode streams
+    // them into DR.
+    dsp_accum: u32,
+
+    /// Advance the DSP-1 by the given number of master-clock cycles.
+    pub fn tickDsp(self: *Bus, master_cycles: u32) void {
+        if (!self.dsp1_present) return;
+        self.dsp_accum += master_cycles * 2;
+        while (self.dsp_accum >= 21) {
+            self.dsp_accum -= 21;
+            self.dsp1.step();
+            // Instruction-level PC trace for one frame (see dbg.trace_dsp):
+            // histogram the output to find microcode stuck in internal
+            // loops, or follow a conversation instruction by instruction.
+            if (comptime dbg.trace_dsp) {
+                if (self.ppu.frame_count == dbg.trace_frame_min) {
+                    std.debug.print("[DSPPC] {x:0>3}\n", .{self.dsp1.pc});
+                }
+            }
+        }
+    }
+
     pub fn init(ppu: *Ppu) Bus {
         return Bus{
             .wram = [_]u8{0} ** (128 * 1024), // 128KB Work RAM, zeroed
@@ -215,6 +259,9 @@ pub const Bus = struct {
             // The SPC700 starts executing at $FFC0 (IPL ROM) and will
             // write $AA/$BB to ports 0/1 to signal readiness
             .apu = Apu.init(),
+            .dsp1 = Upd7725.init(),
+            .dsp1_present = false,
+            .dsp_accum = 0,
         };
     }
 
@@ -265,9 +312,41 @@ pub const Bus = struct {
                 if (addr >= 0x6000 and effective_bank >= 0x20 and self.isHiRom()) {
                     return self.readSram(effective_bank, addr);
                 }
+                // HiROM DSP-1 window: banks $00-$1F, DR at $6000-$6FFF,
+                // SR at $7000-$7FFF (Super Mario Kart polls $00:7000)
+                if (self.dsp1_present and addr >= 0x6000 and effective_bank < 0x20) {
+                    if (addr < 0x7000) {
+                        const v = self.dsp1.readData();
+                        if (comptime dbg.trace_dsp) {
+                            if (self.ppu.frame_count >= dbg.trace_frame_min and self.ppu.frame_count <= dbg.trace_frame_max) {
+                                std.debug.print("[DSP1] DR rd  = ${x:0>2} (pc={x:0>3} sr={x:0>4})\n", .{ v, self.dsp1.pc, self.dsp1.sr });
+                            }
+                        }
+                        return v;
+                    }
+                    if (comptime dbg.trace_dsp) {
+                        if (self.ppu.frame_count >= dbg.trace_frame_min and self.ppu.frame_count <= dbg.trace_frame_max) {
+                            std.debug.print("[DSP1] SR rd  = ${x:0>2} (pc={x:0>3})\n", .{ self.dsp1.readStatus(), self.dsp1.pc });
+                        }
+                    }
+                    return self.dsp1.readStatus();
+                }
+                if (comptime dbg.trace_dsp) {
+                    std.debug.print("[DSP?] read  ${x:0>2}:{x:0>4}\n", .{ bank, addr });
+                }
                 return 0;
             } else {
                 // $8000-$FFFF: ROM
+                // LoROM DSP-1 window shadows ROM in banks $30-$3F:
+                // DR at $8000-$BFFF, SR at $C000-$FFFF
+                if (self.dsp1_present and !self.isHiRom() and
+                    effective_bank >= 0x30 and effective_bank <= 0x3F)
+                {
+                    if (addr < 0xC000) {
+                        return self.dsp1.readData();
+                    }
+                    return self.dsp1.readStatus();
+                }
                 return self.readRom(effective_bank, addr);
             }
         } else if (effective_bank >= 0x70 and effective_bank <= 0x7D) {
@@ -317,6 +396,20 @@ pub const Bus = struct {
             } else if (addr >= 0x6000 and addr < 0x8000 and effective_bank >= 0x20 and self.isHiRom()) {
                 // HiROM SRAM window (banks $20-$3F, $6000-$7FFF)
                 self.writeSram(effective_bank, addr, value);
+            } else if (self.dsp1_present and addr >= 0x6000 and addr < 0x7000 and effective_bank < 0x20) {
+                // HiROM DSP-1 data register (SR at $7000+ is read-only)
+                if (comptime dbg.trace_dsp) {
+                    if (self.ppu.frame_count >= dbg.trace_frame_min and self.ppu.frame_count <= dbg.trace_frame_max) {
+                        std.debug.print("[DSP1] DR wr  = ${x:0>2} (pc={x:0>3} sr={x:0>4})\n", .{ value, self.dsp1.pc, self.dsp1.sr });
+                    }
+                }
+                self.dsp1.writeData(value);
+            } else if (self.dsp1_present and !self.isHiRom() and
+                addr >= 0x8000 and addr < 0xC000 and
+                effective_bank >= 0x30 and effective_bank <= 0x3F)
+            {
+                // LoROM DSP-1 data register window
+                self.dsp1.writeData(value);
             }
         } else if (effective_bank >= 0x70 and effective_bank <= 0x7D) {
             if (addr < 0x8000 and !self.isHiRom()) {

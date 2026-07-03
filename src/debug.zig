@@ -59,11 +59,35 @@ pub const trace_dma = enabled and false;
 pub const trace_hdma = enabled and false;
 
 // =============================================================================
+// COPROCESSOR DEBUGGING
+// =============================================================================
+
+/// Trace DSP-1 coprocessor accesses: expansion-area reads/writes that hit
+/// (or miss) the DSP-1 data/status registers, plus command dispatch. Used
+/// to discover which addresses a game polls (e.g. Super Mario Kart's boot
+/// handshake) and to debug command parameter/result streams.
+pub const trace_dsp = enabled and false;
+
+/// Frame window for the DSP-1 and Mode 7 traces (inclusive). Narrow this
+/// to the moment of interest - e.g. SMK builds its Mode 7 raster tables
+/// once at race load, so tracing that requires a window around the load,
+/// not the race itself.
+pub const trace_frame_min: u32 = 0;
+pub const trace_frame_max: u32 = 120;
+
+// =============================================================================
 // PPU DEBUGGING
 // =============================================================================
 
 /// Trace PPU register writes
 pub const trace_ppu_regs = enabled and false;
+
+/// Trace Mode 7 register writes ($2105 BGMODE + $211A-$2120) with frame and
+/// scanline, for debugging games that reprogram the Mode 7 matrix per
+/// scanline (Super Mario Kart feeds DSP-1-computed perspective tables via
+/// HDMA every line). Gated to a frame window inside the trace site to keep
+/// logs manageable.
+pub const trace_mode7 = enabled and false;
 
 /// Trace BG rendering (for debugging tile issues)
 pub const trace_bg_render = enabled and true;

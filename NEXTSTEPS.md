@@ -1,7 +1,39 @@
 # Next Steps
 
 State of the project as of this session, and where to go next.
-See OPTIMIZATIONS.md for the performance-specific backlog.
+See OPTIMIZATIONS.md for the performance-specific backlog and
+DSP1-DEBUG-NOTES.md for the in-flight Super Mario Kart investigation.
+
+## Long-term goals (the vision, in rough order)
+
+The core focus remains: **cycle, frame, and pixel accuracy first.**
+Everything below builds on a correct emulator.
+
+1. **TAS-format input recording/playback.** Record inputs to a file and
+   play them back deterministically, frame by frame, exactly as on
+   hardware. Use an established tool-assisted-speedrun format (not a
+   custom one) so movies recorded here play back in other emulators and
+   vice versa - BizHawk `.bk2` (a zip whose `Input Log.txt` is
+   human-readable lines like `|..|UDLRsSYBXAlr|`) and/or Snes9x `.smv`
+   are the candidates to evaluate. This subsumes the current ad-hoc
+   `--input F:BTNS` flags.
+2. **The self-playing demo:** once input recording and SMK's Mode 7 work,
+   get an agent loop going that plays Super Mario Kart by examining
+   frames, choosing buttons for the next frame(s), recording them, and
+   iterating - then see how well it can do in a race. (The screenshot
+   harness already supports look-at-frame; this adds record/extend/replay
+   ergonomics.)
+3. **Ultimate debugging tool.** A gdb-style CLI mode: breakpoints,
+   single-stepping through ROM instructions, register/memory inspection.
+   Plus sprite/tile/tilemap viewers in both command-line and visual forms.
+   Game Genie / cheat code support is a stretch goal in this bucket.
+4. **Library refactor ("libzupernes").** Restructure so the emulator core
+   is a library with a single big amalgamated header you can drop into any
+   project to embed a cycle-accurate SNES you can introspect frame by
+   frame (the ghostty -> libghostty model). The CLI emulator/debugger
+   becomes a client of that library.
+5. **WebAssembly target** compiling the core to wasm for running the
+   emulator in a browser.
 
 ## What was done this session
 

@@ -231,6 +231,16 @@ pub const Dma = struct {
                 const b_offset = getBOffset(ctrl.transfer_mode, byte_index);
                 const b_addr = b_base + b_offset;
 
+                // Each DMA byte takes 8 master cycles, during which the
+                // cartridge coprocessor keeps running. This matters
+                // functionally, not just for timing: Super Mario Kart
+                // builds its Mode 7 raster tables by DMA-reading DSP-1
+                // results from $6000, at exactly the pace the microcode
+                // streams words into DR. With an instantaneous DMA the DSP
+                // would never advance between reads and the whole transfer
+                // would see one stale value.
+                bus.tickDsp(8);
+
                 if (!ctrl.direction) {
                     // A→B: Read from A-bus (CPU memory), write to B-bus (PPU)
                     const value = bus.readDma(channel.a_addr);
@@ -302,6 +312,25 @@ pub const Dma = struct {
                 });
             }
 
+            // Mode 7 HDMA debugging (see dbg.trace_mode7): dump the full
+            // channel setup in the same narrow frame window the PPU-side
+            // trace uses, so table addresses can be cross-checked against
+            // the DSP-1 raster tables the game deposits in WRAM.
+            if (comptime dbg.trace_mode7) {
+                if (bus.ppu.frame_count >= dbg.trace_frame_min and bus.ppu.frame_count <= dbg.trace_frame_max) {
+                    std.debug.print("[M7-HDMA] ch{d} table=${x:0>2}:{x:0>4} b=$21{x:0>2} mode={d} indirect={} ibank=${x:0>2} lines=${x:0>2}\n", .{
+                        i,
+                        bank,
+                        @as(u16, @truncate(channel.a_addr)),
+                        channel.b_addr,
+                        channel.control.transfer_mode,
+                        channel.control.indirect,
+                        channel.indirect_bank,
+                        channel.line_counter,
+                    });
+                }
+            }
+
             // Check for termination (line counter = 0)
             if (channel.line_counter == 0) {
                 self.hdma_terminated |= channel_bit;
@@ -352,6 +381,10 @@ pub const Dma = struct {
                 for (0..transfer_size) |byte_idx| {
                     const b_offset = getBOffset(ctrl.transfer_mode, @intCast(byte_idx));
                     const b_addr = b_base + b_offset;
+
+                    // Coprocessor keeps running during HDMA too (games can
+                    // HDMA raster data straight out of the DSP-1 DR)
+                    bus.tickDsp(8);
 
                     var src_addr: u16 = undefined;
                     var src_bank: u8 = undefined;

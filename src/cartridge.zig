@@ -37,6 +37,11 @@ pub const Cartridge = struct {
     cart_type: CartridgeType,
     rom_size: usize,
     sram_size: usize,
+    /// Header byte $xFD6 announces extra cartridge hardware. Values $03-$05
+    /// mean a DSP coprocessor is on board (3 = DSP, 4 = DSP+RAM,
+    /// 5 = DSP+RAM+battery; Super Mario Kart is $05). The emulator uses this
+    /// to decide whether to power up the uPD77C25 and map its registers.
+    has_dsp: bool,
 
     pub fn init(rom_data: []const u8) !Cartridge {
         if (rom_data.len < 0x8000) {
@@ -52,11 +57,14 @@ pub const Cartridge = struct {
         // Clamp to our 32KB buffer.
         const header_base: usize = if (cart_type == .LoROM) 0x7FC0 else 0xFFC0;
         var sram_size: usize = 0;
+        var has_dsp = false;
         if (rom.len > header_base + 0x18) {
             const sram_shift = rom[header_base + 0x18];
             if (sram_shift != 0 and sram_shift <= 5) {
                 sram_size = @as(usize, 0x400) << @intCast(sram_shift);
             }
+            const chip_type = rom[header_base + 0x16];
+            has_dsp = chip_type >= 0x03 and chip_type <= 0x05;
         }
 
         return Cartridge{
@@ -65,6 +73,7 @@ pub const Cartridge = struct {
             .cart_type = cart_type,
             .rom_size = rom.len,
             .sram_size = if (sram_size == 0) 0x2000 else sram_size,
+            .has_dsp = has_dsp,
         };
     }
 
