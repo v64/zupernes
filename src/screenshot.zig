@@ -14,6 +14,11 @@
 //   --input 120:S       press Start at frame 120 (held for 30 frames)
 //   Buttons: S=Start, s=Select, A/B/X/Y, U/D/L/R (dpad), l/r (shoulders)
 //
+// Movies (TAS format, see src/movie.zig):
+//   --movie FILE         play back a .zmov movie (overrides --input)
+//   --record-movie FILE  write the run's resolved per-frame inputs as .zmov
+//   (--input + --record-movie converts an ad-hoc script into a movie)
+//
 // The PPM (P6) format is chosen because it needs no dependencies to
 // write; convert to PNG with `sips -s format png out.ppm --out out.png`
 // on macOS.
@@ -56,13 +61,20 @@ fn buttonBit(c: u8) ?u16 {
 }
 
 fn parseInputEvent(spec: []const u8) !InputEvent {
-    const colon = std.mem.indexOfScalar(u8, spec, ':') orelse return error.BadInputSpec;
-    const frame = try std.fmt.parseInt(u32, spec[0..colon], 10);
+    // FRAME:BTNS or FRAME:BTNS:HOLD (hold duration in frames, default 30)
+    var it = std.mem.splitScalar(u8, spec, ':');
+    const frame_s = it.next() orelse return error.BadInputSpec;
+    const btns_s = it.next() orelse return error.BadInputSpec;
+    const hold_s = it.next();
     var buttons: u16 = 0;
-    for (spec[colon + 1 ..]) |c| {
+    for (btns_s) |c| {
         buttons |= buttonBit(c) orelse return error.BadButton;
     }
-    return .{ .frame = frame, .buttons = buttons };
+    return .{
+        .frame = try std.fmt.parseInt(u32, frame_s, 10),
+        .buttons = buttons,
+        .hold = if (hold_s) |h| try std.fmt.parseInt(u32, h, 10) else 30,
+    };
 }
 
 fn writePpm(framebuffer: []const u16, path: []const u8) !void {
@@ -120,6 +132,8 @@ pub fn main() !void {
     var every_dir: []const u8 = "";
     var dump_path: ?[]const u8 = null;
     var wav_path: ?[]const u8 = null;
+    var movie_path: ?[]const u8 = null;
+    var record_path: ?[]const u8 = null;
 
     var i: usize = 4;
     while (i < args.len) : (i += 1) {
@@ -136,6 +150,12 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, args[i], "--wav")) {
             i += 1;
             wav_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--movie")) {
+            i += 1;
+            movie_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--record-movie")) {
+            i += 1;
+            record_path = args[i];
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
             return error.BadArgs;
@@ -151,19 +171,40 @@ pub fn main() !void {
     emulator.setup();
     try emulator.loadRom(rom_data);
 
+    var playback: ?zupernes.movie.Movie = null;
+    defer if (playback) |*m| m.deinit(allocator);
+    if (movie_path) |path| {
+        const text = try std.fs.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024);
+        defer allocator.free(text);
+        playback = try zupernes.movie.Movie.parse(allocator, text);
+        std.debug.print("Playing movie: {s} ({d} frames)\n", .{ path, playback.?.len() });
+    }
+    var recording: ?zupernes.movie.Movie = if (record_path != null)
+        zupernes.movie.Movie{ .frames = .empty }
+    else
+        null;
+    defer if (recording) |*m| m.deinit(allocator);
+
     // Audio capture: at 32kHz a frame is ~533 samples; collect them all
     var audio: std.ArrayListUnmanaged([2]i16) = .empty;
     defer audio.deinit(allocator);
 
     var frame: u32 = 0;
     while (frame < total_frames) : (frame += 1) {
-        // Apply any scheduled input for this frame. Multiple overlapping
-        // events OR together.
+        // Input priority: movie playback, else the --input schedule
+        // (overlapping events OR together)
         var pad: u16 = 0;
-        for (inputs.items) |ev| {
-            if (frame >= ev.frame and frame < ev.frame + ev.hold) {
-                pad |= ev.buttons;
+        if (playback) |*m| {
+            pad = m.buttons(frame);
+        } else {
+            for (inputs.items) |ev| {
+                if (frame >= ev.frame and frame < ev.frame + ev.hold) {
+                    pad |= ev.buttons;
+                }
             }
+        }
+        if (recording) |*m| {
+            try m.frames.append(allocator, pad);
         }
         emulator.setJoypad(0, pad);
 
@@ -191,6 +232,13 @@ pub fn main() !void {
     if (dump_path) |path| {
         try dumpState(path);
         std.debug.print("Wrote PPU state dump to {s}\n", .{path});
+    }
+
+    if (record_path) |path| {
+        const text = try recording.?.serialize(allocator, path);
+        defer allocator.free(text);
+        try std.fs.cwd().writeFile(.{ .sub_path = path, .data = text });
+        std.debug.print("Recorded movie ({d} frames) to {s}\n", .{ recording.?.len(), path });
     }
 
     if (wav_path) |path| {
