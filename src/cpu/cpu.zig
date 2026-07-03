@@ -181,13 +181,26 @@ pub const Cpu = struct {
         }
 
         self.instruction_count += 1;
-        // In emulation mode SPH physically doesn't exist: the stack pointer
-        // reads as $01xx no matter what was loaded into it (verified by the
-        // SingleStepTests vectors, which seed rogue SPH values)
+        // In emulation mode SPH physically doesn't exist at REST: between
+        // instructions the stack pointer reads as $01xx no matter what was
+        // loaded into it (SingleStepTests vectors seed rogue SPH values and
+        // expect final SP pinned). DURING execution two behaviors coexist:
+        // the original instruction set wraps within page 1
+        // (pushByte/pullByte), while the eight "new" 65816 stack
+        // instructions (PEA/PEI/PER/PHD/PLD/PLB/JSL/RTL) run full 16-bit SP
+        // arithmetic - their stack ACCESSES can walk out of page 1 (e.g.
+        // RTL from SP=$01FD reads $01FE/$01FF/$0200) even though the SP
+        // they leave behind still pins back to $01xx at rest. Hence: pin
+        // before AND after executing (before = defensive for externally
+        // seeded state; after = the architectural rest state the vectors
+        // verify).
         if (self.emulation_mode) {
             self.sp = 0x0100 | (self.sp & 0xFF);
         }
         self.executeOpcode(opcode);
+        if (self.emulation_mode) {
+            self.sp = 0x0100 | (self.sp & 0xFF);
+        }
         self.total_cycles += self.cycles;
         return self.cycles;
     }
@@ -315,6 +328,35 @@ pub const Cpu = struct {
         return @as(u16, high) << 8 | low;
     }
 
+    // The "new" 65816 stack instructions - PEA, PEI, PER, PHD, PLD, PLB,
+    // JSL, RTL - use the full 16-bit stack pointer even in emulation mode:
+    // SP is NOT pinned to page 1 and can permanently walk out of it
+    // (verified by the SingleStepTests vectors; also documented in the WDC
+    // datasheet errata and Bruce Clark's 65816 notes). Original-6502
+    // instructions (PHA/PLA/JSR/RTS/BRK/...) keep the page-1 wrap above.
+    fn pushByteRaw(self: *Cpu, value: u8) void {
+        self.bus.write(0, self.sp, value);
+        self.sp -%= 1;
+        self.cycles += 1;
+    }
+
+    fn pushWordRaw(self: *Cpu, value: u16) void {
+        self.pushByteRaw(@truncate(value >> 8));
+        self.pushByteRaw(@truncate(value));
+    }
+
+    fn pullByteRaw(self: *Cpu) u8 {
+        self.sp +%= 1;
+        self.cycles += 1;
+        return self.bus.read(0, self.sp);
+    }
+
+    fn pullWordRaw(self: *Cpu) u16 {
+        const low = self.pullByteRaw();
+        const high = self.pullByteRaw();
+        return @as(u16, high) << 8 | low;
+    }
+
     // ==================== Addressing Modes ====================
 
     /// Direct Page addressing: dp
@@ -328,6 +370,12 @@ pub const Cpu = struct {
     fn addrDirectX(self: *Cpu) u16 {
         const offset = self.fetchByte();
         if (self.dp & 0xFF != 0) self.cycles += 1;
+        // Emulation mode with DL=0: the indexed sum wraps WITHIN the page
+        // (8-bit add), reproducing 6502 zero-page indexing. With DL!=0 (or
+        // in native mode) the full 16-bit sum is used.
+        if (self.emulation_mode and (self.dp & 0xFF) == 0) {
+            return self.dp | @as(u16, offset +% @as(u8, @truncate(self.x)));
+        }
         if (self.p.x) {
             return self.dp +% offset +% @as(u16, @truncate(self.x));
         } else {
@@ -339,6 +387,10 @@ pub const Cpu = struct {
     fn addrDirectY(self: *Cpu) u16 {
         const offset = self.fetchByte();
         if (self.dp & 0xFF != 0) self.cycles += 1;
+        // Same DL=0 page wrap as dp,X (see addrDirectX).
+        if (self.emulation_mode and (self.dp & 0xFF) == 0) {
+            return self.dp | @as(u16, offset +% @as(u8, @truncate(self.y)));
+        }
         if (self.p.x) {
             return self.dp +% offset +% @as(u16, @truncate(self.y));
         } else {
@@ -394,6 +446,14 @@ pub const Cpu = struct {
     }
 
     /// Direct Page Indirect: (dp)
+    ///
+    /// NOTE on a quirk we deliberately DON'T have: one might expect the
+    /// classic 6502 ($FF) pointer-wrap bug in emulation mode with DL=0
+    /// (pointer at $xxFF reading its high byte from $xx00). The
+    /// SingleStepTests vectors prove the 65816 does NOT do this - e.g.
+    /// vector "e1 e 8669" (SBC (dp,X), D=$F400, pointer at $F4FF) reads
+    /// the high byte from $F500. Only the INDEXED ADDRESS computation
+    /// wraps with DL=0 (see addrDirectX); pointer fetches are 16-bit.
     fn addrDirectIndirect(self: *Cpu) u16 {
         const dp_addr = self.addrDirect();
         self.ea_bank = self.dbr;
@@ -2524,14 +2584,14 @@ pub const Cpu = struct {
                 self.pushByte(self.dbr);
             },
             0xAB => { // PLB - Pull Data Bank Register
-                self.dbr = self.pullByte();
+                self.dbr = self.pullByteRaw();
                 self.setNZ8(self.dbr);
             },
             0x0B => { // PHD - Push Direct Page Register
-                self.pushWord(self.dp);
+                self.pushWordRaw(self.dp);
             },
             0x2B => { // PLD - Pull Direct Page Register
-                self.dp = self.pullWord();
+                self.dp = self.pullWordRaw();
                 self.setNZ16(self.dp);
             },
             0x4B => { // PHK - Push Program Bank Register
@@ -2539,17 +2599,17 @@ pub const Cpu = struct {
             },
             0xF4 => { // PEA - Push Effective Absolute Address
                 const addr = self.fetchWord();
-                self.pushWord(addr);
+                self.pushWordRaw(addr);
             },
             0xD4 => { // PEI - Push Effective Indirect Address
                 const dp_addr = self.addrDirect();
                 const addr = self.readWord(0, dp_addr);
-                self.pushWord(addr);
+                self.pushWordRaw(addr);
             },
             0x62 => { // PER - Push Effective PC Relative
                 const offset: i16 = @bitCast(self.fetchWord());
                 const addr: u16 = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
-                self.pushWord(addr);
+                self.pushWordRaw(addr);
             },
 
             // ===== Branch Instructions =====
@@ -2651,8 +2711,8 @@ pub const Cpu = struct {
             0x22 => { // JSL long
                 const addr = self.fetchWord();
                 const bank = self.fetchByte();
-                self.pushByte(self.pbr);
-                self.pushWord(self.pc -% 1);
+                self.pushByteRaw(self.pbr);
+                self.pushWordRaw(self.pc -% 1);
                 self.pc = addr;
                 self.pbr = bank;
             },
@@ -2665,8 +2725,8 @@ pub const Cpu = struct {
                 self.pc = self.pullWord() +% 1;
             },
             0x6B => { // RTL
-                self.pc = self.pullWord() +% 1;
-                self.pbr = self.pullByte();
+                self.pc = self.pullWordRaw() +% 1;
+                self.pbr = self.pullByteRaw();
             },
             0x40 => { // RTI
                 self.p = Flags.fromByte(self.pullByte());

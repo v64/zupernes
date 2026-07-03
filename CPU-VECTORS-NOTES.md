@@ -1,9 +1,11 @@
 # 65816 Test-Vector Verification — Status & Resume Notes
 
-## Current state (2026-07-02)
+## Current state (2026-07-03)
 
-**5,119,021 / 5,120,000 vectors passing (99.98%)**, up from 96.9% before
-fixes. Suite: SingleStepTests 65816 (10,000 tests per opcode per mode).
+**5,120,000 / 5,120,000 vectors passing (100%)** — the CPU is fully
+vector-clean. Suite: SingleStepTests 65816 (10,000 tests per opcode per
+mode). Remaining CPU work is per-cycle timing only (2.65M cycle-count
+mismatches tallied as telemetry; see OPTIMIZATIONS.md roadmap).
 
 - Vectors live in the session scratchpad (`65816-main/v1/`, 2.7GB). To
   re-fetch: `curl -L codeload.github.com/SingleStepTests/65816/tar.gz/refs/heads/main`
@@ -30,28 +32,35 @@ fixes. Suite: SingleStepTests 65816 (10,000 tests per opcode per mode).
 5. **Emulation-mode SP**: forced to $01xx each instruction (SPH doesn't
    exist); TCS forces too.
 6. **MVN/MVP**: 8-bit index mode wraps X/Y at 8 bits.
+7. **E-mode SP rest-state pin + 16-bit walk for new stack ops** (fixed
+   2026-07-03, closing the last 979): SPH=1 is the REST state - pinned
+   between instructions - but the eight "new" stack instructions
+   (PEA/PEI/PER/PHD/PLD/PLB/JSL/RTL) do full 16-bit SP arithmetic
+   DURING execution: RTL from SP=$01FD reads $01FE/$01FF/$0200 (not a
+   page-1 wrap), then the final SP pins back to $01xx. Implemented as
+   pushByteRaw/pullByteRaw + a pin after executeOpcode. The original
+   instruction set keeps in-page wrapping (pushByte/pullByte).
+8. **DL=0 direct-page wrap in e-mode** (fixed 2026-07-03): dp,X / dp,Y
+   ADDRESS computation wraps within the page (8-bit add) when the
+   direct-page register's low byte is 0 - 6502 zero-page indexing.
+   Crucially the pointer FETCHES of (dp)/(dp,X)/(dp),Y do NOT wrap
+   (no 6502 ($FF)-bug reproduction): proven by vector "e1 e 8669"
+   (D=$F400, pointer at $F4FF reads its high byte from $F500). An
+   initial implementation that wrapped the pointer fetch passed
+   5,119,999/5,120,000 - one vector in five million caught it.
 
 Games verified pixel-identical after all fixes (SMW 2000-frame capture
 byte-for-byte vs pre-fix). SMW runs in native mode, so these were mostly
 latent bugs - but latent CPU bugs poison oracle traces eventually.
 
-## Remaining: 979 failures, all emulation-mode, two known quirks
+## Remaining: none (functional). Per-cycle timing only.
 
-1. **New stack instructions use 16-bit SP in e-mode** (no page-1 wrap):
-   failing files 6b(RTL) 2b(PLD) 22(JSL) f4(PEA) d4(PEI) ab(PLB) 62(PER)
-   0b(PHD). Fix: non-wrapping push/pull variants for exactly these ops
-   (check whether PHB/PHK need it too - 8b/4b currently pass, verify
-   why). Old ops (PHA/PLA/JSR/RTS...) keep page-1 wrapping.
-2. **Direct-page wrap when DL=0 in e-mode**: dp,X / dp,Y and the pointer
-   fetches of (dp,X)/(dp)/(dp),Y wrap within the page (8-bit add) when
-   the direct-page register's low byte is 0. Failing: every dp-indexed
-   file's `.e` variant at ~15-30/10000 (exactly the DL=0 cases).
-   Fix in `addrDirectX/Y` + the dp pointer fetch paths.
-
-Neither affects SMW (native mode). Fix for completeness, then the CPU is
-fully vector-clean. Also unaddressed: per-cycle timing (2.65M cycle-count
-mismatches tallied as telemetry - that's the per-access 6/8/12 master-
-cycle work already in OPTIMIZATIONS.md, a separate project).
+All 512 files pass completely. Games verified pixel-identical after the
+final fixes (SMW 2800-frame movie replay byte-for-byte). The 2.65M
+cycle-count mismatches are the per-access 6/8/12 master-cycle work
+already in OPTIMIZATIONS.md - a separate project, and the same gap the
+Mesen2 cross-validation quantified at the frame level (boot +17, level
+loads 14-26 frames; see test/mesen/README.md).
 
 ## Where this fits
 
