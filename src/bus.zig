@@ -200,6 +200,17 @@ pub const Bus = struct {
     // =========================================================================
     dsp1: Upd7725,
     dsp1_present: bool,
+
+    // =========================================================================
+    // FLAT-MEMORY TEST MODE
+    // =========================================================================
+    // When set, ALL reads/writes bypass the SNES memory map and hit this
+    // flat 16MB buffer directly. Used exclusively by the CPU test-vector
+    // harness (test_cpu_vectors.zig): the SingleStepTests 65816 vectors
+    // assume a flat address space with RAM everywhere, which no real
+    // cartridge provides. Null in normal operation - the cost is a single
+    // well-predicted branch at the top of read()/write().
+    flat_mem: ?[]u8 = null,
     // Fixed-point accumulator for the DSP clock (2.048MHz vs 21.477MHz
     // master: 2 instructions per 21 master cycles). Lives on the Bus so
     // that BOTH the per-CPU-instruction path (root.zig) and the DMA byte
@@ -271,6 +282,7 @@ pub const Bus = struct {
 
     /// Read a byte from the 24-bit address space
     pub fn read(self: *Bus, bank: u8, addr: u16) u8 {
+        if (self.flat_mem) |m| return m[(@as(usize, bank) << 16) | addr];
         // SNES memory map is complex - this is a simplified LoROM mapping
         // Banks $00-$3F: System area + LoROM
         // Banks $40-$6F: LoROM mirror
@@ -374,6 +386,10 @@ pub const Bus = struct {
 
     /// Write a byte to the 24-bit address space
     pub fn write(self: *Bus, bank: u8, addr: u16, value: u8) void {
+        if (self.flat_mem) |m| {
+            m[(@as(usize, bank) << 16) | addr] = value;
+            return;
+        }
         const effective_bank = bank & 0x7F;
 
         if (effective_bank <= 0x3F) {

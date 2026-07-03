@@ -44,6 +44,13 @@ pub const Cpu = struct {
     sp: u16, // Stack pointer
     pc: u16, // Program counter
     dbr: u8, // Data bank register
+    // Effective-address bank for the last data addressing-mode resolution.
+    // The 65816's DBR-relative indexed modes (abs,X abs,Y (dp),Y [dp],Y
+    // (sr,S),Y) form a full 24-bit address: DBR:addr + index CARRIES INTO
+    // THE BANK BYTE rather than wrapping within the bank (verified by the
+    // SingleStepTests vectors). The addr* helpers set this; data accesses
+    // use it instead of DBR directly.
+    ea_bank: u8,
     pbr: u8, // Program bank register
     dp: u16, // Direct page register
     p: Flags, // Processor status
@@ -76,6 +83,7 @@ pub const Cpu = struct {
             .sp = 0x01FF,
             .pc = 0,
             .dbr = 0,
+            .ea_bank = 0,
             .pbr = 0,
             .dp = 0,
             .p = Flags{},
@@ -173,6 +181,12 @@ pub const Cpu = struct {
         }
 
         self.instruction_count += 1;
+        // In emulation mode SPH physically doesn't exist: the stack pointer
+        // reads as $01xx no matter what was loaded into it (verified by the
+        // SingleStepTests vectors, which seed rogue SPH values)
+        if (self.emulation_mode) {
+            self.sp = 0x0100 | (self.sp & 0xFF);
+        }
         self.executeOpcode(opcode);
         self.total_cycles += self.cycles;
         return self.cycles;
@@ -334,6 +348,7 @@ pub const Cpu = struct {
 
     /// Absolute addressing: addr
     fn addrAbsolute(self: *Cpu) u16 {
+        self.ea_bank = self.dbr;
         return self.fetchWord();
     }
 
@@ -344,7 +359,9 @@ pub const Cpu = struct {
         if (check_page and (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
             self.cycles += 1; // Page crossing
         }
-        return base +% idx;
+        const ea: u32 = (@as(u32, self.dbr) << 16) + base + idx; // carries into bank
+        self.ea_bank = @truncate(ea >> 16);
+        return @truncate(ea);
     }
 
     /// Absolute Indexed Y: addr,Y
@@ -354,7 +371,9 @@ pub const Cpu = struct {
         if (check_page and (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
             self.cycles += 1;
         }
-        return base +% idx;
+        const ea: u32 = (@as(u32, self.dbr) << 16) + base + idx; // carries into bank
+        self.ea_bank = @truncate(ea >> 16);
+        return @truncate(ea);
     }
 
     /// Absolute Long: long
@@ -377,6 +396,7 @@ pub const Cpu = struct {
     /// Direct Page Indirect: (dp)
     fn addrDirectIndirect(self: *Cpu) u16 {
         const dp_addr = self.addrDirect();
+        self.ea_bank = self.dbr;
         return self.readWord(0, dp_addr);
     }
 
@@ -391,6 +411,7 @@ pub const Cpu = struct {
     /// Direct Page Indexed Indirect: (dp,X)
     fn addrDirectIndexedIndirect(self: *Cpu) u16 {
         const dp_addr = self.addrDirectX();
+        self.ea_bank = self.dbr;
         return self.readWord(0, dp_addr);
     }
 
@@ -402,7 +423,9 @@ pub const Cpu = struct {
         if (check_page and (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
             self.cycles += 1;
         }
-        return base +% idx;
+        const ea: u32 = (@as(u32, self.dbr) << 16) + base + idx; // carries into bank
+        self.ea_bank = @truncate(ea >> 16);
+        return @truncate(ea);
     }
 
     /// Direct Page Indirect Long Indexed: [dp],Y
@@ -427,7 +450,35 @@ pub const Cpu = struct {
         const sr_addr = self.addrStackRelative();
         const base = self.readWord(0, sr_addr);
         const idx = if (self.p.x) @as(u16, @truncate(self.y)) else self.y;
-        return base +% idx;
+        const ea: u32 = (@as(u32, self.dbr) << 16) + base + idx; // carries into bank
+        self.ea_bank = @truncate(ea >> 16);
+        return @truncate(ea);
+    }
+
+    /// 16-bit DATA read at a 24-bit effective address: unlike pointer
+    /// fetches (which wrap within their bank), data accesses continue into
+    /// the next bank when the low byte sits at $xx:FFFF.
+    fn readWordData(self: *Cpu, bank: u8, addr: u16) u16 {
+        const lo: u16 = self.readByte(bank, addr);
+        const hi_bank = if (addr == 0xFFFF) bank +% 1 else bank;
+        const hi: u16 = self.readByte(hi_bank, addr +% 1);
+        return lo | (hi << 8);
+    }
+
+    fn writeWordData(self: *Cpu, bank: u8, addr: u16, value: u16) void {
+        self.writeByte(bank, addr, @truncate(value));
+        const hi_bank = if (addr == 0xFFFF) bank +% 1 else bank;
+        self.writeByte(hi_bank, addr +% 1, @truncate(value >> 8));
+    }
+
+    /// Applied whenever the X flag becomes 1 (SEP/PLP/RTI/XCE or any P
+    /// byte write): the index registers' high bytes are cleared in
+    /// hardware - the bits physically cease to exist.
+    fn truncateIndexRegs(self: *Cpu) void {
+        if (self.p.x) {
+            self.x &= 0xFF;
+            self.y &= 0xFF;
+        }
     }
 
     // ==================== Flag Operations ====================
@@ -444,96 +495,115 @@ pub const Cpu = struct {
 
     // ==================== ALU Operations ====================
 
-    fn adc8(self: *Cpu, value: u8) void {
-        const a: u8 = @truncate(self.a);
-        const c: u8 = if (self.p.c) 1 else 0;
+    // =========================================================================
+    // ADC/SBC - including 65816 decimal (BCD) mode
+    // =========================================================================
+    // Decimal mode follows the hardware's nibble-cascade exactly (verified
+    // against the SingleStepTests vectors): each nibble is summed with the
+    // incoming carry and decimal-adjusted (+6 on a >9 digit for ADC; -6 on
+    // a non-carrying digit for SBC, which is computed as A + ~value + C).
+    // Flag subtleties the vectors pin down:
+    //   - V is computed from the intermediate result BEFORE the final
+    //     top-nibble decimal adjustment
+    //   - C, N, Z come from the fully adjusted result
+    //   - SBC's V uses the INVERTED operand (it's an ADC of ~value)
 
+    fn adc8(self: *Cpu, value: u8) void {
+        const a: i32 = @as(u8, @truncate(self.a));
+        const v: i32 = value;
+        const c: i32 = if (self.p.c) 1 else 0;
+
+        var result: i32 = undefined;
         if (self.p.d) {
-            // BCD mode
-            var lo: u16 = (a & 0x0F) + (value & 0x0F) + c;
-            if (lo > 9) lo += 6;
-            var hi: u16 = (a >> 4) + (value >> 4) + (if (lo > 15) @as(u16, 1) else 0);
-            self.p.z = ((a +% value +% c) & 0xFF) == 0;
-            self.p.n = (hi & 0x08) != 0;
-            self.p.v = (~(a ^ value) & (a ^ (@as(u8, @truncate(hi << 4)))) & 0x80) != 0;
-            if (hi > 9) hi += 6;
-            self.p.c = hi > 15;
-            self.a = (self.a & 0xFF00) | @as(u16, @truncate((hi << 4) | (lo & 0x0F)));
+            result = (a & 0x0F) + (v & 0x0F) + c;
+            if (result > 0x09) result += 0x06;
+            const c0: i32 = if (result > 0x0F) 1 else 0;
+            result = (a & 0xF0) + (v & 0xF0) + (c0 << 4) + (result & 0x0F);
         } else {
-            const result: u16 = @as(u16, a) + @as(u16, value) + c;
-            self.p.c = result > 0xFF;
-            self.p.v = (~(a ^ value) & (a ^ @as(u8, @truncate(result))) & 0x80) != 0;
-            self.a = (self.a & 0xFF00) | (result & 0xFF);
-            self.setNZ8(@truncate(self.a));
+            result = a + v + c;
         }
+        self.p.v = (~(a ^ v) & (a ^ result) & 0x80) != 0;
+        if (self.p.d and result > 0x9F) result += 0x60;
+        self.p.c = result > 0xFF;
+        const r8: u8 = @truncate(@as(u32, @bitCast(result)));
+        self.a = (self.a & 0xFF00) | r8;
+        self.setNZ8(r8);
     }
 
     fn adc16(self: *Cpu, value: u16) void {
-        const c: u16 = if (self.p.c) 1 else 0;
+        const a: i32 = self.a;
+        const v: i32 = value;
+        const c: i32 = if (self.p.c) 1 else 0;
 
+        var result: i32 = undefined;
         if (self.p.d) {
-            // BCD mode (16-bit)
-            var result: u32 = 0;
-            var carry: u32 = c;
-            inline for (0..4) |i| {
-                const shift: u5 = @intCast(i * 4);
-                var digit = ((self.a >> shift) & 0xF) + ((value >> shift) & 0xF) + carry;
-                if (digit > 9) digit += 6;
-                carry = if (digit > 15) 1 else 0;
-                result |= (digit & 0xF) << shift;
-            }
-            self.p.c = carry != 0;
-            self.a = @truncate(result);
-            self.setNZ16(self.a);
+            result = (a & 0x000F) + (v & 0x000F) + c;
+            if (result > 0x0009) result += 0x0006;
+            var cn: i32 = if (result > 0x000F) 1 else 0;
+            result = (a & 0x00F0) + (v & 0x00F0) + (cn << 4) + (result & 0x000F);
+            if (result > 0x009F) result += 0x0060;
+            cn = if (result > 0x00FF) 1 else 0;
+            result = (a & 0x0F00) + (v & 0x0F00) + (cn << 8) + (result & 0x00FF);
+            if (result > 0x09FF) result += 0x0600;
+            cn = if (result > 0x0FFF) 1 else 0;
+            result = (a & 0xF000) + (v & 0xF000) + (cn << 12) + (result & 0x0FFF);
         } else {
-            const result: u32 = @as(u32, self.a) + @as(u32, value) + c;
-            self.p.c = result > 0xFFFF;
-            self.p.v = (~(self.a ^ value) & (self.a ^ @as(u16, @truncate(result))) & 0x8000) != 0;
-            self.a = @truncate(result);
-            self.setNZ16(self.a);
+            result = a + v + c;
         }
+        self.p.v = (~(a ^ v) & (a ^ result) & 0x8000) != 0;
+        if (self.p.d and result > 0x9FFF) result += 0x6000;
+        self.p.c = result > 0xFFFF;
+        self.a = @truncate(@as(u32, @bitCast(result)));
+        self.setNZ16(self.a);
     }
 
     fn sbc8(self: *Cpu, value: u8) void {
-        const a: u8 = @truncate(self.a);
-        const c: u8 = if (self.p.c) 0 else 1; // Note: inverted for borrow
+        const a: i32 = @as(u8, @truncate(self.a));
+        const v: i32 = @as(u8, value) ^ 0xFF; // SBC = ADC of the inverted operand
+        const c: i32 = if (self.p.c) 1 else 0;
 
+        var result: i32 = undefined;
         if (self.p.d) {
-            // BCD mode
-            var lo: i16 = @as(i16, a & 0x0F) - @as(i16, value & 0x0F) - c;
-            if (lo < 0) lo -= 6;
-            var hi: i16 = @as(i16, a >> 4) - @as(i16, value >> 4) - (if (lo < 0) @as(i16, 1) else 0);
-            if (hi < 0) hi -= 6;
-            const result: u8 = @truncate(@as(u16, @bitCast(@as(i16, (hi << 4) | (lo & 0x0F)))));
-            self.p.c = hi >= 0;
-            self.p.v = ((a ^ value) & (a ^ result) & 0x80) != 0;
-            self.a = (self.a & 0xFF00) | result;
-            self.setNZ8(result);
+            result = (a & 0x0F) + (v & 0x0F) + c;
+            if (result <= 0x0F) result -= 0x06;
+            const c0: i32 = if (result > 0x0F) 1 else 0;
+            result = (a & 0xF0) + (v & 0xF0) + (c0 << 4) + (result & 0x0F);
         } else {
-            const result: i16 = @as(i16, a) - @as(i16, value) - c;
-            self.p.c = result >= 0;
-            self.p.v = ((a ^ value) & (a ^ @as(u8, @truncate(@as(u16, @bitCast(result))))) & 0x80) != 0;
-            self.a = (self.a & 0xFF00) | @as(u16, @as(u8, @truncate(@as(u16, @bitCast(result)))));
-            self.setNZ8(@truncate(self.a));
+            result = a + v + c;
         }
+        self.p.v = (~(a ^ v) & (a ^ result) & 0x80) != 0;
+        if (self.p.d and result <= 0xFF) result -= 0x60;
+        self.p.c = result > 0xFF;
+        const r8: u8 = @truncate(@as(u32, @bitCast(result)));
+        self.a = (self.a & 0xFF00) | r8;
+        self.setNZ8(r8);
     }
 
     fn sbc16(self: *Cpu, value: u16) void {
-        const c: u16 = if (self.p.c) 0 else 1;
+        const a: i32 = self.a;
+        const v: i32 = @as(i32, value) ^ 0xFFFF;
+        const c: i32 = if (self.p.c) 1 else 0;
 
+        var result: i32 = undefined;
         if (self.p.d) {
-            // BCD mode (16-bit) - simplified
-            const result: i32 = @as(i32, self.a) - @as(i32, value) - c;
-            self.p.c = result >= 0;
-            self.a = @truncate(@as(u32, @bitCast(result)));
-            self.setNZ16(self.a);
+            result = (a & 0x000F) + (v & 0x000F) + c;
+            if (result <= 0x000F) result -= 0x0006;
+            var cn: i32 = if (result > 0x000F) 1 else 0;
+            result = (a & 0x00F0) + (v & 0x00F0) + (cn << 4) + (result & 0x000F);
+            if (result <= 0x00FF) result -= 0x0060;
+            cn = if (result > 0x00FF) 1 else 0;
+            result = (a & 0x0F00) + (v & 0x0F00) + (cn << 8) + (result & 0x00FF);
+            if (result <= 0x0FFF) result -= 0x0600;
+            cn = if (result > 0x0FFF) 1 else 0;
+            result = (a & 0xF000) + (v & 0xF000) + (cn << 12) + (result & 0x0FFF);
         } else {
-            const result: i32 = @as(i32, self.a) - @as(i32, value) - c;
-            self.p.c = result >= 0;
-            self.p.v = ((self.a ^ value) & (self.a ^ @as(u16, @truncate(@as(u32, @bitCast(result))))) & 0x8000) != 0;
-            self.a = @truncate(@as(u32, @bitCast(result)));
-            self.setNZ16(self.a);
+            result = a + v + c;
         }
+        self.p.v = (~(a ^ v) & (a ^ result) & 0x8000) != 0;
+        if (self.p.d and result <= 0xFFFF) result -= 0x6000;
+        self.p.c = result > 0xFFFF;
+        self.a = @truncate(@as(u32, @bitCast(result)));
+        self.setNZ16(self.a);
     }
 
     fn cmp8(self: *Cpu, reg: u8, value: u8) void {
@@ -681,25 +751,25 @@ pub const Cpu = struct {
             0x6D => { // ADC addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    self.adc8(self.readByte(self.dbr, addr));
+                    self.adc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.adc16(self.readWord(self.dbr, addr));
+                    self.adc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x7D => { // ADC addr,X
                 const addr = self.addrAbsoluteX(true);
                 if (self.p.m) {
-                    self.adc8(self.readByte(self.dbr, addr));
+                    self.adc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.adc16(self.readWord(self.dbr, addr));
+                    self.adc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x79 => { // ADC addr,Y
                 const addr = self.addrAbsoluteY(true);
                 if (self.p.m) {
-                    self.adc8(self.readByte(self.dbr, addr));
+                    self.adc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.adc16(self.readWord(self.dbr, addr));
+                    self.adc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x6F => { // ADC long
@@ -721,25 +791,25 @@ pub const Cpu = struct {
             0x72 => { // ADC (dp)
                 const addr = self.addrDirectIndirect();
                 if (self.p.m) {
-                    self.adc8(self.readByte(self.dbr, addr));
+                    self.adc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.adc16(self.readWord(self.dbr, addr));
+                    self.adc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x61 => { // ADC (dp,X)
                 const addr = self.addrDirectIndexedIndirect();
                 if (self.p.m) {
-                    self.adc8(self.readByte(self.dbr, addr));
+                    self.adc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.adc16(self.readWord(self.dbr, addr));
+                    self.adc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x71 => { // ADC (dp),Y
                 const addr = self.addrDirectIndirectIndexed(true);
                 if (self.p.m) {
-                    self.adc8(self.readByte(self.dbr, addr));
+                    self.adc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.adc16(self.readWord(self.dbr, addr));
+                    self.adc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x67 => { // ADC [dp]
@@ -769,9 +839,9 @@ pub const Cpu = struct {
             0x73 => { // ADC (sr,S),Y
                 const addr = self.addrStackRelativeIndirectIndexed();
                 if (self.p.m) {
-                    self.adc8(self.readByte(self.dbr, addr));
+                    self.adc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.adc16(self.readWord(self.dbr, addr));
+                    self.adc16(self.readWordData(self.ea_bank, addr));
                 }
             },
 
@@ -802,25 +872,25 @@ pub const Cpu = struct {
             0xED => { // SBC addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    self.sbc8(self.readByte(self.dbr, addr));
+                    self.sbc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.sbc16(self.readWord(self.dbr, addr));
+                    self.sbc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0xFD => { // SBC addr,X
                 const addr = self.addrAbsoluteX(true);
                 if (self.p.m) {
-                    self.sbc8(self.readByte(self.dbr, addr));
+                    self.sbc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.sbc16(self.readWord(self.dbr, addr));
+                    self.sbc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0xF9 => { // SBC addr,Y
                 const addr = self.addrAbsoluteY(true);
                 if (self.p.m) {
-                    self.sbc8(self.readByte(self.dbr, addr));
+                    self.sbc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.sbc16(self.readWord(self.dbr, addr));
+                    self.sbc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0xEF => { // SBC long
@@ -842,25 +912,25 @@ pub const Cpu = struct {
             0xF2 => { // SBC (dp)
                 const addr = self.addrDirectIndirect();
                 if (self.p.m) {
-                    self.sbc8(self.readByte(self.dbr, addr));
+                    self.sbc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.sbc16(self.readWord(self.dbr, addr));
+                    self.sbc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0xE1 => { // SBC (dp,X)
                 const addr = self.addrDirectIndexedIndirect();
                 if (self.p.m) {
-                    self.sbc8(self.readByte(self.dbr, addr));
+                    self.sbc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.sbc16(self.readWord(self.dbr, addr));
+                    self.sbc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0xF1 => { // SBC (dp),Y
                 const addr = self.addrDirectIndirectIndexed(true);
                 if (self.p.m) {
-                    self.sbc8(self.readByte(self.dbr, addr));
+                    self.sbc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.sbc16(self.readWord(self.dbr, addr));
+                    self.sbc16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0xE7 => { // SBC [dp]
@@ -890,9 +960,9 @@ pub const Cpu = struct {
             0xF3 => { // SBC (sr,S),Y
                 const addr = self.addrStackRelativeIndirectIndexed();
                 if (self.p.m) {
-                    self.sbc8(self.readByte(self.dbr, addr));
+                    self.sbc8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.sbc16(self.readWord(self.dbr, addr));
+                    self.sbc16(self.readWordData(self.ea_bank, addr));
                 }
             },
 
@@ -923,25 +993,25 @@ pub const Cpu = struct {
             0x2D => { // AND addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    self.and8(self.readByte(self.dbr, addr));
+                    self.and8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.and16(self.readWord(self.dbr, addr));
+                    self.and16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x3D => { // AND addr,X
                 const addr = self.addrAbsoluteX(true);
                 if (self.p.m) {
-                    self.and8(self.readByte(self.dbr, addr));
+                    self.and8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.and16(self.readWord(self.dbr, addr));
+                    self.and16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x39 => { // AND addr,Y
                 const addr = self.addrAbsoluteY(true);
                 if (self.p.m) {
-                    self.and8(self.readByte(self.dbr, addr));
+                    self.and8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.and16(self.readWord(self.dbr, addr));
+                    self.and16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x2F => { // AND long
@@ -963,25 +1033,25 @@ pub const Cpu = struct {
             0x32 => { // AND (dp)
                 const addr = self.addrDirectIndirect();
                 if (self.p.m) {
-                    self.and8(self.readByte(self.dbr, addr));
+                    self.and8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.and16(self.readWord(self.dbr, addr));
+                    self.and16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x21 => { // AND (dp,X)
                 const addr = self.addrDirectIndexedIndirect();
                 if (self.p.m) {
-                    self.and8(self.readByte(self.dbr, addr));
+                    self.and8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.and16(self.readWord(self.dbr, addr));
+                    self.and16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x31 => { // AND (dp),Y
                 const addr = self.addrDirectIndirectIndexed(true);
                 if (self.p.m) {
-                    self.and8(self.readByte(self.dbr, addr));
+                    self.and8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.and16(self.readWord(self.dbr, addr));
+                    self.and16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x27 => { // AND [dp]
@@ -1011,9 +1081,9 @@ pub const Cpu = struct {
             0x33 => { // AND (sr,S),Y
                 const addr = self.addrStackRelativeIndirectIndexed();
                 if (self.p.m) {
-                    self.and8(self.readByte(self.dbr, addr));
+                    self.and8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.and16(self.readWord(self.dbr, addr));
+                    self.and16(self.readWordData(self.ea_bank, addr));
                 }
             },
 
@@ -1044,25 +1114,25 @@ pub const Cpu = struct {
             0x0D => { // ORA addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    self.ora8(self.readByte(self.dbr, addr));
+                    self.ora8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.ora16(self.readWord(self.dbr, addr));
+                    self.ora16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x1D => { // ORA addr,X
                 const addr = self.addrAbsoluteX(true);
                 if (self.p.m) {
-                    self.ora8(self.readByte(self.dbr, addr));
+                    self.ora8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.ora16(self.readWord(self.dbr, addr));
+                    self.ora16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x19 => { // ORA addr,Y
                 const addr = self.addrAbsoluteY(true);
                 if (self.p.m) {
-                    self.ora8(self.readByte(self.dbr, addr));
+                    self.ora8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.ora16(self.readWord(self.dbr, addr));
+                    self.ora16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x0F => { // ORA long
@@ -1084,25 +1154,25 @@ pub const Cpu = struct {
             0x12 => { // ORA (dp)
                 const addr = self.addrDirectIndirect();
                 if (self.p.m) {
-                    self.ora8(self.readByte(self.dbr, addr));
+                    self.ora8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.ora16(self.readWord(self.dbr, addr));
+                    self.ora16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x01 => { // ORA (dp,X)
                 const addr = self.addrDirectIndexedIndirect();
                 if (self.p.m) {
-                    self.ora8(self.readByte(self.dbr, addr));
+                    self.ora8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.ora16(self.readWord(self.dbr, addr));
+                    self.ora16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x11 => { // ORA (dp),Y
                 const addr = self.addrDirectIndirectIndexed(true);
                 if (self.p.m) {
-                    self.ora8(self.readByte(self.dbr, addr));
+                    self.ora8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.ora16(self.readWord(self.dbr, addr));
+                    self.ora16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x07 => { // ORA [dp]
@@ -1132,9 +1202,9 @@ pub const Cpu = struct {
             0x13 => { // ORA (sr,S),Y
                 const addr = self.addrStackRelativeIndirectIndexed();
                 if (self.p.m) {
-                    self.ora8(self.readByte(self.dbr, addr));
+                    self.ora8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.ora16(self.readWord(self.dbr, addr));
+                    self.ora16(self.readWordData(self.ea_bank, addr));
                 }
             },
 
@@ -1165,25 +1235,25 @@ pub const Cpu = struct {
             0x4D => { // EOR addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    self.eor8(self.readByte(self.dbr, addr));
+                    self.eor8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.eor16(self.readWord(self.dbr, addr));
+                    self.eor16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x5D => { // EOR addr,X
                 const addr = self.addrAbsoluteX(true);
                 if (self.p.m) {
-                    self.eor8(self.readByte(self.dbr, addr));
+                    self.eor8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.eor16(self.readWord(self.dbr, addr));
+                    self.eor16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x59 => { // EOR addr,Y
                 const addr = self.addrAbsoluteY(true);
                 if (self.p.m) {
-                    self.eor8(self.readByte(self.dbr, addr));
+                    self.eor8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.eor16(self.readWord(self.dbr, addr));
+                    self.eor16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x4F => { // EOR long
@@ -1205,25 +1275,25 @@ pub const Cpu = struct {
             0x52 => { // EOR (dp)
                 const addr = self.addrDirectIndirect();
                 if (self.p.m) {
-                    self.eor8(self.readByte(self.dbr, addr));
+                    self.eor8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.eor16(self.readWord(self.dbr, addr));
+                    self.eor16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x41 => { // EOR (dp,X)
                 const addr = self.addrDirectIndexedIndirect();
                 if (self.p.m) {
-                    self.eor8(self.readByte(self.dbr, addr));
+                    self.eor8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.eor16(self.readWord(self.dbr, addr));
+                    self.eor16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x51 => { // EOR (dp),Y
                 const addr = self.addrDirectIndirectIndexed(true);
                 if (self.p.m) {
-                    self.eor8(self.readByte(self.dbr, addr));
+                    self.eor8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.eor16(self.readWord(self.dbr, addr));
+                    self.eor16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x47 => { // EOR [dp]
@@ -1253,9 +1323,9 @@ pub const Cpu = struct {
             0x53 => { // EOR (sr,S),Y
                 const addr = self.addrStackRelativeIndirectIndexed();
                 if (self.p.m) {
-                    self.eor8(self.readByte(self.dbr, addr));
+                    self.eor8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.eor16(self.readWord(self.dbr, addr));
+                    self.eor16(self.readWordData(self.ea_bank, addr));
                 }
             },
 
@@ -1289,17 +1359,17 @@ pub const Cpu = struct {
             0x2C => { // BIT addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    self.bit8(self.readByte(self.dbr, addr));
+                    self.bit8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.bit16(self.readWord(self.dbr, addr));
+                    self.bit16(self.readWordData(self.ea_bank, addr));
                 }
             },
             0x3C => { // BIT addr,X
                 const addr = self.addrAbsoluteX(true);
                 if (self.p.m) {
-                    self.bit8(self.readByte(self.dbr, addr));
+                    self.bit8(self.readByte(self.ea_bank, addr));
                 } else {
-                    self.bit16(self.readWord(self.dbr, addr));
+                    self.bit16(self.readWordData(self.ea_bank, addr));
                 }
             },
 
@@ -1330,25 +1400,25 @@ pub const Cpu = struct {
             0xCD => { // CMP addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    self.cmp8(@truncate(self.a), self.readByte(self.dbr, addr));
+                    self.cmp8(@truncate(self.a), self.readByte(self.ea_bank, addr));
                 } else {
-                    self.cmp16(self.a, self.readWord(self.dbr, addr));
+                    self.cmp16(self.a, self.readWordData(self.ea_bank, addr));
                 }
             },
             0xDD => { // CMP addr,X
                 const addr = self.addrAbsoluteX(true);
                 if (self.p.m) {
-                    self.cmp8(@truncate(self.a), self.readByte(self.dbr, addr));
+                    self.cmp8(@truncate(self.a), self.readByte(self.ea_bank, addr));
                 } else {
-                    self.cmp16(self.a, self.readWord(self.dbr, addr));
+                    self.cmp16(self.a, self.readWordData(self.ea_bank, addr));
                 }
             },
             0xD9 => { // CMP addr,Y
                 const addr = self.addrAbsoluteY(true);
                 if (self.p.m) {
-                    self.cmp8(@truncate(self.a), self.readByte(self.dbr, addr));
+                    self.cmp8(@truncate(self.a), self.readByte(self.ea_bank, addr));
                 } else {
-                    self.cmp16(self.a, self.readWord(self.dbr, addr));
+                    self.cmp16(self.a, self.readWordData(self.ea_bank, addr));
                 }
             },
             0xCF => { // CMP long
@@ -1370,25 +1440,25 @@ pub const Cpu = struct {
             0xD2 => { // CMP (dp)
                 const addr = self.addrDirectIndirect();
                 if (self.p.m) {
-                    self.cmp8(@truncate(self.a), self.readByte(self.dbr, addr));
+                    self.cmp8(@truncate(self.a), self.readByte(self.ea_bank, addr));
                 } else {
-                    self.cmp16(self.a, self.readWord(self.dbr, addr));
+                    self.cmp16(self.a, self.readWordData(self.ea_bank, addr));
                 }
             },
             0xC1 => { // CMP (dp,X)
                 const addr = self.addrDirectIndexedIndirect();
                 if (self.p.m) {
-                    self.cmp8(@truncate(self.a), self.readByte(self.dbr, addr));
+                    self.cmp8(@truncate(self.a), self.readByte(self.ea_bank, addr));
                 } else {
-                    self.cmp16(self.a, self.readWord(self.dbr, addr));
+                    self.cmp16(self.a, self.readWordData(self.ea_bank, addr));
                 }
             },
             0xD1 => { // CMP (dp),Y
                 const addr = self.addrDirectIndirectIndexed(true);
                 if (self.p.m) {
-                    self.cmp8(@truncate(self.a), self.readByte(self.dbr, addr));
+                    self.cmp8(@truncate(self.a), self.readByte(self.ea_bank, addr));
                 } else {
-                    self.cmp16(self.a, self.readWord(self.dbr, addr));
+                    self.cmp16(self.a, self.readWordData(self.ea_bank, addr));
                 }
             },
             0xC7 => { // CMP [dp]
@@ -1418,9 +1488,9 @@ pub const Cpu = struct {
             0xD3 => { // CMP (sr,S),Y
                 const addr = self.addrStackRelativeIndirectIndexed();
                 if (self.p.m) {
-                    self.cmp8(@truncate(self.a), self.readByte(self.dbr, addr));
+                    self.cmp8(@truncate(self.a), self.readByte(self.ea_bank, addr));
                 } else {
-                    self.cmp16(self.a, self.readWord(self.dbr, addr));
+                    self.cmp16(self.a, self.readWordData(self.ea_bank, addr));
                 }
             },
 
@@ -1443,9 +1513,9 @@ pub const Cpu = struct {
             0xEC => { // CPX addr
                 const addr = self.addrAbsolute();
                 if (self.p.x) {
-                    self.cmp8(@truncate(self.x), self.readByte(self.dbr, addr));
+                    self.cmp8(@truncate(self.x), self.readByte(self.ea_bank, addr));
                 } else {
-                    self.cmp16(self.x, self.readWord(self.dbr, addr));
+                    self.cmp16(self.x, self.readWordData(self.ea_bank, addr));
                 }
             },
 
@@ -1468,9 +1538,9 @@ pub const Cpu = struct {
             0xCC => { // CPY addr
                 const addr = self.addrAbsolute();
                 if (self.p.x) {
-                    self.cmp8(@truncate(self.y), self.readByte(self.dbr, addr));
+                    self.cmp8(@truncate(self.y), self.readByte(self.ea_bank, addr));
                 } else {
-                    self.cmp16(self.y, self.readWord(self.dbr, addr));
+                    self.cmp16(self.y, self.readWordData(self.ea_bank, addr));
                 }
             },
 
@@ -1506,21 +1576,21 @@ pub const Cpu = struct {
             0x0E => { // ASL addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
-                    self.writeByte(self.dbr, addr, self.asl8(value));
+                    const value = self.readByte(self.ea_bank, addr);
+                    self.writeByte(self.ea_bank, addr, self.asl8(value));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
-                    self.writeWord(self.dbr, addr, self.asl16(value));
+                    const value = self.readWordData(self.ea_bank, addr);
+                    self.writeWordData(self.ea_bank, addr, self.asl16(value));
                 }
             },
             0x1E => { // ASL addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
-                    self.writeByte(self.dbr, addr, self.asl8(value));
+                    const value = self.readByte(self.ea_bank, addr);
+                    self.writeByte(self.ea_bank, addr, self.asl8(value));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
-                    self.writeWord(self.dbr, addr, self.asl16(value));
+                    const value = self.readWordData(self.ea_bank, addr);
+                    self.writeWordData(self.ea_bank, addr, self.asl16(value));
                 }
             },
 
@@ -1556,21 +1626,21 @@ pub const Cpu = struct {
             0x4E => { // LSR addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
-                    self.writeByte(self.dbr, addr, self.lsr8(value));
+                    const value = self.readByte(self.ea_bank, addr);
+                    self.writeByte(self.ea_bank, addr, self.lsr8(value));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
-                    self.writeWord(self.dbr, addr, self.lsr16(value));
+                    const value = self.readWordData(self.ea_bank, addr);
+                    self.writeWordData(self.ea_bank, addr, self.lsr16(value));
                 }
             },
             0x5E => { // LSR addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
-                    self.writeByte(self.dbr, addr, self.lsr8(value));
+                    const value = self.readByte(self.ea_bank, addr);
+                    self.writeByte(self.ea_bank, addr, self.lsr8(value));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
-                    self.writeWord(self.dbr, addr, self.lsr16(value));
+                    const value = self.readWordData(self.ea_bank, addr);
+                    self.writeWordData(self.ea_bank, addr, self.lsr16(value));
                 }
             },
 
@@ -1606,21 +1676,21 @@ pub const Cpu = struct {
             0x2E => { // ROL addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
-                    self.writeByte(self.dbr, addr, self.rol8(value));
+                    const value = self.readByte(self.ea_bank, addr);
+                    self.writeByte(self.ea_bank, addr, self.rol8(value));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
-                    self.writeWord(self.dbr, addr, self.rol16(value));
+                    const value = self.readWordData(self.ea_bank, addr);
+                    self.writeWordData(self.ea_bank, addr, self.rol16(value));
                 }
             },
             0x3E => { // ROL addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
-                    self.writeByte(self.dbr, addr, self.rol8(value));
+                    const value = self.readByte(self.ea_bank, addr);
+                    self.writeByte(self.ea_bank, addr, self.rol8(value));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
-                    self.writeWord(self.dbr, addr, self.rol16(value));
+                    const value = self.readWordData(self.ea_bank, addr);
+                    self.writeWordData(self.ea_bank, addr, self.rol16(value));
                 }
             },
 
@@ -1656,21 +1726,21 @@ pub const Cpu = struct {
             0x6E => { // ROR addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
-                    self.writeByte(self.dbr, addr, self.ror8(value));
+                    const value = self.readByte(self.ea_bank, addr);
+                    self.writeByte(self.ea_bank, addr, self.ror8(value));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
-                    self.writeWord(self.dbr, addr, self.ror16(value));
+                    const value = self.readWordData(self.ea_bank, addr);
+                    self.writeWordData(self.ea_bank, addr, self.ror16(value));
                 }
             },
             0x7E => { // ROR addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
-                    self.writeByte(self.dbr, addr, self.ror8(value));
+                    const value = self.readByte(self.ea_bank, addr);
+                    self.writeByte(self.ea_bank, addr, self.ror8(value));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
-                    self.writeWord(self.dbr, addr, self.ror16(value));
+                    const value = self.readWordData(self.ea_bank, addr);
+                    self.writeWordData(self.ea_bank, addr, self.ror16(value));
                 }
             },
 
@@ -1702,24 +1772,24 @@ pub const Cpu = struct {
             0xEE => { // INC addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr) +% 1;
-                    self.writeByte(self.dbr, addr, value);
+                    const value = self.readByte(self.ea_bank, addr) +% 1;
+                    self.writeByte(self.ea_bank, addr, value);
                     self.setNZ8(value);
                 } else {
-                    const value = self.readWord(self.dbr, addr) +% 1;
-                    self.writeWord(self.dbr, addr, value);
+                    const value = self.readWordData(self.ea_bank, addr) +% 1;
+                    self.writeWordData(self.ea_bank, addr, value);
                     self.setNZ16(value);
                 }
             },
             0xFE => { // INC addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr) +% 1;
-                    self.writeByte(self.dbr, addr, value);
+                    const value = self.readByte(self.ea_bank, addr) +% 1;
+                    self.writeByte(self.ea_bank, addr, value);
                     self.setNZ8(value);
                 } else {
-                    const value = self.readWord(self.dbr, addr) +% 1;
-                    self.writeWord(self.dbr, addr, value);
+                    const value = self.readWordData(self.ea_bank, addr) +% 1;
+                    self.writeWordData(self.ea_bank, addr, value);
                     self.setNZ16(value);
                 }
             },
@@ -1752,24 +1822,24 @@ pub const Cpu = struct {
             0xCE => { // DEC addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr) -% 1;
-                    self.writeByte(self.dbr, addr, value);
+                    const value = self.readByte(self.ea_bank, addr) -% 1;
+                    self.writeByte(self.ea_bank, addr, value);
                     self.setNZ8(value);
                 } else {
-                    const value = self.readWord(self.dbr, addr) -% 1;
-                    self.writeWord(self.dbr, addr, value);
+                    const value = self.readWordData(self.ea_bank, addr) -% 1;
+                    self.writeWordData(self.ea_bank, addr, value);
                     self.setNZ16(value);
                 }
             },
             0xDE => { // DEC addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr) -% 1;
-                    self.writeByte(self.dbr, addr, value);
+                    const value = self.readByte(self.ea_bank, addr) -% 1;
+                    self.writeByte(self.ea_bank, addr, value);
                     self.setNZ8(value);
                 } else {
-                    const value = self.readWord(self.dbr, addr) -% 1;
-                    self.writeWord(self.dbr, addr, value);
+                    const value = self.readWordData(self.ea_bank, addr) -% 1;
+                    self.writeWordData(self.ea_bank, addr, value);
                     self.setNZ16(value);
                 }
             },
@@ -1810,33 +1880,33 @@ pub const Cpu = struct {
             0xAD => { // LDA addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
+                    const value = self.readByte(self.ea_bank, addr);
                     self.a = (self.a & 0xFF00) | value;
                     self.setNZ8(value);
                 } else {
-                    self.a = self.readWord(self.dbr, addr);
+                    self.a = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.a);
                 }
             },
             0xBD => { // LDA addr,X
                 const addr = self.addrAbsoluteX(true);
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
+                    const value = self.readByte(self.ea_bank, addr);
                     self.a = (self.a & 0xFF00) | value;
                     self.setNZ8(value);
                 } else {
-                    self.a = self.readWord(self.dbr, addr);
+                    self.a = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.a);
                 }
             },
             0xB9 => { // LDA addr,Y
                 const addr = self.addrAbsoluteY(true);
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
+                    const value = self.readByte(self.ea_bank, addr);
                     self.a = (self.a & 0xFF00) | value;
                     self.setNZ8(value);
                 } else {
-                    self.a = self.readWord(self.dbr, addr);
+                    self.a = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.a);
                 }
             },
@@ -1865,33 +1935,33 @@ pub const Cpu = struct {
             0xB2 => { // LDA (dp)
                 const addr = self.addrDirectIndirect();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
+                    const value = self.readByte(self.ea_bank, addr);
                     self.a = (self.a & 0xFF00) | value;
                     self.setNZ8(value);
                 } else {
-                    self.a = self.readWord(self.dbr, addr);
+                    self.a = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.a);
                 }
             },
             0xA1 => { // LDA (dp,X)
                 const addr = self.addrDirectIndexedIndirect();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
+                    const value = self.readByte(self.ea_bank, addr);
                     self.a = (self.a & 0xFF00) | value;
                     self.setNZ8(value);
                 } else {
-                    self.a = self.readWord(self.dbr, addr);
+                    self.a = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.a);
                 }
             },
             0xB1 => { // LDA (dp),Y
                 const addr = self.addrDirectIndirectIndexed(true);
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
+                    const value = self.readByte(self.ea_bank, addr);
                     self.a = (self.a & 0xFF00) | value;
                     self.setNZ8(value);
                 } else {
-                    self.a = self.readWord(self.dbr, addr);
+                    self.a = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.a);
                 }
             },
@@ -1931,11 +2001,11 @@ pub const Cpu = struct {
             0xB3 => { // LDA (sr,S),Y
                 const addr = self.addrStackRelativeIndirectIndexed();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
+                    const value = self.readByte(self.ea_bank, addr);
                     self.a = (self.a & 0xFF00) | value;
                     self.setNZ8(value);
                 } else {
-                    self.a = self.readWord(self.dbr, addr);
+                    self.a = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.a);
                 }
             },
@@ -1973,20 +2043,20 @@ pub const Cpu = struct {
             0xAE => { // LDX addr
                 const addr = self.addrAbsolute();
                 if (self.p.x) {
-                    self.x = self.readByte(self.dbr, addr);
+                    self.x = self.readByte(self.ea_bank, addr);
                     self.setNZ8(@truncate(self.x));
                 } else {
-                    self.x = self.readWord(self.dbr, addr);
+                    self.x = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.x);
                 }
             },
             0xBE => { // LDX addr,Y
                 const addr = self.addrAbsoluteY(true);
                 if (self.p.x) {
-                    self.x = self.readByte(self.dbr, addr);
+                    self.x = self.readByte(self.ea_bank, addr);
                     self.setNZ8(@truncate(self.x));
                 } else {
-                    self.x = self.readWord(self.dbr, addr);
+                    self.x = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.x);
                 }
             },
@@ -2024,20 +2094,20 @@ pub const Cpu = struct {
             0xAC => { // LDY addr
                 const addr = self.addrAbsolute();
                 if (self.p.x) {
-                    self.y = self.readByte(self.dbr, addr);
+                    self.y = self.readByte(self.ea_bank, addr);
                     self.setNZ8(@truncate(self.y));
                 } else {
-                    self.y = self.readWord(self.dbr, addr);
+                    self.y = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.y);
                 }
             },
             0xBC => { // LDY addr,X
                 const addr = self.addrAbsoluteX(true);
                 if (self.p.x) {
-                    self.y = self.readByte(self.dbr, addr);
+                    self.y = self.readByte(self.ea_bank, addr);
                     self.setNZ8(@truncate(self.y));
                 } else {
-                    self.y = self.readWord(self.dbr, addr);
+                    self.y = self.readWordData(self.ea_bank, addr);
                     self.setNZ16(self.y);
                 }
             },
@@ -2062,25 +2132,25 @@ pub const Cpu = struct {
             0x8D => { // STA addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    self.writeByte(self.dbr, addr, @truncate(self.a));
+                    self.writeByte(self.ea_bank, addr, @truncate(self.a));
                 } else {
-                    self.writeWord(self.dbr, addr, self.a);
+                    self.writeWordData(self.ea_bank, addr, self.a);
                 }
             },
             0x9D => { // STA addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    self.writeByte(self.dbr, addr, @truncate(self.a));
+                    self.writeByte(self.ea_bank, addr, @truncate(self.a));
                 } else {
-                    self.writeWord(self.dbr, addr, self.a);
+                    self.writeWordData(self.ea_bank, addr, self.a);
                 }
             },
             0x99 => { // STA addr,Y
                 const addr = self.addrAbsoluteY(false);
                 if (self.p.m) {
-                    self.writeByte(self.dbr, addr, @truncate(self.a));
+                    self.writeByte(self.ea_bank, addr, @truncate(self.a));
                 } else {
-                    self.writeWord(self.dbr, addr, self.a);
+                    self.writeWordData(self.ea_bank, addr, self.a);
                 }
             },
             0x8F => { // STA long
@@ -2102,25 +2172,25 @@ pub const Cpu = struct {
             0x92 => { // STA (dp)
                 const addr = self.addrDirectIndirect();
                 if (self.p.m) {
-                    self.writeByte(self.dbr, addr, @truncate(self.a));
+                    self.writeByte(self.ea_bank, addr, @truncate(self.a));
                 } else {
-                    self.writeWord(self.dbr, addr, self.a);
+                    self.writeWordData(self.ea_bank, addr, self.a);
                 }
             },
             0x81 => { // STA (dp,X)
                 const addr = self.addrDirectIndexedIndirect();
                 if (self.p.m) {
-                    self.writeByte(self.dbr, addr, @truncate(self.a));
+                    self.writeByte(self.ea_bank, addr, @truncate(self.a));
                 } else {
-                    self.writeWord(self.dbr, addr, self.a);
+                    self.writeWordData(self.ea_bank, addr, self.a);
                 }
             },
             0x91 => { // STA (dp),Y
                 const addr = self.addrDirectIndirectIndexed(false);
                 if (self.p.m) {
-                    self.writeByte(self.dbr, addr, @truncate(self.a));
+                    self.writeByte(self.ea_bank, addr, @truncate(self.a));
                 } else {
-                    self.writeWord(self.dbr, addr, self.a);
+                    self.writeWordData(self.ea_bank, addr, self.a);
                 }
             },
             0x87 => { // STA [dp]
@@ -2150,9 +2220,9 @@ pub const Cpu = struct {
             0x93 => { // STA (sr,S),Y
                 const addr = self.addrStackRelativeIndirectIndexed();
                 if (self.p.m) {
-                    self.writeByte(self.dbr, addr, @truncate(self.a));
+                    self.writeByte(self.ea_bank, addr, @truncate(self.a));
                 } else {
-                    self.writeWord(self.dbr, addr, self.a);
+                    self.writeWordData(self.ea_bank, addr, self.a);
                 }
             },
 
@@ -2176,9 +2246,9 @@ pub const Cpu = struct {
             0x8E => { // STX addr
                 const addr = self.addrAbsolute();
                 if (self.p.x) {
-                    self.writeByte(self.dbr, addr, @truncate(self.x));
+                    self.writeByte(self.ea_bank, addr, @truncate(self.x));
                 } else {
-                    self.writeWord(self.dbr, addr, self.x);
+                    self.writeWordData(self.ea_bank, addr, self.x);
                 }
             },
 
@@ -2202,9 +2272,9 @@ pub const Cpu = struct {
             0x8C => { // STY addr
                 const addr = self.addrAbsolute();
                 if (self.p.x) {
-                    self.writeByte(self.dbr, addr, @truncate(self.y));
+                    self.writeByte(self.ea_bank, addr, @truncate(self.y));
                 } else {
-                    self.writeWord(self.dbr, addr, self.y);
+                    self.writeWordData(self.ea_bank, addr, self.y);
                 }
             },
 
@@ -2228,17 +2298,17 @@ pub const Cpu = struct {
             0x9C => { // STZ addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    self.writeByte(self.dbr, addr, 0);
+                    self.writeByte(self.ea_bank, addr, 0);
                 } else {
-                    self.writeWord(self.dbr, addr, 0);
+                    self.writeWordData(self.ea_bank, addr, 0);
                 }
             },
             0x9E => { // STZ addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    self.writeByte(self.dbr, addr, 0);
+                    self.writeByte(self.ea_bank, addr, 0);
                 } else {
-                    self.writeWord(self.dbr, addr, 0);
+                    self.writeWordData(self.ea_bank, addr, 0);
                 }
             },
 
@@ -2322,7 +2392,8 @@ pub const Cpu = struct {
                 self.setNZ16(self.a);
             },
             0x1B => { // TCS - Transfer C (A) to Stack Pointer
-                self.sp = self.a;
+                // In emulation mode the stack high byte is hardwired to $01
+                self.sp = if (self.emulation_mode) 0x0100 | (self.a & 0xFF) else self.a;
             },
             0x3B => { // TSC - Transfer Stack Pointer to C (A)
                 self.a = self.sp;
@@ -2439,6 +2510,11 @@ pub const Cpu = struct {
             },
             0x28 => { // PLP
                 self.p = Flags.fromByte(self.pullByte());
+                if (self.emulation_mode) {
+                    self.p.m = true;
+                    self.p.x = true;
+                }
+                self.truncateIndexRegs();
                 if (self.emulation_mode) {
                     self.p.x = true;
                     self.p.m = true;
@@ -2594,6 +2670,11 @@ pub const Cpu = struct {
             },
             0x40 => { // RTI
                 self.p = Flags.fromByte(self.pullByte());
+                if (self.emulation_mode) {
+                    self.p.m = true;
+                    self.p.x = true;
+                }
+                self.truncateIndexRegs();
                 self.pc = self.pullWord();
                 if (!self.emulation_mode) {
                     self.pbr = self.pullByte();
@@ -2621,6 +2702,7 @@ pub const Cpu = struct {
                 const mask = self.fetchByte();
                 const current = self.p.toByte();
                 self.p = Flags.fromByte(current | mask);
+                self.truncateIndexRegs();
             },
             0xFB => { // XCE
                 const old_c = self.p.c;
@@ -2629,6 +2711,7 @@ pub const Cpu = struct {
                 if (self.emulation_mode) {
                     self.p.x = true;
                     self.p.m = true;
+                    self.truncateIndexRegs();
                     self.sp = 0x0100 | (self.sp & 0xFF);
                 }
             },
@@ -2668,30 +2751,36 @@ pub const Cpu = struct {
                 self.a = (@as(u16, low) << 8) | high;
                 self.setNZ8(high); // Flags set based on new low byte
             },
-            0x44 => { // MVP - Block Move Positive
+            0x44 => { // MVP - Block Move Positive (one byte per execution;
+                // PC rewinds to the opcode until A wraps to $FFFF, so
+                // interrupts can fire between bytes like real hardware)
                 const dst_bank = self.fetchByte();
                 const src_bank = self.fetchByte();
                 self.dbr = dst_bank;
-                const src = self.readByte(src_bank, self.x);
-                self.writeByte(dst_bank, self.y, src);
+                const xi = if (self.p.x) self.x & 0xFF else self.x;
+                const yi = if (self.p.x) self.y & 0xFF else self.y;
+                const src = self.readByte(src_bank, xi);
+                self.writeByte(dst_bank, yi, src);
                 self.a -%= 1;
-                self.x -%= 1;
-                self.y -%= 1;
+                self.x = if (self.p.x) (self.x -% 1) & 0xFF else self.x -% 1;
+                self.y = if (self.p.x) (self.y -% 1) & 0xFF else self.y -% 1;
                 if (self.a != 0xFFFF) {
-                    self.pc -= 3;
+                    self.pc -%= 3;
                 }
             },
-            0x54 => { // MVN - Block Move Negative
+            0x54 => { // MVN - Block Move Negative (see MVP)
                 const dst_bank = self.fetchByte();
                 const src_bank = self.fetchByte();
                 self.dbr = dst_bank;
-                const src = self.readByte(src_bank, self.x);
-                self.writeByte(dst_bank, self.y, src);
+                const xi = if (self.p.x) self.x & 0xFF else self.x;
+                const yi = if (self.p.x) self.y & 0xFF else self.y;
+                const src = self.readByte(src_bank, xi);
+                self.writeByte(dst_bank, yi, src);
                 self.a -%= 1;
-                self.x +%= 1;
-                self.y +%= 1;
+                self.x = if (self.p.x) (self.x +% 1) & 0xFF else self.x +% 1;
+                self.y = if (self.p.x) (self.y +% 1) & 0xFF else self.y +% 1;
                 if (self.a != 0xFFFF) {
-                    self.pc -= 3;
+                    self.pc -%= 3;
                 }
             },
             0x04 => { // TSB dp - Test and Set Bits
@@ -2709,13 +2798,13 @@ pub const Cpu = struct {
             0x0C => { // TSB addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
+                    const value = self.readByte(self.ea_bank, addr);
                     self.p.z = ((@as(u8, @truncate(self.a)) & value) == 0);
-                    self.writeByte(self.dbr, addr, value | @as(u8, @truncate(self.a)));
+                    self.writeByte(self.ea_bank, addr, value | @as(u8, @truncate(self.a)));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
+                    const value = self.readWordData(self.ea_bank, addr);
                     self.p.z = ((self.a & value) == 0);
-                    self.writeWord(self.dbr, addr, value | self.a);
+                    self.writeWordData(self.ea_bank, addr, value | self.a);
                 }
             },
             0x14 => { // TRB dp - Test and Reset Bits
@@ -2733,13 +2822,13 @@ pub const Cpu = struct {
             0x1C => { // TRB addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.dbr, addr);
+                    const value = self.readByte(self.ea_bank, addr);
                     self.p.z = ((@as(u8, @truncate(self.a)) & value) == 0);
-                    self.writeByte(self.dbr, addr, value & ~@as(u8, @truncate(self.a)));
+                    self.writeByte(self.ea_bank, addr, value & ~@as(u8, @truncate(self.a)));
                 } else {
-                    const value = self.readWord(self.dbr, addr);
+                    const value = self.readWordData(self.ea_bank, addr);
                     self.p.z = ((self.a & value) == 0);
-                    self.writeWord(self.dbr, addr, value & ~self.a);
+                    self.writeWordData(self.ea_bank, addr, value & ~self.a);
                 }
             },
         }

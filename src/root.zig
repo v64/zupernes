@@ -5,6 +5,7 @@ const std = @import("std");
 const dbg = @import("debug.zig");
 
 pub const Cpu = @import("cpu/cpu.zig").Cpu;
+pub const CpuFlags = @import("cpu/cpu.zig").Flags;
 pub const Bus = @import("bus.zig").Bus;
 pub const Ppu = @import("ppu/ppu.zig").Ppu;
 pub const Cartridge = @import("cartridge.zig").Cartridge;

@@ -110,6 +110,28 @@ pub fn build(b: *std.Build) void {
         run_screenshot.addArgs(args);
     }
 
+    // CPU test-vector harness (SingleStepTests 65816 JSON vectors)
+    //   zig build cpu-vectors -- <dir-with-json> [filter]
+    const cpu_vectors = b.addExecutable(.{
+        .name = "cpu-vectors",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_cpu_vectors.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zupernes", .module = emu_mod },
+            },
+        }),
+    });
+    b.installArtifact(cpu_vectors);
+    const cpu_vectors_step = b.step("cpu-vectors", "Run 65816 test vectors against the CPU");
+    const run_cpu_vectors = b.addRunArtifact(cpu_vectors);
+    cpu_vectors_step.dependOn(&run_cpu_vectors.step);
+    run_cpu_vectors.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_cpu_vectors.addArgs(args);
+    }
+
     // Unit tests
     const emu_tests = b.addTest(.{
         .root_module = emu_mod,
