@@ -1,5 +1,85 @@
 # DSP-1 / Super Mario Kart Mode 7 — Debugging State
 
+## RESOLVED (2026-07-04): Mode 7 races render. Three timing fixes.
+
+The desync was not in the DSP core's semantics at all. The game writes
+its 7 Parameter words **blind** (no RQM polling between params — the
+loop is `LDA dp,X / STA $00:6000` straight-line code at $81:F9E8,
+cycle-tuned to hardware). The microcode's consume chain needs ~7 DSP
+instructions per param (JRQM gate → `MEM<-DR` with-request → walk to the
+next gate). Three separate emulation-timing errors each starved the DSP
+below that budget; each param then arrived one JRQM station early,
+overwrote the previous one in DR, and the whole conversation shifted by
+one word. The "spurious RQM" the game saw before its blind result reads
+was $28b's *request for param 7* (which the game had already sent).
+
+1. **Per-access memory timing** — flat 6 master cycles per CPU cycle ran
+   SlowROM/WRAM code ~30% fast. Fix: `Bus.memSpeed` (the 6/8/12 map incl.
+   FastROM MEMSEL), `Cpu.mem_masters/mem_accesses` accumulated in the
+   access helpers, `Emulator.step` clocks PPU/APU with
+   `mem_masters + internal*6`; DMA/HDMA bill 8/byte via
+   `Bus.tickDmaByte`. Side effect: the Mesen2 frame-alignment gap
+   (+17 boot, 14-26/level-load) collapsed to ±1..10 over 2900 frames.
+2. **Sub-instruction DSP ticking** — a bus write takes effect at the END
+   of its instruction; batching the whole instruction's cycles after the
+   write robbed the DSP of ~3 instructions per STA. Fix:
+   `Cpu.accountAccess` brings the DSP up to "now" before every bus
+   access (`internal_flushed` bookkeeping); root ticks only the trailing
+   internal cycles.
+3. **The DSP instruction rate itself** — we ran 8.192MHz/4 = 2.048 MIPS
+   per the datasheet's cycles-per-instruction reading. bsnes/Mesen2 (and
+   working hardware behavior) use **7.6MHz, ONE instruction per clock**.
+   SMK's FastROM inter-write gap is only ~66 master cycles ≈ 23 DSP
+   instructions at the real rate — at 2.048 MIPS it was 6, one short of
+   the consume chain even after fixes 1-2. `Bus.tickDsp` now runs 7600
+   instructions per 21477 master cycles.
+
+Verified: boot conversation byte-exact (game reads real results
+`0000 ffb2 0880 27a3`, matching the unit test), race-load raster streams
+fill $7E:4000-$FFFF with real perspective tables (was solid $80 echoes),
+and **frame 4310 of test/movies/smk-mc1.zmov shows the same start-grid
+scene as Mesen2**: road, 8 karts, Lakitu, course map. All 29 test ROMs
+and all unit tests still pass.
+
+Related fixes found on the way (cross-validating menus vs Mesen2):
+- WRAM now powers on $FF-filled (was zeroed): SMK range-validates a
+  settings block that survives soft-reset in WRAM; zeros passed as a
+  phantom "remembered 2P GAME" selection. $FF fails validation like real
+  garbage does, and stays deterministic for TAS.
+- SRAM now $FF-filled for the same reason (fresh battery reads ~$FF).
+- Port 2 models a DISCONNECTED controller (reads 0s; no 1-padding
+  "connected" signature) until a frontend maps 2P input.
+- Mesen2 needs `Firmware/dsp1b.rom` (copied from test/dsp/) to run SMK.
+
+Remaining SMK polish (next session):
+- Timer bar at screen top not rendered during the race (Mesen shows
+  "1 00'00\"00"; we show horizon there) — likely a window/HDMA nuance on
+  the top strip.
+- Races start ~65 frames apart between the emulators (menu-phase
+  accumulation); countdown scene itself matches.
+- SMW yi1-walk movie re-run: Mario at YI1 entry renders as a small
+  partial sprite at f2990 — determine whether that's the level-entry
+  appear-pose (the movie enters the level later on the new timing, so
+  old frame indices show earlier game states) or an OAM regression from
+  the timing overhaul. Compare against Mesen at the same $13.
+
+Diagnosis artifacts (all comptime-gated, kept):
+- `[DSPPC]` per-instruction pc+sr stream in `Bus.tickDsp`
+  (`dbg.trace_frame_min..trace_pc_frame_max`), frame-stamped DR/SR lines.
+- `dbg.trace_watch`/`watch_addr` low-RAM write watchpoint +
+  `watch_dsp_writes` (prints writing PBR:PC) in `Cpu.writeByte`.
+- `screenshot --dump-wram` + Mesen Lua WRAM dump → diff → watchpoint is
+  the cross-emulator state-divergence workflow that found the WRAM-init
+  bug (cursor byte $0085 ← settings word $2E ← boot validation at
+  $81:E477).
+- SMK's boot conversation happens at **frame 85** of
+  test/movies/smk-mc1.zmov.
+
+The sections below are the original investigation log, kept for the
+methodology and the microcode/protocol reference material.
+
+---
+
 Paused mid-investigation. This file is the resume point; read it top to
 bottom before touching anything.
 

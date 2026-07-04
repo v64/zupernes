@@ -94,6 +94,15 @@ pub const Bus = struct {
     // =========================================================================
     joypad1: u16, // Live button state for controller 1
     joypad2: u16, // Live button state for controller 2
+    // Whether a controller is physically present in port 2. Games DETECT
+    // this: a connected pad drives 1s on the serial line after its 16
+    // report bits, a disconnected port reads 0s. Super Mario Kart checks
+    // and preselects "2P GAME" when it sees a second pad - with an
+    // always-connected port 2 our menus defaulted differently from a
+    // one-controller setup (found cross-validating against Mesen2, which
+    // models port 2 as empty). No frontend maps 2P input yet, so the
+    // truthful default is disconnected; flip this when 2P arrives.
+    joypad2_connected: bool = false,
     joy1_latch: u16, // Auto-read latched value (what $4218/$4219 return)
     joy2_latch: u16,
     joypad_strobe: bool, // $4016 write bit 0 - while high, shift register reloads
@@ -211,28 +220,96 @@ pub const Bus = struct {
     // cartridge provides. Null in normal operation - the cost is a single
     // well-predicted branch at the top of read()/write().
     flat_mem: ?[]u8 = null,
-    // Fixed-point accumulator for the DSP clock (2.048MHz vs 21.477MHz
-    // master: 2 instructions per 21 master cycles). Lives on the Bus so
-    // that BOTH the per-CPU-instruction path (root.zig) and the DMA byte
-    // loop (dma.zig) can advance the DSP - on hardware the coprocessor
-    // keeps running during DMA, and games depend on it: Super Mario Kart
-    // DMA-reads DSP-1 results at exactly the pace the microcode streams
-    // them into DR.
+    // Fixed-point accumulator for the DSP clock. The DSP-1's uPD77C25
+    // executes ONE instruction per clock of its 7.6MHz crystal (the
+    // byuu-measured model that bsnes and Mesen2 use - NOT the "4 clocks
+    // per instruction" reading of the datasheet, which would be 4x too
+    // slow): 7600 instructions per 21477 master cycles. The rate is
+    // load-bearing: Super Mario Kart blind-writes its DSP parameters with
+    // only ~66 master cycles between words, and the microcode's consume
+    // chain must win that race like it does on hardware. Lives on the Bus
+    // so that BOTH the CPU access path (Cpu.accountAccess) and the DMA
+    // byte loop (dma.zig) can advance the DSP - on hardware the
+    // coprocessor keeps running during DMA, and games depend on it:
+    // Super Mario Kart DMA-reads DSP-1 results at exactly the pace the
+    // microcode streams them into DR.
     dsp_accum: u32,
+    // Master cycles consumed by DMA/HDMA transfers since the emulator loop
+    // last drained this (see tickDmaByte). DMA runs synchronously inside a
+    // CPU register write, so its duration is invisible to the per-
+    // instruction cycle count; the loop adds this to the PPU/APU clocks
+    // after the instruction completes. Without it, DMA is time-free and
+    // DMA-heavy phases (level loads stream dozens of KB to VRAM) finish
+    // measurably fast - one of the gaps in the Mesen2 frame-alignment
+    // comparison.
+    dma_masters: u32 = 0,
+
+    /// Account one DMA'd byte: 8 master cycles of bus time, during which
+    /// the cartridge coprocessor keeps running (see the comment at the
+    /// dma.zig call site - Super Mario Kart DMA-reads DSP-1 results at
+    /// exactly the pace the microcode streams them).
+    pub fn tickDmaByte(self: *Bus) void {
+        self.dma_masters += 8;
+        self.tickDsp(8);
+    }
+
+    // ==========================================================================
+    // MEMORY ACCESS TIMING
+    // ==========================================================================
+    // Every bus access has a region-dependent duration in master-clock
+    // cycles (the famous 6/8/12 "memory speed" map):
+    //
+    //   banks $00-$3F / $80-$BF:
+    //     $0000-$1FFF  WRAM mirror              8
+    //     $2000-$3FFF  B-bus I/O (PPU/APU/WRAM) 6
+    //     $4000-$41FF  manual joypad ports      12  (the only XSlow region)
+    //     $4200-$5FFF  internal CPU I/O + DMA   6
+    //     $6000-$7FFF  expansion (DSP-1! SRAM)  8
+    //     $8000-$FFFF  ROM                      8, or 6 in banks $80-$BF
+    //                                           when FastROM is enabled
+    //   banks $40-$7D: 8 everywhere (ROM/SRAM)
+    //   banks $7E-$7F: 8 (WRAM)
+    //   banks $C0-$FF: 8, or 6 with FastROM ($420D MEMSEL bit 0 - only the
+    //                  $80+ mirrors get the speedup; $00-$7D never do)
+    //
+    // The CPU's access helpers call this to price each access (see
+    // Cpu.mem_masters). Getting this right is not a nicety: SlowROM code
+    // effectively runs the CPU at 2.68MHz, and cycle-tuned loops (Super
+    // Mario Kart's blind DSP-1 parameter writes) only work at that speed.
+    pub fn memSpeed(self: *const Bus, bank: u8, addr: u16) u32 {
+        if (bank >= 0xC0) {
+            return if ((self.memsel & 1) != 0) 6 else 8; // FastROM-eligible ROM
+        }
+        if ((bank & 0x7F) >= 0x40) return 8; // $40-$7D ROM/SRAM, $7E-$7F WRAM
+        // System banks $00-$3F / $80-$BF
+        return switch (addr >> 12) {
+            0x0, 0x1 => 8, // WRAM mirror
+            0x2, 0x3 => 6, // B-bus I/O
+            0x4 => if (addr < 0x4200) @as(u32, 12) else 6, // joypad / internal
+            0x5 => 6,
+            0x6, 0x7 => 8, // expansion area
+            // ROM half: only the $80-$BF mirrors get the FastROM speedup
+            else => if (bank >= 0x80 and (self.memsel & 1) != 0) @as(u32, 6) else 8,
+        };
+    }
 
     /// Advance the DSP-1 by the given number of master-clock cycles.
     pub fn tickDsp(self: *Bus, master_cycles: u32) void {
         if (!self.dsp1_present) return;
-        self.dsp_accum += master_cycles * 2;
-        while (self.dsp_accum >= 21) {
-            self.dsp_accum -= 21;
+        self.dsp_accum += master_cycles * 7600;
+        while (self.dsp_accum >= 21477) {
+            self.dsp_accum -= 21477;
             self.dsp1.step();
-            // Instruction-level PC trace for one frame (see dbg.trace_dsp):
-            // histogram the output to find microcode stuck in internal
-            // loops, or follow a conversation instruction by instruction.
+            // Instruction-level PC trace (see dbg.trace_dsp): histogram the
+            // output to find microcode stuck in internal loops, or follow a
+            // conversation instruction by instruction. SR is included so
+            // handshake-bit transitions (RQM raise/clear) can be pinned to
+            // the exact instruction that caused them.
             if (comptime dbg.trace_dsp) {
-                if (self.ppu.frame_count == dbg.trace_frame_min) {
-                    std.debug.print("[DSPPC] {x:0>3}\n", .{self.dsp1.pc});
+                if (self.ppu.frame_count >= dbg.trace_frame_min and
+                    self.ppu.frame_count <= dbg.trace_pc_frame_max)
+                {
+                    std.debug.print("[DSPPC] {x:0>3} sr={x:0>4}\n", .{ self.dsp1.pc, self.dsp1.sr });
                 }
             }
         }
@@ -240,7 +317,17 @@ pub const Bus = struct {
 
     pub fn init(ppu: *Ppu) Bus {
         return Bus{
-            .wram = [_]u8{0} ** (128 * 1024), // 128KB Work RAM, zeroed
+            // 128KB Work RAM. Real WRAM powers on with garbage, and games
+            // depend on that: boot code range-validates settings blocks
+            // that survive soft-reset in WRAM, expecting the checks to
+            // FAIL on a cold boot so defaults get applied. All-zero WRAM
+            // can pass those checks as phantom "remembered" data - Super
+            // Mario Kart saw a zeroed $2E as a valid "last mode = 2P"
+            // and preselected 2P GAME on the menu (Mesen2 randomizes
+            // power-on WRAM, so its garbage failed validation like real
+            // hardware). $FF is deterministic (TAS reproducibility) while
+            // still failing plausibility checks the way garbage does.
+            .wram = [_]u8{0xFF} ** (128 * 1024),
             .cartridge = null,
             .ppu = ppu,
             .dma = Dma.init(),
@@ -331,14 +418,14 @@ pub const Bus = struct {
                         const v = self.dsp1.readData();
                         if (comptime dbg.trace_dsp) {
                             if (self.ppu.frame_count >= dbg.trace_frame_min and self.ppu.frame_count <= dbg.trace_frame_max) {
-                                std.debug.print("[DSP1] DR rd  = ${x:0>2} (pc={x:0>3} sr={x:0>4})\n", .{ v, self.dsp1.pc, self.dsp1.sr });
+                                std.debug.print("[DSP1] f{d} DR rd  = ${x:0>2} (pc={x:0>3} sr={x:0>4})\n", .{ self.ppu.frame_count, v, self.dsp1.pc, self.dsp1.sr });
                             }
                         }
                         return v;
                     }
                     if (comptime dbg.trace_dsp) {
                         if (self.ppu.frame_count >= dbg.trace_frame_min and self.ppu.frame_count <= dbg.trace_frame_max) {
-                            std.debug.print("[DSP1] SR rd  = ${x:0>2} (pc={x:0>3})\n", .{ self.dsp1.readStatus(), self.dsp1.pc });
+                            std.debug.print("[DSP1] f{d} SR rd  = ${x:0>2} (pc={x:0>3})\n", .{ self.ppu.frame_count, self.dsp1.readStatus(), self.dsp1.pc });
                         }
                     }
                     return self.dsp1.readStatus();
@@ -416,7 +503,7 @@ pub const Bus = struct {
                 // HiROM DSP-1 data register (SR at $7000+ is read-only)
                 if (comptime dbg.trace_dsp) {
                     if (self.ppu.frame_count >= dbg.trace_frame_min and self.ppu.frame_count <= dbg.trace_frame_max) {
-                        std.debug.print("[DSP1] DR wr  = ${x:0>2} (pc={x:0>3} sr={x:0>4})\n", .{ value, self.dsp1.pc, self.dsp1.sr });
+                        std.debug.print("[DSP1] f{d} DR wr  = ${x:0>2} (pc={x:0>3} sr={x:0>4})\n", .{ self.ppu.frame_count, value, self.dsp1.pc, self.dsp1.sr });
                     }
                 }
                 self.dsp1.writeData(value);
@@ -661,7 +748,10 @@ pub const Bus = struct {
                 // Bits 2-4 read as 1 on real hardware (open bus quirk of port 2)
                 if (self.joypad_strobe) self.reloadShiftRegisters();
                 const bit: u8 = @truncate(self.joy2_shift >> 31);
-                self.joy2_shift = (self.joy2_shift << 1) | 1;
+                // A connected pad drives 1s once its 16 report bits are
+                // out; a disconnected port keeps reading 0.
+                self.joy2_shift = (self.joy2_shift << 1) |
+                    @intFromBool(self.joypad2_connected);
                 return bit | 0x1C;
             },
             else => return 0,
@@ -683,10 +773,14 @@ pub const Bus = struct {
     /// Load live button state into the manual-read shift registers.
     /// The 16-bit state (B first) goes in the top bits of a 32-bit register;
     /// the bits below are set to 1 so that reads past the 16th return 1
-    /// ("controller connected" signature per SNES convention).
+    /// ("controller connected" signature per SNES convention). A
+    /// disconnected port has nothing driving the line: every read is 0.
     fn reloadShiftRegisters(self: *Bus) void {
         self.joy1_shift = (@as(u32, self.joypad1) << 16) | 0xFFFF;
-        self.joy2_shift = (@as(u32, self.joypad2) << 16) | 0xFFFF;
+        self.joy2_shift = if (self.joypad2_connected)
+            (@as(u32, self.joypad2) << 16) | 0xFFFF
+        else
+            0;
     }
 
     /// Latch controller state into the auto-read registers ($4218-$421B).

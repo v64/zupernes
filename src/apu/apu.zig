@@ -51,14 +51,20 @@ pub const Apu = struct {
     spc: Spc700,
 
     /// Cycle counter for synchronization with main CPU
-    /// The SPC700 runs at 1.024 MHz, main CPU at ~3.58 MHz (NTSC)
-    /// Ratio: 1.024 / 3.58 ≈ 0.286 SPC cycles per master cycle
-    cycle_counter: i32,
+    /// The SPC700 runs at 1.024 MHz off its own crystal; we clock it from
+    /// the S-CPU's 21.477 MHz master clock via a fixed-point ratio.
+    /// i64 because a single call can deliver a whole DMA burst (a 64KB
+    /// transfer is 524288 master cycles - already past what i32 can hold
+    /// once shifted into 16.16 fixed point).
+    cycle_counter: i64,
 
-    /// Master cycles per SPC700 cycle (fixed-point 16.16)
-    /// 3.58 MHz / 1.024 MHz = 3.496 master cycles per SPC cycle
-    /// In 16.16 fixed point: 3.496 * 65536 = 229,146
-    cycles_per_spc: u32 = 229146,
+    /// Master-clock cycles per SPC700 cycle (fixed-point 16.16).
+    /// 21.477 MHz / 1.024 MHz ~= 20.98 master cycles per SPC cycle.
+    /// In 16.16 fixed point: 20.98 * 65536 = 1,374,876. (Kept as exactly
+    /// 6x the old 3.496-CPU-clocks ratio from when the emulator ticked
+    /// subsystems in flat CPU cycles, so the effective APU rate is
+    /// unchanged by the master-cycle timing refactor.)
+    cycles_per_spc: u32 = 1374876,
 
     /// SPC700 cycles accumulated toward the next DSP sample (one stereo
     /// sample every 32 SPC cycles = 32kHz)
@@ -105,12 +111,12 @@ pub const Apu = struct {
     /// This should be called after each main CPU instruction
     pub fn runCycles(self: *Apu, master_cycles: u32) void {
         // Add master cycles to counter (in 16.16 fixed point)
-        self.cycle_counter += @intCast(master_cycles << 16);
+        self.cycle_counter += @as(i64, master_cycles) << 16;
 
         // Execute SPC700 instructions while we have cycles
-        while (self.cycle_counter >= @as(i32, @intCast(self.cycles_per_spc))) {
+        while (self.cycle_counter >= @as(i64, self.cycles_per_spc)) {
             const spc_cycles = self.step();
-            self.cycle_counter -= @intCast(spc_cycles * self.cycles_per_spc);
+            self.cycle_counter -= @as(i64, spc_cycles) * self.cycles_per_spc;
 
             // Clock the S-DSP: it produces one stereo sample every 32
             // SPC700 cycles (1.024 MHz / 32 = 32000 Hz)

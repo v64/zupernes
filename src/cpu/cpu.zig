@@ -64,6 +64,32 @@ pub const Cpu = struct {
     // Cycle counter for current instruction
     cycles: u8,
 
+    // =========================================================================
+    // PER-ACCESS MASTER-CYCLE ACCOUNTING
+    // =========================================================================
+    // On real hardware a "CPU cycle" is not a fixed length: each bus access
+    // takes 6, 8, or 12 master-clock cycles depending on the memory region
+    // (see Bus.memSpeed), and pure internal cycles take 6. Most SNES code
+    // runs from SlowROM (8) and uses WRAM (8), so a flat 6-per-cycle model
+    // makes the CPU ~30% too fast relative to the PPU/APU/DSP - enough to
+    // break cycle-tuned code (Super Mario Kart writes DSP-1 parameters in a
+    // blind loop timed to the uPD77C25's consume rate; at 6/cycle the writes
+    // arrive before the previous parameter was consumed and the whole
+    // conversation shifts by one word).
+    //
+    // The memory-access helpers below accumulate the true master-cycle cost
+    // of every bus access here (mem_masters) and count the accesses
+    // (mem_accesses); Emulator.step() then computes
+    //   masters = mem_masters + (cycles - mem_accesses) * 6
+    // so internal cycles cost 6 and accesses cost their real price.
+    // `cycles` itself stays in untimed units - the SingleStepTests vectors
+    // validate those counts and they remain the CPU-facing contract.
+    mem_masters: u32,
+    mem_accesses: u8,
+    // Internal cycles already flushed to the DSP clock by accountAccess
+    // (see there); Emulator.step ticks the DSP for the remainder.
+    internal_flushed: u32,
+
     // For debugging/tracing
     total_cycles: u64,
     instruction_count: u64,
@@ -90,6 +116,9 @@ pub const Cpu = struct {
             .emulation_mode = true,
             .bus = bus,
             .cycles = 0,
+            .mem_masters = 0,
+            .mem_accesses = 0,
+            .internal_flushed = 0,
             .total_cycles = 0,
             .instruction_count = 0,
             .nmi_pending = false,
@@ -130,6 +159,9 @@ pub const Cpu = struct {
 
     pub fn step(self: *Cpu) u8 {
         self.cycles = 0;
+        self.mem_masters = 0;
+        self.mem_accesses = 0;
+        self.internal_flushed = 0;
 
         // =====================================================================
         // INTERRUPT HANDLING
@@ -258,7 +290,33 @@ pub const Cpu = struct {
 
     // ==================== Memory Access ====================
 
+    /// Record the true master-clock cost of one bus access (region-dependent
+    /// 6/8/12 - see the mem_masters field docs and Bus.memSpeed), and bring
+    /// the DSP coprocessor up to "now" BEFORE the access happens.
+    ///
+    /// The DSP must be ticked mid-instruction, not per-instruction: a bus
+    /// access takes effect at the END of its cycle, after all the fetch/
+    /// index cycles that preceded it within the same instruction. Super
+    /// Mario Kart's blind DSP-1 parameter loop leaves only ~7 DSP
+    /// instructions of slack between consecutive writes - batching a whole
+    /// STA's cycles until after its write robs the DSP of ~3 instructions
+    /// and the handshake slips a full station (the game overwrites each
+    /// parameter before the microcode consumed it).
+    fn accountAccess(self: *Cpu, bank: u8, addr: u16) void {
+        const speed = self.bus.memSpeed(bank, addr);
+        // Internal (non-access) cycles elapsed since the last flush: total
+        // counted cycles minus one per completed access minus what was
+        // already flushed. Everything up to and including this access's
+        // own bus cycle happens-before its side effect.
+        const internal: u32 = @as(u32, self.cycles) - self.mem_accesses - self.internal_flushed;
+        self.bus.tickDsp(internal * 6 + speed);
+        self.internal_flushed += internal;
+        self.mem_masters += speed;
+        self.mem_accesses +%= 1;
+    }
+
     fn fetchByte(self: *Cpu) u8 {
+        self.accountAccess(self.pbr, self.pc);
         const value = self.bus.read(self.pbr, self.pc);
         self.pc +%= 1;
         self.cycles += 1;
@@ -279,6 +337,7 @@ pub const Cpu = struct {
     }
 
     fn readByte(self: *Cpu, bank: u8, addr: u16) u8 {
+        self.accountAccess(bank, addr);
         self.cycles += 1;
         return self.bus.read(bank, addr);
     }
@@ -290,7 +349,23 @@ pub const Cpu = struct {
     }
 
     fn writeByte(self: *Cpu, bank: u8, addr: u16, value: u8) void {
+        self.accountAccess(bank, addr);
         self.cycles += 1;
+        // Low-RAM watchpoint (see dbg.trace_watch): report which
+        // instruction writes the watched address, in any of its mirrors.
+        if (comptime dbg.trace_watch) {
+            const low_ram_hit = addr == dbg.watch_addr and
+                ((bank & 0x7F) < 0x40 or bank == 0x7E);
+            // Also watch DSP-1 DR writes (HiROM window) so the SNES-side
+            // sender of a DSP conversation can be located and disassembled.
+            const dsp_hit = dbg.watch_dsp_writes and
+                (bank & 0x7F) < 0x20 and addr >= 0x6000 and addr < 0x7000;
+            if (low_ram_hit or dsp_hit) {
+                std.debug.print("[WATCH] wr ${x:0>2}:{x:0>4} = ${x:0>2} from pc={x:0>2}:{x:0>4} instr#{d}\n", .{
+                    bank, addr, value, self.pbr, self.pc, self.instruction_count,
+                });
+            }
+        }
         self.bus.write(bank, addr, value);
     }
 
@@ -300,6 +375,7 @@ pub const Cpu = struct {
     }
 
     fn pushByte(self: *Cpu, value: u8) void {
+        self.accountAccess(0, self.sp);
         self.bus.write(0, self.sp, value);
         self.sp -%= 1;
         if (self.emulation_mode) {
@@ -318,6 +394,7 @@ pub const Cpu = struct {
         if (self.emulation_mode) {
             self.sp = 0x0100 | (self.sp & 0xFF);
         }
+        self.accountAccess(0, self.sp);
         self.cycles += 1;
         return self.bus.read(0, self.sp);
     }
@@ -335,6 +412,7 @@ pub const Cpu = struct {
     // datasheet errata and Bruce Clark's 65816 notes). Original-6502
     // instructions (PHA/PLA/JSR/RTS/BRK/...) keep the page-1 wrap above.
     fn pushByteRaw(self: *Cpu, value: u8) void {
+        self.accountAccess(0, self.sp);
         self.bus.write(0, self.sp, value);
         self.sp -%= 1;
         self.cycles += 1;
@@ -347,6 +425,7 @@ pub const Cpu = struct {
 
     fn pullByteRaw(self: *Cpu) u8 {
         self.sp +%= 1;
+        self.accountAccess(0, self.sp);
         self.cycles += 1;
         return self.bus.read(0, self.sp);
     }

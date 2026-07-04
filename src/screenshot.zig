@@ -135,6 +135,7 @@ pub fn main() !void {
     var movie_path: ?[]const u8 = null;
     var record_path: ?[]const u8 = null;
     var tm_force: ?u8 = null;
+    var wram_path: ?[]const u8 = null;
 
     var i: usize = 4;
     while (i < args.len) : (i += 1) {
@@ -160,6 +161,12 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, args[i], "--record-movie")) {
             i += 1;
             record_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--dump-wram")) {
+            // Write all 128KB of WRAM after the final frame - the
+            // cross-emulator debugging workhorse: diff against a Mesen2
+            // Lua dump of the same frame to find diverging game state.
+            i += 1;
+            wram_path = args[i];
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
             return error.BadArgs;
@@ -244,6 +251,11 @@ pub fn main() !void {
         defer allocator.free(text);
         try std.fs.cwd().writeFile(.{ .sub_path = path, .data = text });
         std.debug.print("Recorded movie ({d} frames) to {s}\n", .{ recording.?.len(), path });
+    }
+
+    if (wram_path) |path| {
+        try std.fs.cwd().writeFile(.{ .sub_path = path, .data = &emulator.bus.wram });
+        std.debug.print("Wrote WRAM (128KB) to {s}\n", .{path});
     }
 
     if (wav_path) |path| {

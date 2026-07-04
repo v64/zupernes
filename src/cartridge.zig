@@ -69,7 +69,15 @@ pub const Cartridge = struct {
 
         return Cartridge{
             .rom = rom,
-            .sram = [_]u8{0} ** (32 * 1024),
+            // Fresh battery SRAM reads as (mostly) $FF, and games depend on
+            // it: their save-validation must FAIL on a fresh cart so they
+            // fall back to defaults. Zero-filled SRAM can accidentally pass
+            // field-range validation as legitimate data - Super Mario Kart
+            // reads its "last selected mode" settings block, sees zeros as
+            // a valid remembered choice, and preselects 2P GAME on the
+            // menu (found cross-validating menus against Mesen2, which
+            // also fills fresh SRAM with $FF).
+            .sram = [_]u8{0xFF} ** (32 * 1024),
             .cart_type = cart_type,
             .rom_size = rom.len,
             .sram_size = if (sram_size == 0) 0x2000 else sram_size,

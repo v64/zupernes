@@ -238,8 +238,10 @@ pub const Dma = struct {
                 // results from $6000, at exactly the pace the microcode
                 // streams words into DR. With an instantaneous DMA the DSP
                 // would never advance between reads and the whole transfer
-                // would see one stale value.
-                bus.tickDsp(8);
+                // would see one stale value. tickDmaByte also accounts the
+                // 8 master cycles so the emulator loop can bill the PPU/APU
+                // for the transfer's duration.
+                bus.tickDmaByte();
 
                 if (!ctrl.direction) {
                     // A→B: Read from A-bus (CPU memory), write to B-bus (PPU)
@@ -383,8 +385,10 @@ pub const Dma = struct {
                     const b_addr = b_base + b_offset;
 
                     // Coprocessor keeps running during HDMA too (games can
-                    // HDMA raster data straight out of the DSP-1 DR)
-                    bus.tickDsp(8);
+                    // HDMA raster data straight out of the DSP-1 DR), and
+                    // the 8 master cycles per byte are billed to the frame
+                    // clock like general DMA.
+                    bus.tickDmaByte();
 
                     var src_addr: u16 = undefined;
                     var src_bank: u8 = undefined;

@@ -99,31 +99,55 @@ pub const Emulator = struct {
 
         const cycles = self.cpu.step();
 
-        // Run APU (SPC700) to stay synchronized with main CPU.
-        // cpu.step() counts cycles in ~3.58 MHz CPU clocks; the APU's
-        // fixed-point ratio (3.496 CPU clocks per SPC700 cycle) expects
-        // exactly that unit.
-        self.bus.runApu(cycles);
+        // ======================================================================
+        // MASTER-CYCLE CONVERSION
+        // ======================================================================
+        // cpu.step() returns untimed CPU cycles; the true master-clock cost
+        // is region-dependent per bus access (Bus.memSpeed: SlowROM/WRAM 8,
+        // I/O 6, joypad 12, FastROM 6). The CPU accounted its accesses in
+        // mem_masters/mem_accesses; the remaining cycles are internal ones
+        // at 6 master cycles each. Flat-rating everything at 6 (the old
+        // model) ran typical SlowROM code ~30% fast relative to the
+        // PPU/APU/DSP - which broke Super Mario Kart's cycle-tuned blind
+        // DSP-1 parameter writes (see Bus.memSpeed docs).
+        const accesses: u32 = self.cpu.mem_accesses;
+        const internal: u32 = @as(u32, cycles) -| accesses;
+        // DMA/HDMA transfers execute synchronously inside the instruction
+        // that triggered them (a $420B write, or runHdma below on a prior
+        // step); their bus time accumulates in Bus.dma_masters and is
+        // billed here. The DSP was ALREADY ticked during the transfer
+        // (Bus.tickDmaByte), so dma_extra goes to the PPU/APU only.
+        const dma_extra: u32 = self.bus.dma_masters;
+        self.bus.dma_masters = 0;
+        const master: u32 = self.cpu.mem_masters + internal * 6;
 
-        // Clock the DSP-1 coprocessor. The uPD77C25 executes one instruction
-        // every 4 clocks of its 8.192MHz crystal = 2.048 MIPS. Relative to
-        // the 21.477MHz master clock that's 2.048/21.477 ~= 2/21 instructions
-        // per master cycle. The accumulator lives on the Bus because DMA
-        // must also tick the DSP (see Bus.tickDsp). Games poll the DSP's
-        // RQM bit, so small ratio error is absorbed by the handshake.
-        self.bus.tickDsp(cycles * 6);
+        // Run APU (SPC700) to stay synchronized with main CPU. The APU's
+        // fixed-point ratio (~20.98 master cycles per SPC700 cycle) expects
+        // master-clock units.
+        self.bus.runApu(master + dma_extra);
+
+        // Clock the DSP-1 coprocessor. The uPD77C25 executes one
+        // instruction per clock of its 7.6MHz crystal (see Bus.tickDsp).
+        // Games poll the DSP's RQM bit, so small ratio
+        // error is absorbed by the handshake - but Super Mario Kart also
+        // does BLIND cycle-counted writes, so the DSP is ticked at SUB-
+        // instruction granularity: Cpu.accountAccess brings it up to "now"
+        // before every bus access (flushing internal_flushed cycles), and
+        // only the instruction's trailing internal cycles remain here.
+        self.bus.tickDsp((internal -| self.cpu.internal_flushed) * 6);
 
         // Track current position before tick (for scanline-transition and
         // IRQ-point crossing detection below)
         const prev_scanline = self.ppu.scanline;
         const prev_dot = self.ppu.dot;
 
-        // Advance the PPU. One CPU cycle is ~6 master clocks (memory access
-        // speed actually varies: 6 for internal/fast, 8 for SlowROM/WRAM,
-        // 12 for $4016/$4017 - per-access accounting is future cycle-
-        // accuracy work), and one PPU dot is 4 master clocks. This gives
-        // the correct ~227 CPU cycles per 1364-master-cycle scanline.
-        self.ppu.tick(cycles * 6);
+        // Advance the PPU by the instruction's true master-cycle cost (one
+        // PPU dot is 4 master clocks, one scanline 1364), plus any DMA time
+        // the instruction triggered. Using the real per-access memory
+        // speeds here is what fixes the CPU-vs-frame pacing: at flat 6 the
+        // CPU got ~30% more instructions per frame than hardware in
+        // SlowROM code.
+        self.ppu.tick(master + dma_extra);
 
         // ======================================================================
         // H/V TIMER IRQ ($4200 bits 4-5, $4207-$420A)

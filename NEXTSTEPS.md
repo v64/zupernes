@@ -2,7 +2,38 @@
 
 State of the project as of this session, and where to go next.
 See OPTIMIZATIONS.md for the performance-specific backlog and
-DSP1-DEBUG-NOTES.md for the in-flight Super Mario Kart investigation.
+DSP1-DEBUG-NOTES.md for the (now RESOLVED) Super Mario Kart Mode 7
+investigation.
+
+## 2026-07-04 session: SMK Mode 7 WORKS + master-cycle timing overhaul
+
+- **Super Mario Kart races render correctly** (start grid, road,
+  8 karts, course map - `test/movies/smk-mc1.zmov` frame 4310 matches
+  Mesen2's scene). Three timing fixes did it, full story in
+  DSP1-DEBUG-NOTES.md: per-access memory speeds (Bus.memSpeed 6/8/12 +
+  FastROM), sub-instruction DSP ticking (Cpu.accountAccess), and the
+  DSP-1's true rate (7.6MHz, one instruction per clock - not 2.048
+  MIPS).
+- **Mesen2 frame alignment collapsed from 14-26 frames per level load
+  to +/-1..10 over a 2900-frame SMW run** (mode-transition table in the
+  notes). Remaining gap: DMA setup overhead per channel, interrupt
+  timing, mid-instruction PPU events - the rest of OPTIMIZATIONS.md.
+- **Cold-boot state fixes** (found by WRAM-diffing against Mesen2):
+  WRAM + SRAM now power on $FF-filled, port 2 reads as disconnected.
+  SMK's menu now defaults to 1P GAME like hardware.
+- **New cross-emulator tooling**: `screenshot --dump-wram`,
+  `dbg.trace_watch` write watchpoint (+ `watch_dsp_writes`),
+  test/mesen/make_screenshot_script.py (Mesen screenshot at frame N
+  from a .zmov), test/mesen/bk2_to_zmov.py (BizHawk import, untested
+  against a real .bk2 yet). Mesen2 needs Firmware/dsp1b.rom copied from
+  test/dsp/ to run DSP games.
+- **Continue next session**: (1) SMK race timer bar missing at top of
+  screen; (2) SMW yi1-walk Mario sprite looks wrong at YI1 entry
+  (f2990) - appear-pose or OAM regression? compare vs Mesen at same
+  $13; (3) run a real SMW TAS (.bk2 from TASVideos userfile
+  34596240540209273 - the BizHawk port of the warps run - importer is
+  ready); (4) movies recorded before this session have shifted
+  timing - re-record if they misbehave (yi1-walk still reaches YI1).
 
 ## Long-term goals (the vision, in rough order)
 

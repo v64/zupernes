@@ -75,6 +75,27 @@ pub const trace_dsp = enabled and false;
 pub const trace_frame_min: u32 = 0;
 pub const trace_frame_max: u32 = 120;
 
+/// Separate (smaller) frame ceiling for the [DSPPC] per-instruction pc+sr
+/// stream - it prints one line per DSP instruction (~34k/frame), so it
+/// gets its own window inside trace_frame_min..trace_frame_max.
+pub const trace_pc_frame_max: u32 = 5;
+
+// =============================================================================
+// MEMORY WATCHPOINT
+// =============================================================================
+
+/// Trace every CPU write to one WRAM address (low-RAM offset, matched in
+/// banks $00-$3F mirrors and $7E), printing the writing instruction's
+/// PBR:PC. The cross-emulator state-divergence workhorse: diff WRAM dumps
+/// against Mesen2 to find the diverging byte, then watch it to find the
+/// code that computes it.
+pub const trace_watch = enabled and false;
+pub const watch_addr: u16 = 0x002E;
+
+/// With trace_watch: also report CPU writes into the DSP-1 DR window,
+/// with the writing PBR:PC - locates the game-side conversation code.
+pub const watch_dsp_writes = true;
+
 // =============================================================================
 // PPU DEBUGGING
 // =============================================================================
