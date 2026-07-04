@@ -127,6 +127,10 @@ pub const Ppu = struct {
 
     // Main/Sub screen designation
     tm: u8, // $212C - Main screen designation
+    // Debug/harness override: when set, writes to $212C are replaced by
+    // this mask - lets tools render with individual layers isolated
+    // (e.g. BG-only captures for cross-comparisons). null = normal.
+    tm_force: ?u8 = null,
     ts: u8, // $212D - Sub screen designation
 
     // ==========================================================================
@@ -2276,7 +2280,7 @@ pub const Ppu = struct {
             0x212A => self.wbglog = value,
             0x212B => self.wobjlog = value,
             // Main/sub screen designation
-            0x212C => self.tm = value,
+            0x212C => self.tm = self.tm_force orelse value,
             0x212D => self.ts = value,
             // Window area main/sub screen disable
             0x212E => self.tmw = value,

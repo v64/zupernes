@@ -134,6 +134,7 @@ pub fn main() !void {
     var wav_path: ?[]const u8 = null;
     var movie_path: ?[]const u8 = null;
     var record_path: ?[]const u8 = null;
+    var tm_force: ?u8 = null;
 
     var i: usize = 4;
     while (i < args.len) : (i += 1) {
@@ -150,6 +151,9 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, args[i], "--wav")) {
             i += 1;
             wav_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--tm")) {
+            i += 1;
+            tm_force = try std.fmt.parseInt(u8, args[i], 0);
         } else if (std.mem.eql(u8, args[i], "--movie")) {
             i += 1;
             movie_path = args[i];
@@ -170,6 +174,7 @@ pub fn main() !void {
     emulator = Emulator.init();
     emulator.setup();
     try emulator.loadRom(rom_data);
+    emulator.ppu.tm_force = tm_force;
 
     var playback: ?zupernes.movie.Movie = null;
     defer if (playback) |*m| m.deinit(allocator);
