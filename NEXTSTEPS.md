@@ -27,6 +27,20 @@ investigation.
   from a .zmov), test/mesen/bk2_to_zmov.py (BizHawk import, untested
   against a real .bk2 yet). Mesen2 needs Firmware/dsp1b.rom copied from
   test/dsp/ to run DSP games.
+- **Real-TAS benchmark (task: run a published SMW TAS)**: converted
+  the TASVideos SMW "warps" run (#4928, lsnes .lsmv - downloads via
+  tasvideos.org/4928S?handler=Download; converter
+  test/mesen/lsmv_to_zmov.py; ROM sha256 matches ours) and ran it in
+  both emulators. zupernes: syncs through title/file-select/intro/
+  overworld, enters Yoshi's Island 2 at frame 1624, and plays ~330
+  frames of frame-perfect gameplay before missing the first bounce of
+  the eight-Rex chain (death at f1830, x=$0194). Mesen2: desyncs
+  EARLIER - its menu path diverges and it enters the wrong level
+  (Yoshi's House) at f1799. Neither finishes: the movie is tuned to
+  lsnes/bsnes-core timing. "zupernes frames-to-desync on the warps
+  TAS" (currently 1830) is the new cycle-accuracy regression metric.
+  (Converted movie not committed - TASVideos input data; regenerate
+  with the converter.)
 - **Continue next session**: (1) SMK race timer bar missing at top of
   screen; (2) SMW yi1-walk Mario sprite looks wrong at YI1 entry
   (f2990) - appear-pose or OAM regression? compare vs Mesen at same
