@@ -10,6 +10,7 @@ pub const Bus = @import("bus.zig").Bus;
 pub const Ppu = @import("ppu/ppu.zig").Ppu;
 pub const Cartridge = @import("cartridge.zig").Cartridge;
 pub const Dma = @import("dma.zig").Dma;
+pub const Spc700 = @import("apu/spc700.zig").Spc700;
 pub const movie = @import("movie.zig");
 
 const zupernes_dots_per_line = @import("ppu/ppu.zig").DOTS_PER_SCANLINE;

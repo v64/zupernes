@@ -68,3 +68,45 @@ This was step one of hardening zupernes as the ZuperWorld physics oracle
 (see ~/Repos/zuperworld PLAN.md). Next hardening steps after the two
 quirks: golden-image suite for test/snes-test-roms, cross-emulator trace
 validation once the shared TAS format exists.
+
+# SPC700 Test-Vector Verification (2026-07-05)
+
+**256,000 / 256,000 vectors passing (100%)** — the sound CPU joins the
+65816 as fully vector-clean. Suite: SingleStepTests spc700 (1,000 tests
+per opcode, 256 opcodes). This matters double: the APU is vendored into
+ZuperWorld (src/engine/apu/), so its correctness is oracle
+infrastructure for the SMW driver there too.
+
+- Vectors in the session scratchpad (`spc700-vectors/spc700-main/v1/`,
+  81MB). Re-fetch: `curl -L codeload.github.com/SingleStepTests/spc700/tar.gz/refs/heads/main`
+- Run: `zig build -Doptimize=ReleaseFast spc-vectors -- <dir> [filter] [--max-fail N]`
+- Harness: `src/test_spc_vectors.zig` (the core's `test_flat_ram` mode:
+  vectors model all 64KB as plain RAM — no $F0-$FF I/O, no IPL overlay;
+  full 64KB image diff per test, so spurious writes can't hide).
+
+## Bugs found and FIXED (first run: 251,993/256,000, 7 bad opcodes)
+
+1. **TSET1/TCLR1 ($0E/$4E)**: N/Z come from `A - mem` (a CMP), not
+   `A & mem` as many opcode summaries claim. 544/451 failures each.
+2. **BRK ($0F)**: sets B but CLEARS I — opposite of the 6502 family's
+   I-set. All 1,000 vectors failed on the psw.
+3. **ADDW ($7A)**: H and V were never computed ("simplified"). The
+   hardware runs two chained 8-bit adds: H = half-carry of the HIGH
+   byte add (carry out of bit 11 of the word), V = high-byte signed
+   overflow, C = carry out of bit 15.
+4. **SUBW ($9A)**: same story with borrows (H/C are inverted-borrow).
+5. **DIV ($9E)**: full quirk algorithm: H = (Y&15) >= (X&15) on the
+   ORIGINAL registers, V = Y >= X, and when the quotient needs more
+   than 9 bits the divider wraps into the closed form
+   `A = 255 - (YA - (X<<9)) / (256 - X)`, `Y = X + (YA - (X<<9)) % (256 - X)`
+   (X=0 lands here naturally — no special case).
+6. **MOVW YA,dp ($BA)**: Z must test the full 16-bit word; the old
+   setNZ(Y)-then-OR-Z could never clear a wrong Z (4/1,000 caught it).
+
+## Remaining: none (functional). Cycle telemetry only.
+
+SLEEP ($EF) / STOP ($FF): 1,000 cycle-count mismatches each, state
+exact — the vectors snapshot the halt loop mid-wait (7 cycles), we
+model both as 3-cycle no-ops. No game code executes either (a real
+STOP is unrecoverable without an APU reset), so the halt loop stays
+unmodeled by choice.

@@ -132,6 +132,29 @@ pub fn build(b: *std.Build) void {
         run_cpu_vectors.addArgs(args);
     }
 
+    // SPC700 test-vector harness (SingleStepTests spc700 JSON vectors) -
+    // the sound-core twin of cpu-vectors above
+    //   zig build spc-vectors -- <dir-with-json> [filter]
+    const spc_vectors = b.addExecutable(.{
+        .name = "spc-vectors",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_spc_vectors.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zupernes", .module = emu_mod },
+            },
+        }),
+    });
+    b.installArtifact(spc_vectors);
+    const spc_vectors_step = b.step("spc-vectors", "Run SPC700 test vectors against the APU core");
+    const run_spc_vectors = b.addRunArtifact(spc_vectors);
+    spc_vectors_step.dependOn(&run_spc_vectors.step);
+    run_spc_vectors.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_spc_vectors.addArgs(args);
+    }
+
     // Unit tests
     const emu_tests = b.addTest(.{
         .root_module = emu_mod,

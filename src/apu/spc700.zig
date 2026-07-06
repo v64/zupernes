@@ -547,6 +547,15 @@ pub const Spc700 = struct {
     ipl_rom_enabled: bool, // True = IPL ROM visible at $FFC0-$FFFF
     cycles: u64, // Total cycles executed
 
+    /// TEST-VECTOR MODE (SingleStepTests/spc700 harness only): the
+    /// vectors model the whole 64KB as plain RAM - no I/O registers at
+    /// $F0-$FF, no IPL ROM overlay at $FFC0 - because they verify the
+    /// CPU CORE in isolation (register/memory semantics per opcode),
+    /// not the peripherals. With this set, read()/write() skip the I/O
+    /// dispatch and the IPL mapping so the core sees exactly the flat
+    /// memory the vectors describe. Never set outside the harness.
+    test_flat_ram: bool = false,
+
     // IPL Boot ROM (64 bytes, read-only)
     // This is the actual boot ROM that runs at power-on
     ipl_rom: [64]u8,
@@ -656,6 +665,9 @@ pub const Spc700 = struct {
     pub fn read(self: *Spc700, addr: u16) u8 {
         const addr_u8: u8 = @truncate(addr);
 
+        // Vector harness: the whole 64KB is plain RAM (see the field doc)
+        if (self.test_flat_ram) return self.ram[addr];
+
         // I/O registers at $00F0-$00FF
         if (addr >= 0x00F0 and addr <= 0x00FF) {
             return self.readIo(addr_u8);
@@ -672,6 +684,12 @@ pub const Spc700 = struct {
     /// Write a byte to SPC700 memory
     pub fn write(self: *Spc700, addr: u16, value: u8) void {
         const addr_u8: u8 = @truncate(addr);
+
+        // Vector harness: the whole 64KB is plain RAM (see the field doc)
+        if (self.test_flat_ram) {
+            self.ram[addr] = value;
+            return;
+        }
 
         // I/O registers at $00F0-$00FF
         if (addr >= 0x00F0 and addr <= 0x00FF) {
@@ -1134,8 +1152,13 @@ pub const Spc700 = struct {
                 const dp = self.fetch();
                 const value = self.readDp16(dp);
                 self.setYA(value);
-                self.setNZ(self.y); // N/Z based on high byte
-                if (value == 0) self.psw |= PSW.Z;
+                // N/Z from the full 16-bit word: N = bit 15, Z = the
+                // WHOLE word is zero. (The old setNZ(Y)-then-patch-Z
+                // version could never CLEAR Z for Y=0, A!=0 - the four
+                // vectors that caught it were exactly that shape.)
+                self.psw = (self.psw & ~(PSW.N | PSW.Z)) |
+                    (if (value & 0x8000 != 0) PSW.N else 0) |
+                    (if (value == 0) PSW.Z else 0);
                 break :blk 5;
             },
             0xDA => blk: { // MOVW dp,YA
@@ -1498,28 +1521,60 @@ pub const Spc700 = struct {
             // =================================================================
             // ADDW/SUBW - 16-bit arithmetic
             // =================================================================
+            // The 16-bit adds are TWO chained 8-bit ALU passes on real
+            // hardware (A gets the low half, Y the high half) - which
+            // pins down the "complex" flags exactly (vector-verified):
+            //   C = carry out of the HIGH byte (i.e. out of bit 15)
+            //   V = signed overflow of the HIGH-byte add (== 16-bit
+            //       signed overflow, since the low half only feeds a
+            //       carry in)
+            //   H = half-carry of the HIGH-byte add - carry from bit
+            //       11 of the word, NOT bit 3
+            //   N = bit 15, Z = the whole 16-bit result
             0x7A => blk: { // ADDW YA,dp
                 const dp = self.fetch();
                 const value = self.readDp16(dp);
                 const ya = self.getYA();
-                const result32 = @as(u32, ya) + @as(u32, value);
-                const result = @as(u16, @truncate(result32));
+                // low half: A + operand.low (no carry in)
+                const lo: u16 = @as(u16, ya & 0xFF) + @as(u16, value & 0xFF);
+                const carry_lo: u16 = lo >> 8;
+                // high half: Y + operand.high + carry
+                const yh: u16 = ya >> 8;
+                const vh: u16 = value >> 8;
+                const hi: u16 = yh + vh + carry_lo;
+                const result: u16 = ((hi & 0xFF) << 8) | (lo & 0xFF);
                 self.setYA(result);
                 self.psw &= ~(PSW.N | PSW.Z | PSW.C | PSW.V | PSW.H);
-                if (result32 > 0xFFFF) self.psw |= PSW.C;
+                if (hi > 0xFF) self.psw |= PSW.C;
+                // signed overflow of the high-byte add: operands agree
+                // in sign, result disagrees
+                if (((yh ^ hi) & (vh ^ hi) & 0x80) != 0) self.psw |= PSW.V;
+                // half-carry out of bit 3 of the high-byte add
+                if (((yh & 0x0F) + (vh & 0x0F) + carry_lo) > 0x0F) self.psw |= PSW.H;
                 if (result == 0) self.psw |= PSW.Z;
                 if (result & 0x8000 != 0) self.psw |= PSW.N;
-                // V and H flags for 16-bit are complex, simplified here
                 break :blk 5;
             },
             0x9A => blk: { // SUBW YA,dp
                 const dp = self.fetch();
                 const value = self.readDp16(dp);
                 const ya = self.getYA();
-                const result = ya -% value;
+                // low half: A - operand.low (borrow out)
+                const lo: i32 = @as(i32, ya & 0xFF) - @as(i32, value & 0xFF);
+                const borrow_lo: i32 = if (lo < 0) 1 else 0;
+                // high half: Y - operand.high - borrow
+                const yh: i32 = ya >> 8;
+                const vh: i32 = value >> 8;
+                const hi: i32 = yh - vh - borrow_lo;
+                const result: u16 = @intCast(((hi & 0xFF) << 8) | (lo & 0xFF));
                 self.setYA(result);
                 self.psw &= ~(PSW.N | PSW.Z | PSW.C | PSW.V | PSW.H);
-                if (ya >= value) self.psw |= PSW.C;
+                // C = no borrow out of the high byte (SPC700 subtract
+                // carry is inverted-borrow, like the 6502)
+                if (hi >= 0) self.psw |= PSW.C;
+                if ((((yh ^ vh) & (yh ^ hi)) & 0x80) != 0) self.psw |= PSW.V;
+                // H = no borrow out of bit 3 of the high-byte subtract
+                if ((yh & 0x0F) - (vh & 0x0F) - borrow_lo >= 0) self.psw |= PSW.H;
                 if (result == 0) self.psw |= PSW.Z;
                 if (result & 0x8000 != 0) self.psw |= PSW.N;
                 break :blk 5;
@@ -2081,7 +2136,12 @@ pub const Spc700 = struct {
             0x0F => blk: { // BRK
                 self.push16(self.pc);
                 self.push(self.psw);
-                self.psw |= PSW.B | PSW.I;
+                // B set, I CLEARED (vector-verified): unlike the 6502
+                // family (where BRK sets I to mask further IRQs), the
+                // SPC700 clears its I flag on BRK - I gates nothing on
+                // the S-SMP anyway (no IRQ line is wired), so the flag
+                // is just architectural state to get right.
+                self.psw = (self.psw | PSW.B) & ~PSW.I;
                 const low = self.read(0xFFDE);
                 const high = self.read(0xFFDF);
                 self.pc = (@as(u16, high) << 8) | low;
@@ -2222,17 +2282,22 @@ pub const Spc700 = struct {
             // =================================================================
             // TSET1/TCLR1 - Test and set/clear
             // =================================================================
+            // Flag quirk (SingleStepTests-verified, and what fullsnes
+            // documents): N/Z come from A - memory, a CMP - NOT from
+            // A AND memory as many summaries claim. The hardware runs
+            // the same compare for both instructions; only the
+            // write-back differs (OR in vs AND out the mask in A).
             0x0E => blk: { // TSET1 !abs
                 const addr = self.fetch16();
                 const value = self.read(addr);
-                self.setNZ(self.a & value); // N/Z set from A AND memory
+                self.setNZ(self.a -% value); // N/Z from the CMP A,mem
                 self.write(addr, value | self.a); // memory = memory OR A
                 break :blk 6;
             },
             0x4E => blk: { // TCLR1 !abs
                 const addr = self.fetch16();
                 const value = self.read(addr);
-                self.setNZ(self.a & value); // N/Z set from A AND memory
+                self.setNZ(self.a -% value); // N/Z from the CMP A,mem
                 self.write(addr, value & ~self.a); // memory = memory AND (NOT A)
                 break :blk 6;
             },
@@ -2247,19 +2312,36 @@ pub const Spc700 = struct {
                 break :blk 9;
             },
             0x9E => blk: { // DIV YA,X
-                const ya = self.getYA();
+                // The hardware divider is a 9-bit non-restoring unit,
+                // and its edge behavior is NOT "quotient or saturate":
+                //   H = (Y.low_nibble >= X.low_nibble) - a nibble
+                //       compare of the ORIGINAL registers, nothing to
+                //       do with the division itself;
+                //   V = (Y >= X) - i.e. the true quotient won't fit in
+                //       8 bits;
+                //   if the quotient fits in 9 bits (YA < X<<9) the
+                //       result is the ordinary quotient/remainder pair
+                //       (A gets the low 8 quotient bits even when V);
+                //   otherwise the divider "wraps" mid-algorithm and
+                //       produces the strange closed form below (both
+                //       X=0 and tiny-X-huge-YA land here).
+                // Algorithm from the hardware analysis used by
+                // bsnes/higan and Mesen2; every branch vector-verified.
+                const ya: u32 = self.getYA();
+                const x: u32 = self.x;
                 self.psw &= ~(PSW.V | PSW.H);
-                if (self.x == 0) {
-                    // Division by zero - results vary by implementation
-                    self.a = 0xFF;
-                    self.y = 0xFF;
-                    self.psw |= PSW.V;
+                if ((self.y & 0x0F) >= (self.x & 0x0F)) self.psw |= PSW.H;
+                if (self.y >= self.x) self.psw |= PSW.V;
+                if (@as(u32, self.y) < (x << 1)) {
+                    // quotient fits in 9 bits: normal division
+                    self.a = @truncate(ya / x);
+                    self.y = @truncate(ya % x);
                 } else {
-                    self.a = @truncate(ya / @as(u16, self.x));
-                    self.y = @truncate(ya % @as(u16, self.x));
-                    if (ya / @as(u16, self.x) > 0xFF) self.psw |= PSW.V;
+                    // overflow path: the divider's wrapped closed form
+                    self.a = @truncate(255 - (ya - (x << 9)) / (256 - x));
+                    self.y = @truncate(x + (ya - (x << 9)) % (256 - x));
                 }
-                self.setNZ(self.a);
+                self.setNZ(self.a); // N/Z from the quotient byte only
                 break :blk 12;
             },
 
