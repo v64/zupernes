@@ -1927,8 +1927,13 @@ pub const Ppu = struct {
             const width: i16 = size[0];
             const height: i16 = size[1];
 
-            // Check if sprite is on this scanline
-            const py_raw = (@as(i16, @intCast(y)) -% @as(i16, sprite_y)) & 0xFF;
+            // Check if sprite is on this scanline. The PPU evaluates OBJs
+            // during the PREVIOUS scanline, so an OBJ with OAM Y = n has its
+            // first visible row on scanline n+1 (fullsnes "OBJ V-position";
+            // bsnes and Mesen2 model the same). Sampling row (y-1) - Y keeps
+            // the 8-bit wrap, so the $F0 hide convention for sprites up to
+            // 16 tall is unchanged.
+            const py_raw = (@as(i16, @intCast(y)) - 1 -% @as(i16, sprite_y)) & 0xFF;
             if (py_raw >= height) continue;
 
             // Parse attributes
