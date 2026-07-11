@@ -130,6 +130,8 @@ pub fn main() !void {
     defer inputs.deinit(allocator);
     var every: u32 = 0;
     var every_dir: []const u8 = "";
+    var range_start: u32 = 0;
+    var range_end: u32 = std.math.maxInt(u32);
     var dump_path: ?[]const u8 = null;
     var wav_path: ?[]const u8 = null;
     var movie_path: ?[]const u8 = null;
@@ -146,6 +148,12 @@ pub fn main() !void {
             every = try std.fmt.parseInt(u32, args[i + 1], 10);
             every_dir = args[i + 2];
             i += 2;
+        } else if (std.mem.eql(u8, args[i], "--range")) {
+            // Restrict --every dumps to frames [A, B] (e.g. --range 3100:3300)
+            i += 1;
+            const sep = std.mem.indexOfScalar(u8, args[i], ':') orelse return error.BadArgs;
+            range_start = try std.fmt.parseInt(u32, args[i][0..sep], 10);
+            range_end = try std.fmt.parseInt(u32, args[i][sep + 1 ..], 10);
         } else if (std.mem.eql(u8, args[i], "--dump")) {
             i += 1;
             dump_path = args[i];
@@ -231,7 +239,7 @@ pub fn main() !void {
             }
         }
 
-        if (every != 0 and frame % every == 0) {
+        if (every != 0 and frame % every == 0 and frame >= range_start and frame <= range_end) {
             var path_buf: [512]u8 = undefined;
             const path = try std.fmt.bufPrint(&path_buf, "{s}/frame_{d:0>5}.ppm", .{ every_dir, frame });
             try writePpm(emulator.getFramebuffer(), path);
