@@ -1895,10 +1895,11 @@ pub const Ppu = struct {
         // Gap between first and second character tables: (NN + 1) * 4K words = (NN + 1) * 8KB
         const obj_name_gap: u32 = (@as(u32, ((self.obsel >> 3) & 0x03)) + 1) << 13;
 
-        // Process sprites in reverse order (sprite 0 has highest priority)
+        // With OAM priority rotation disabled, lower OBJ indexes have higher
+        // priority (fullsnes "OBJ Priority Rotation"; independently matched
+        // by Mesen2). Keep the first opaque pixel, so visit slot 0 first.
         var sprite_count: u8 = 0;
-        var i: i16 = 127;
-        while (i >= 0) : (i -= 1) {
+        for (0..128) |i| {
             const sprite_idx: u8 = @intCast(i);
 
             // Read OAM entry (4 bytes per sprite in low table)
@@ -2527,4 +2528,29 @@ test "getTilePixel decodes planar tiles via spread LUT" {
     ppu.vram[32] = 0b10000000; // bp4: pixel 0 gets bit 4
     ppu.vram[49] = 0b10000000; // bp7: pixel 0 gets bit 7
     try std.testing.expectEqual(@as(u8, 9 | 0x10 | 0x80), ppu.getTilePixel(0, 0, 0, 8));
+}
+
+test "lower OAM index wins overlapping OBJ pixels" {
+    var ppu = Ppu.init();
+    ppu.tm = 0x10;
+
+    // Hide the zero-initialized OAM entries, then overlap slots 2 and 5 at
+    // (0,0). The PPU presents them beginning at scanline 1. Fullsnes's OBJ
+    // priority rule and an independent Mesen2 capture agree that slot 2 is
+    // in front when priority rotation is disabled.
+    for (0..128) |i| ppu.oam[i * 4 + 1] = 0xF0;
+    ppu.oam[2 * 4 ..][0..4].* = .{ 0, 0, 0, 0 };
+    ppu.oam[5 * 4 ..][0..4].* = .{ 0, 0, 1, 0 };
+
+    // Tile 0 is color 1; tile 1 is color 2. Give those palette entries
+    // distinct values so the winning OAM slot is observable in the line.
+    ppu.vram[0] = 0xFF;
+    ppu.vram[32 + 1] = 0xFF;
+    ppu.cgram[129 * 2] = 0x1F;
+    ppu.cgram[130 * 2] = 0xE0;
+    ppu.cgram[130 * 2 + 1] = 0x03;
+
+    var line: [SCREEN_WIDTH]?Ppu.SpritePixel = undefined;
+    ppu.renderSprites(1, &line);
+    try std.testing.expectEqual(@as(u16, 0x001F), line[0].?.color);
 }
