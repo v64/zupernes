@@ -134,6 +134,126 @@ pub const Apu = struct {
         return self.spc.dsp.readSamples(dst);
     }
 
+    /// Canonical, pointer-free APU state for deterministic capture anchors.
+    /// This is an emulator API, not a host-struct dump: the byte layout is
+    /// explicit and portable across native and WebAssembly builds.
+    pub const state_len: usize = 65536 + @import("dsp.zig").Dsp.state_len + 59;
+
+    pub fn writeState(self: *const Apu, dst: []u8) usize {
+        std.debug.assert(dst.len >= state_len);
+        var at: usize = 0;
+        @memcpy(dst[at..][0..65536], &self.spc.ram);
+        at += 65536;
+        dst[at] = self.spc.a;
+        dst[at + 1] = self.spc.x;
+        dst[at + 2] = self.spc.y;
+        dst[at + 3] = self.spc.sp;
+        at += 4;
+        putU16(dst, &at, self.spc.pc);
+        dst[at] = self.spc.psw;
+        at += 1;
+        @memcpy(dst[at..][0..4], &self.spc.port_in);
+        at += 4;
+        @memcpy(dst[at..][0..4], &self.spc.port_out);
+        at += 4;
+        for (self.spc.timer_enable) |enabled| {
+            dst[at] = @intFromBool(enabled);
+            at += 1;
+        }
+        @memcpy(dst[at..][0..3], &self.spc.timer_div);
+        at += 3;
+        @memcpy(dst[at..][0..3], &self.spc.timer_counter);
+        at += 3;
+        for (self.spc.timer_output) |output| {
+            dst[at] = output;
+            at += 1;
+        }
+        for (self.spc.timer_cycles) |cycles| putU16(dst, &at, cycles);
+        dst[at] = self.spc.dsp_addr;
+        dst[at + 1] = @intFromBool(self.spc.ipl_rom_enabled);
+        at += 2;
+        putU64(dst, &at, self.spc.cycles);
+        putU64(dst, &at, @bitCast(self.cycle_counter));
+        putU32(dst, &at, self.cycles_per_spc);
+        putU32(dst, &at, self.dsp_timer);
+        at += self.spc.dsp.writeState(dst[at..]);
+        std.debug.assert(at == state_len);
+        return at;
+    }
+
+    pub fn readState(self: *Apu, src: []const u8) usize {
+        std.debug.assert(src.len >= state_len);
+        var at: usize = 0;
+        @memcpy(&self.spc.ram, src[at..][0..65536]);
+        at += 65536;
+        self.spc.a = src[at];
+        self.spc.x = src[at + 1];
+        self.spc.y = src[at + 2];
+        self.spc.sp = src[at + 3];
+        at += 4;
+        self.spc.pc = getU16(src, &at);
+        self.spc.psw = src[at];
+        at += 1;
+        @memcpy(&self.spc.port_in, src[at..][0..4]);
+        at += 4;
+        @memcpy(&self.spc.port_out, src[at..][0..4]);
+        at += 4;
+        for (&self.spc.timer_enable) |*enabled| {
+            enabled.* = src[at] != 0;
+            at += 1;
+        }
+        @memcpy(&self.spc.timer_div, src[at..][0..3]);
+        at += 3;
+        @memcpy(&self.spc.timer_counter, src[at..][0..3]);
+        at += 3;
+        for (&self.spc.timer_output) |*output| {
+            output.* = @truncate(src[at]);
+            at += 1;
+        }
+        for (&self.spc.timer_cycles) |*cycles| cycles.* = getU16(src, &at);
+        self.spc.dsp_addr = src[at];
+        self.spc.ipl_rom_enabled = src[at + 1] != 0;
+        at += 2;
+        self.spc.cycles = getU64(src, &at);
+        self.cycle_counter = @bitCast(getU64(src, &at));
+        self.cycles_per_spc = getU32(src, &at);
+        self.dsp_timer = getU32(src, &at);
+        at += self.spc.dsp.readState(src[at..]);
+        std.debug.assert(at == state_len);
+        return at;
+    }
+
+    fn putU16(dst: []u8, at: *usize, value: u16) void {
+        dst[at.*] = @truncate(value);
+        dst[at.* + 1] = @truncate(value >> 8);
+        at.* += 2;
+    }
+    fn getU16(src: []const u8, at: *usize) u16 {
+        const value = @as(u16, src[at.*]) | (@as(u16, src[at.* + 1]) << 8);
+        at.* += 2;
+        return value;
+    }
+    fn putU32(dst: []u8, at: *usize, value: u32) void {
+        for (0..4) |i| dst[at.* + i] = @truncate(value >> @intCast(i * 8));
+        at.* += 4;
+    }
+    fn getU32(src: []const u8, at: *usize) u32 {
+        var value: u32 = 0;
+        for (0..4) |i| value |= @as(u32, src[at.* + i]) << @intCast(i * 8);
+        at.* += 4;
+        return value;
+    }
+    fn putU64(dst: []u8, at: *usize, value: u64) void {
+        for (0..8) |i| dst[at.* + i] = @truncate(value >> @intCast(i * 8));
+        at.* += 8;
+    }
+    fn getU64(src: []const u8, at: *usize) u64 {
+        var value: u64 = 0;
+        for (0..8) |i| value |= @as(u64, src[at.* + i]) << @intCast(i * 8);
+        at.* += 8;
+        return value;
+    }
+
     /// Execute one SPC700 instruction, returns cycles consumed
     fn step(self: *Apu) u8 {
         return self.spc.step();
@@ -160,6 +280,31 @@ test "apu init" {
     // Ports start at 0 - IPL ROM will write $AA/$BB after RAM clear
     try std.testing.expectEqual(@as(u8, 0), apu.spc.port_out[0]);
     try std.testing.expectEqual(@as(u8, 0), apu.spc.port_out[1]);
+}
+
+test "audio capture state round-trips continuous PCM" {
+    var source = Apu.init();
+    source.spc.ipl_rom_enabled = false;
+    source.spc.pc = 0x0200;
+    source.spc.ram[0x0200] = 0x2F; // BRA -2: stable two-cycle loop
+    source.spc.ram[0x0201] = 0xFE;
+    source.runCycles(357366);
+    var discard: [1024][2]i16 = undefined;
+    _ = source.readSamples(&discard);
+
+    var state: [Apu.state_len]u8 = undefined;
+    try std.testing.expectEqual(Apu.state_len, source.writeState(&state));
+    var restored = Apu.init();
+    try std.testing.expectEqual(Apu.state_len, restored.readState(&state));
+
+    source.runCycles(357366);
+    restored.runCycles(357366);
+    var expected: [1024][2]i16 = undefined;
+    var actual: [1024][2]i16 = undefined;
+    const expected_n = source.readSamples(&expected);
+    const actual_n = restored.readSamples(&actual);
+    try std.testing.expectEqual(expected_n, actual_n);
+    try std.testing.expectEqualSlices([2]i16, expected[0..expected_n], actual[0..actual_n]);
 }
 
 test "apu port communication" {

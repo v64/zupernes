@@ -258,6 +258,18 @@ pub const Emulator = struct {
         return self.bus.apu.readSamples(dst);
     }
 
+    /// Canonical APU capture-state byte count. The state is pointer-free and
+    /// excludes already-produced PCM; drain audio before taking an anchor.
+    pub const audio_state_len = @import("apu/apu.zig").Apu.state_len;
+
+    pub fn writeAudioState(self: *const Emulator, dst: []u8) usize {
+        return self.bus.apu.writeState(dst);
+    }
+
+    pub fn readAudioState(self: *Emulator, src: []const u8) usize {
+        return self.bus.apu.readState(src);
+    }
+
     /// Set the live button state for a controller (0 = pad 1, 1 = pad 2).
     /// Button layout matches the $4219:$4218 auto-read register pair:
     ///   bit 15: B      bit 11: Up      bit 7: A

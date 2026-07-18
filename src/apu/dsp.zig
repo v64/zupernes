@@ -66,10 +66,10 @@ const std = @import("std");
 /// between envelope steps (0 = never). These exact periods come from the
 /// hardware's global rate generator.
 const RATE_TABLE = [32]u16{
-    0,    2048, 1536, 1280, 1024, 768, 640, 512,
-    384,  320,  256,  192,  160,  128, 96,  80,
-    64,   48,   40,   32,   24,   20,  16,  12,
-    10,   8,    6,    5,    4,    3,   2,   1,
+    0,   2048, 1536, 1280, 1024, 768, 640, 512,
+    384, 320,  256,  192,  160,  128, 96,  80,
+    64,  48,   40,   32,   24,   20,  16,  12,
+    10,  8,    6,    5,    4,    3,   2,   1,
 };
 
 /// Gaussian interpolation table (first half; the hardware table is
@@ -402,6 +402,98 @@ pub const Dsp = struct {
             n += 1;
         }
         return n;
+    }
+
+    /// Canonical, pointer-free S-DSP state used by emulator capture APIs.
+    /// The output ring is deliberately excluded: callers drain at the anchor,
+    /// and restored playback starts a new continuous stream from that sample.
+    pub const state_len: usize = 128 + 8 * 42 + 42;
+
+    pub fn writeState(self: *const Dsp, dst: []u8) usize {
+        std.debug.assert(dst.len >= state_len);
+        var at: usize = 0;
+        @memcpy(dst[at..][0..128], &self.regs);
+        at += 128;
+        for (self.voices) |v| {
+            putU16(dst, &at, v.brr_addr);
+            dst[at] = v.brr_offset;
+            at += 1;
+            for (v.decode_buf) |sample| putU16(dst, &at, @bitCast(sample));
+            dst[at] = v.buf_pos;
+            at += 1;
+            putU16(dst, &at, @bitCast(v.last1));
+            putU16(dst, &at, @bitCast(v.last2));
+            putU16(dst, &at, v.counter);
+            putU16(dst, &at, @bitCast(v.env));
+            dst[at] = @intFromEnum(v.env_mode);
+            at += 1;
+            putU16(dst, &at, v.env_timer);
+            putU16(dst, &at, @bitCast(v.out_sample));
+            dst[at] = @intFromBool(v.keyed_on);
+            at += 1;
+        }
+        putU16(dst, &at, self.noise_lfsr);
+        putU16(dst, &at, self.noise_timer);
+        putU16(dst, &at, self.echo_pos);
+        putU16(dst, &at, self.echo_length);
+        for (self.fir_history) |channel| for (channel) |sample|
+            putU16(dst, &at, @bitCast(sample));
+        dst[at] = self.fir_pos;
+        dst[at + 1] = self.endx;
+        at += 2;
+        std.debug.assert(at == state_len);
+        return at;
+    }
+
+    pub fn readState(self: *Dsp, src: []const u8) usize {
+        std.debug.assert(src.len >= state_len);
+        var at: usize = 0;
+        @memcpy(&self.regs, src[at..][0..128]);
+        at += 128;
+        for (&self.voices) |*v| {
+            v.brr_addr = getU16(src, &at);
+            v.brr_offset = src[at];
+            at += 1;
+            for (&v.decode_buf) |*sample| sample.* = @bitCast(getU16(src, &at));
+            v.buf_pos = src[at];
+            at += 1;
+            v.last1 = @bitCast(getU16(src, &at));
+            v.last2 = @bitCast(getU16(src, &at));
+            v.counter = getU16(src, &at);
+            v.env = @bitCast(getU16(src, &at));
+            v.env_mode = @enumFromInt(src[at]);
+            at += 1;
+            v.env_timer = getU16(src, &at);
+            v.out_sample = @bitCast(getU16(src, &at));
+            v.keyed_on = src[at] != 0;
+            at += 1;
+        }
+        self.noise_lfsr = @truncate(getU16(src, &at));
+        self.noise_timer = getU16(src, &at);
+        self.echo_pos = getU16(src, &at);
+        self.echo_length = getU16(src, &at);
+        for (&self.fir_history) |*channel| {
+            for (channel) |*sample| sample.* = @bitCast(getU16(src, &at));
+        }
+        self.fir_pos = src[at];
+        self.endx = src[at + 1];
+        at += 2;
+        self.out_read = 0;
+        self.out_write = 0;
+        std.debug.assert(at == state_len);
+        return at;
+    }
+
+    fn putU16(dst: []u8, at: *usize, value: u16) void {
+        dst[at.*] = @truncate(value);
+        dst[at.* + 1] = @truncate(value >> 8);
+        at.* += 2;
+    }
+
+    fn getU16(src: []const u8, at: *usize) u16 {
+        const value = @as(u16, src[at.*]) | (@as(u16, src[at.* + 1]) << 8);
+        at.* += 2;
+        return value;
     }
 
     // =========================================================================
