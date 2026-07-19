@@ -792,6 +792,7 @@ pub const Ppu = struct {
             // Track final layer for color math:
             //   0 = backdrop, 1-4 = BG1-BG4, 5 = OBJ (sprite)
             var final_layer: u8 = bg_layer;
+            var obj_math_eligible = false;
 
             if (sprite_buffer[x]) |sprite| {
                 const sprite_wins = self.spritePriorityWins(mode, sprite.priority, bg_layer, bg_priority);
@@ -809,6 +810,10 @@ pub const Ppu = struct {
                 if (sprite_wins) {
                     color = sprite.color;
                     final_layer = 5; // OBJ won
+                    // CGADSUB's OBJ bit applies only to sprite palettes
+                    // 4..7 (stored here as CGRAM palette rows 12..15).
+                    // OBJ palettes 0..3 always bypass color math.
+                    obj_math_eligible = sprite.palette >= 12;
                 }
             }
 
@@ -878,7 +883,7 @@ pub const Ppu = struct {
                 2 => (self.cgadsub & 0x02) != 0, // BG2 (bit 1)
                 3 => (self.cgadsub & 0x04) != 0, // BG3 (bit 2)
                 4 => (self.cgadsub & 0x08) != 0, // BG4 (bit 3)
-                5 => (self.cgadsub & 0x10) != 0, // OBJ (bit 4)
+                5 => (self.cgadsub & 0x10) != 0 and obj_math_eligible, // OBJ palettes 4..7 (bit 4)
                 else => false,
             };
 
