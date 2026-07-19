@@ -1898,7 +1898,8 @@ pub const Ppu = struct {
         // With OAM priority rotation disabled, lower OBJ indexes have higher
         // priority (fullsnes "OBJ Priority Rotation"; independently matched
         // by Mesen2). Keep the first opaque pixel, so visit slot 0 first.
-        var sprite_count: u8 = 0;
+        var sprites_on_line: u8 = 0;
+        var tiles_on_line: u8 = 0;
         for (0..128) |i| {
             const sprite_idx: u8 = @intCast(i);
 
@@ -1937,6 +1938,19 @@ pub const Ppu = struct {
             const py_raw = (@as(i16, @intCast(y)) - 1 -% @as(i16, sprite_y)) & 0xFF;
             if (py_raw >= height) continue;
 
+            // Range-over is 32 intersecting OBJs; time-over is 34 fetched
+            // 8-pixel slivers. Neither counter is related to the number of
+            // opaque output pixels. The old `sprite_count += 1` inside the
+            // pixel loop accidentally imposed a 256-opaque-pixel limit and
+            // dropped valid cells from large composites such as SMW's Big
+            // Boo even when the real 34-tile budget was not exhausted.
+            if (sprites_on_line == 32) break;
+            sprites_on_line += 1;
+            const sprite_tiles: u8 = @intCast(@divExact(width, 8));
+            const tiles_to_render = @min(sprite_tiles, 34 - tiles_on_line);
+            if (tiles_to_render == 0) break;
+            tiles_on_line += tiles_to_render;
+
             // Parse attributes
             const palette: u8 = ((attr >> 1) & 0x07) + 8; // Sprites use palettes 8-15
             const priority: u8 = (attr >> 4) & 0x03;
@@ -1964,6 +1978,7 @@ pub const Ppu = struct {
             // Render pixels for this sprite
             var px: i16 = 0;
             while (px < width) : (px += 1) {
+                if (@divFloor(px, 8) >= tiles_to_render) break;
                 const screen_x = x + px;
                 if (screen_x < 0 or screen_x >= SCREEN_WIDTH) continue;
 
@@ -2002,9 +2017,8 @@ pub const Ppu = struct {
                     .palette = palette,
                 };
 
-                sprite_count += 1;
-                if (sprite_count >= 32 * 8) break; // Max 32 sprites, 34 8-pixel chunks per line
             }
+            if (tiles_on_line == 34) break;
         }
     }
 
