@@ -85,6 +85,42 @@ const PLANE_SPREAD: [256]u16 = blk: {
     break :blk table;
 };
 
+/// One recorded VRAM write, for the source trace below.
+pub const VramWrite = struct {
+    addr: u16, // VRAM word address written (ppu.vram_addr at the write)
+    value: u8, // the byte written
+    high: bool, // true = $2119 (high byte), false = $2118 (low byte)
+    pc: u24, // PBR:PC of the instruction performing the write
+    dma_src: u24, // A-bus source address when the write came via DMA, else 0
+};
+
+/// A general, capture-only VRAM-write source trace (a debug/capture API, not
+/// tied to any game or address). When enabled, it records every $2118/$2119
+/// write whose VRAM word address is within [filter_lo, filter_hi], together with
+/// the writing instruction's PBR:PC and the DMA source address if the write came
+/// from a DMA transfer. It ONLY observes — it never alters PPU/CPU/DMA state or
+/// timing — so enabling it has zero effect on emulated output. Answers questions
+/// like "which routine populates this VRAM region, and from what source?".
+pub const VramTrace = struct {
+    pub const capacity = 8192;
+    enabled: bool = false,
+    filter_lo: u16 = 0,
+    filter_hi: u16 = 0xFFFF,
+    events: [capacity]VramWrite = undefined,
+    count: usize = 0,
+    dropped: usize = 0, // writes past `capacity` (raise it or narrow the filter)
+
+    fn record(self: *VramTrace, w: VramWrite) void {
+        if (w.addr < self.filter_lo or w.addr > self.filter_hi) return;
+        if (self.count >= capacity) {
+            self.dropped += 1;
+            return;
+        }
+        self.events[self.count] = w;
+        self.count += 1;
+    }
+};
+
 pub const Ppu = struct {
     // VRAM - 64KB
     vram: [64 * 1024]u8,
@@ -210,6 +246,12 @@ pub const Ppu = struct {
 
     // Latch for VRAM reads
     vram_read_buffer: u8,
+
+    // ---- Capture-only VRAM-write source trace (see VramTrace). Defaulted so
+    // the init literal below need not list them; disabled => zero cost/effect.
+    vram_trace: VramTrace = .{},
+    writer_pc: u24 = 0, // PBR:PC of the current instruction (set by Emulator.step)
+    dma_src: u24 = 0, // A-bus source of an in-flight VRAM DMA (0 = direct store)
 
     pub fn init() Ppu {
         return Ppu{
@@ -2374,6 +2416,8 @@ pub const Ppu = struct {
     fn writeVramLow(self: *Ppu, value: u8) void {
         const addr = self.getVramAddr();
         self.vram[addr * 2] = value;
+        if (self.vram_trace.enabled)
+            self.vram_trace.record(.{ .addr = addr, .value = value, .high = false, .pc = self.writer_pc, .dma_src = self.dma_src });
         if ((self.vmain & 0x80) == 0) {
             self.vram_addr +%= self.getVramIncrement();
         }
@@ -2382,6 +2426,8 @@ pub const Ppu = struct {
     fn writeVramHigh(self: *Ppu, value: u8) void {
         const addr = self.getVramAddr();
         self.vram[addr * 2 + 1] = value;
+        if (self.vram_trace.enabled)
+            self.vram_trace.record(.{ .addr = addr, .value = value, .high = true, .pc = self.writer_pc, .dma_src = self.dma_src });
         if ((self.vmain & 0x80) != 0) {
             self.vram_addr +%= self.getVramIncrement();
         }
@@ -2427,6 +2473,44 @@ pub const Ppu = struct {
 test "ppu init" {
     const ppu = Ppu.init();
     _ = ppu;
+}
+
+test "vram-write source trace records filtered writes and is capture-only" {
+    var ppu = Ppu.init();
+    ppu.vmain = 0x00; // increment after the $2118 (low-byte) write
+    ppu.writer_pc = 0x03AB42;
+    ppu.dma_src = 0;
+
+    // Wide filter: an in-range $2118 write is recorded, and the byte still lands
+    // in VRAM (the trace only observes).
+    ppu.vram_trace.filter_lo = 0x0000;
+    ppu.vram_trace.filter_hi = 0xFFFF;
+    ppu.vram_trace.enabled = true;
+    ppu.vram_addr = 0x1000;
+    ppu.writeRegister(0x2118, 0x5A);
+    try std.testing.expectEqual(@as(usize, 1), ppu.vram_trace.count);
+    const e = ppu.vram_trace.events[0];
+    try std.testing.expectEqual(@as(u16, 0x1000), e.addr);
+    try std.testing.expectEqual(@as(u8, 0x5A), e.value);
+    try std.testing.expectEqual(false, e.high);
+    try std.testing.expectEqual(@as(u24, 0x03AB42), e.pc);
+    try std.testing.expectEqual(@as(u8, 0x5A), ppu.vram[0x1000 * 2]); // capture-only: byte still written
+
+    // A write outside the filter window is not recorded.
+    ppu.vram_trace.filter_lo = 0x2000;
+    ppu.vram_trace.filter_hi = 0x3000;
+    ppu.vram_addr = 0x0500;
+    ppu.writeRegister(0x2118, 0x11);
+    try std.testing.expectEqual(@as(usize, 1), ppu.vram_trace.count); // unchanged
+    try std.testing.expectEqual(@as(u8, 0x11), ppu.vram[0x0500 * 2]); // still written
+
+    // Disabled: no recording, byte still written.
+    ppu.vram_trace.enabled = false;
+    ppu.vram_trace.filter_lo = 0x0000;
+    ppu.vram_addr = 0x2500;
+    ppu.writeRegister(0x2119, 0x77); // high byte
+    try std.testing.expectEqual(@as(usize, 1), ppu.vram_trace.count);
+    try std.testing.expectEqual(@as(u8, 0x77), ppu.vram[0x2500 * 2 + 1]);
 }
 
 test "brightness LUT matches hardware formula" {

@@ -218,6 +218,14 @@ pub const Dma = struct {
                 }
             }
 
+            // VRAM-write source trace: tag writes this channel makes with their
+            // A-bus source (capture-only; 0 when not a VRAM transfer or disabled).
+            const is_vram = channel.b_addr == 0x18 or channel.b_addr == 0x19;
+            if (is_vram) bus.ppu.dma_src = channel.a_addr;
+            defer if (is_vram) {
+                bus.ppu.dma_src = 0;
+            };
+
             // Count bytes to transfer (0 = 65536)
             var remaining: u32 = if (channel.byte_count == 0) 65536 else channel.byte_count;
             const transfer_size = getTransferSize(ctrl.transfer_mode);

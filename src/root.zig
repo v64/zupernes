@@ -98,6 +98,10 @@ pub const Emulator = struct {
             self.cpu.irq_pending = false;
         }
 
+        // Capture the instruction's PBR:PC for the VRAM-write source trace
+        // (capture-only; no effect when the trace is disabled).
+        self.ppu.writer_pc = (@as(u24, self.cpu.pbr) << 16) | self.cpu.pc;
+
         const cycles = self.cpu.step();
 
         // ======================================================================
@@ -250,6 +254,38 @@ pub const Emulator = struct {
     /// Get the current framebuffer for rendering
     pub fn getFramebuffer(self: *Emulator) []const u16 {
         return self.ppu.getFramebuffer();
+    }
+
+    // ---- VRAM-write source trace (capture-only debug/capture API) ----
+    // A general tool for "which routine populates this VRAM region, from what
+    // source?". Enabling it only records $2118/$2119 writes in a word-address
+    // window (with the writer PBR:PC and any DMA source); it never alters PPU,
+    // CPU, or DMA behavior, so emulated output is unchanged. See ppu.VramTrace.
+    pub const VramWrite = @import("ppu/ppu.zig").VramWrite;
+
+    /// Begin tracing VRAM writes whose word address is in [lo, hi]. Clears any
+    /// previously captured events.
+    pub fn traceVramWrites(self: *Emulator, lo: u16, hi: u16) void {
+        self.ppu.vram_trace.filter_lo = lo;
+        self.ppu.vram_trace.filter_hi = hi;
+        self.ppu.vram_trace.count = 0;
+        self.ppu.vram_trace.dropped = 0;
+        self.ppu.vram_trace.enabled = true;
+    }
+
+    /// Stop recording (leaves captured events intact for reading).
+    pub fn stopVramTrace(self: *Emulator) void {
+        self.ppu.vram_trace.enabled = false;
+    }
+
+    /// The events captured so far (oldest first).
+    pub fn vramTraceEvents(self: *const Emulator) []const VramWrite {
+        return self.ppu.vram_trace.events[0..self.ppu.vram_trace.count];
+    }
+
+    /// Count of writes dropped past the trace capacity (0 = complete).
+    pub fn vramTraceDropped(self: *const Emulator) usize {
+        return self.ppu.vram_trace.dropped;
     }
 
     /// Drain decoded audio from the APU: stereo i16 frames at 32kHz.
