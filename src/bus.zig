@@ -32,6 +32,55 @@ const Apu = @import("apu/apu.zig").Apu;
 const Upd7725 = @import("coproc/upd7725.zig").Upd7725;
 const dbg = @import("debug.zig");
 
+pub const WramWrite = struct {
+    addr: u24, // WRAM offset 0..$1FFFF (bank $7E = $00000, $7F = $10000)
+    value: u8, // the byte written
+    pc: u24, // PBR:PC of the instruction performing the write
+    via: Via, // which of the three paths reached WRAM
+
+    pub const Via = enum(u8) {
+        /// Banks $00-$3F / $80-$BF, $0000-$1FFF - the low-8KB mirror.
+        mirror,
+        /// Banks $7E-$7F - the full 128KB direct window.
+        direct,
+        /// The $2180 WMDATA port (CPU store or DMA into $2180).
+        port,
+    };
+};
+
+/// A general, capture-only WRAM-write source trace (a debug/capture API, not
+/// tied to any game or address), the direct analogue of ppu.VramTrace. When
+/// enabled, it records every write whose WRAM offset is within
+/// [filter_lo, filter_hi] together with the writing instruction's PBR:PC and
+/// which of the three WRAM paths carried it. It ONLY observes - it never alters
+/// bus, CPU, or DMA state or timing - so enabling it has zero effect on
+/// emulated output. Answers "which routine writes this variable, and when?" -
+/// the WRAM counterpart of "which routine populates this VRAM region?".
+///
+/// The mirror and direct paths address the SAME storage: a write to $00:007D
+/// and one to $7E:007D both record offset $00007D. That is what lets a filter
+/// on a zero-page game variable catch every writer regardless of how the code
+/// happened to address it.
+pub const WramTrace = struct {
+    pub const capacity = 8192;
+    enabled: bool = false,
+    filter_lo: u24 = 0,
+    filter_hi: u24 = 0x1FFFF,
+    events: [capacity]WramWrite = undefined,
+    count: usize = 0,
+    dropped: usize = 0, // writes past `capacity` (raise it or narrow the filter)
+
+    fn record(self: *WramTrace, w: WramWrite) void {
+        if (w.addr < self.filter_lo or w.addr > self.filter_hi) return;
+        if (self.count >= capacity) {
+            self.dropped += 1;
+            return;
+        }
+        self.events[self.count] = w;
+        self.count += 1;
+    }
+};
+
 pub const Bus = struct {
     // WRAM - 128KB work RAM
     wram: [128 * 1024]u8,
@@ -220,6 +269,11 @@ pub const Bus = struct {
     // cartridge provides. Null in normal operation - the cost is a single
     // well-predicted branch at the top of read()/write().
     flat_mem: ?[]u8 = null,
+    // ---- Capture-only WRAM-write source trace (see WramTrace). Defaulted so
+    // the init literal need not list them; disabled => zero cost/effect. The
+    // flat-memory test path above is deliberately NOT traced: it is not WRAM.
+    wram_trace: WramTrace = .{},
+    writer_pc: u24 = 0, // PBR:PC of the current instruction (set by Emulator.step)
     // Fixed-point accumulator for the DSP clock. The DSP-1's uPD77C25
     // executes ONE instruction per clock of its 7.6MHz crystal (the
     // byuu-measured model that bsnes and Mesen2 use - NOT the "4 clocks
@@ -482,6 +536,8 @@ pub const Bus = struct {
         if (effective_bank <= 0x3F) {
             if (addr < 0x2000) {
                 self.wram[addr] = value;
+                if (self.wram_trace.enabled)
+                    self.wram_trace.record(.{ .addr = addr, .value = value, .pc = self.writer_pc, .via = .mirror });
             } else if (addr >= 0x2140 and addr <= 0x2143) {
                 self.writeApuPort(addr, value);
             } else if (addr >= 0x2180 and addr <= 0x2183) {
@@ -523,6 +579,8 @@ pub const Bus = struct {
             const wram_addr = (@as(u24, effective_bank - 0x7E) << 16) | addr;
             if (wram_addr < self.wram.len) {
                 self.wram[wram_addr] = value;
+                if (self.wram_trace.enabled)
+                    self.wram_trace.record(.{ .addr = wram_addr, .value = value, .pc = self.writer_pc, .via = .direct });
             }
         }
     }
@@ -839,6 +897,8 @@ pub const Bus = struct {
                 // WMDATA - Write to WRAM at current address
                 if (self.wram_addr < self.wram.len) {
                     self.wram[self.wram_addr] = value;
+                    if (self.wram_trace.enabled)
+                        self.wram_trace.record(.{ .addr = self.wram_addr, .value = value, .pc = self.writer_pc, .via = .port });
                 }
                 self.wram_addr = (self.wram_addr + 1) & 0x1FFFF;
             },
@@ -863,4 +923,59 @@ test "bus init" {
     var ppu = @import("ppu/ppu.zig").Ppu.init();
     const bus = Bus.init(&ppu);
     _ = bus;
+}
+
+test "wram-write source trace records filtered writes on every path and is capture-only" {
+    var ppu = @import("ppu/ppu.zig").Ppu.init();
+    var bus = Bus.init(&ppu);
+    bus.writer_pc = 0x00CD1F;
+
+    // Narrow filter on one zero-page variable. The $00-$3F mirror path.
+    bus.wram_trace.filter_lo = 0x00007D;
+    bus.wram_trace.filter_hi = 0x00007D;
+    bus.wram_trace.enabled = true;
+    bus.write(0x00, 0x007D, 0x46);
+    try std.testing.expectEqual(@as(usize, 1), bus.wram_trace.count);
+    try std.testing.expectEqual(@as(u24, 0x00007D), bus.wram_trace.events[0].addr);
+    try std.testing.expectEqual(@as(u8, 0x46), bus.wram_trace.events[0].value);
+    try std.testing.expectEqual(@as(u24, 0x00CD1F), bus.wram_trace.events[0].pc);
+    try std.testing.expectEqual(WramWrite.Via.mirror, bus.wram_trace.events[0].via);
+    try std.testing.expectEqual(@as(u8, 0x46), bus.wram[0x7D]); // capture-only: byte still written
+
+    // The bank-$7E direct window addresses the SAME storage and is recorded
+    // under the same offset - that equivalence is what makes one filter catch
+    // every writer of a game variable.
+    bus.writer_pc = 0x00EF60;
+    bus.write(0x7E, 0x007D, 0x3E);
+    try std.testing.expectEqual(@as(usize, 2), bus.wram_trace.count);
+    try std.testing.expectEqual(@as(u24, 0x00007D), bus.wram_trace.events[1].addr);
+    try std.testing.expectEqual(WramWrite.Via.direct, bus.wram_trace.events[1].via);
+    try std.testing.expectEqual(@as(u8, 0x3E), bus.wram[0x7D]);
+
+    // The $2180 WMDATA port is the third path.
+    bus.wram_addr = 0x00007D;
+    bus.writer_pc = 0x008B2B;
+    bus.write(0x00, 0x2180, 0x11);
+    try std.testing.expectEqual(@as(usize, 3), bus.wram_trace.count);
+    try std.testing.expectEqual(WramWrite.Via.port, bus.wram_trace.events[2].via);
+    try std.testing.expectEqual(@as(u8, 0x11), bus.wram[0x7D]);
+
+    // Break-it-once: a write OUTSIDE the window is not recorded but still lands.
+    bus.write(0x7E, 0x0094, 0x22);
+    try std.testing.expectEqual(@as(usize, 3), bus.wram_trace.count); // unchanged
+    try std.testing.expectEqual(@as(u8, 0x22), bus.wram[0x94]);
+
+    // Disabled: no recording, byte still written.
+    bus.wram_trace.enabled = false;
+    bus.write(0x7E, 0x007D, 0x77);
+    try std.testing.expectEqual(@as(usize, 3), bus.wram_trace.count);
+    try std.testing.expectEqual(@as(u8, 0x77), bus.wram[0x7D]);
+
+    // Capacity is bounded and overflow is reported rather than silently lost.
+    bus.wram_trace.enabled = true;
+    bus.wram_trace.count = WramTrace.capacity;
+    bus.wram_trace.dropped = 0;
+    bus.write(0x7E, 0x007D, 0x01);
+    try std.testing.expectEqual(@as(usize, 1), bus.wram_trace.dropped);
+    try std.testing.expectEqual(@as(u8, 0x01), bus.wram[0x7D]);
 }

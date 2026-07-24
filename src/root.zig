@@ -98,9 +98,10 @@ pub const Emulator = struct {
             self.cpu.irq_pending = false;
         }
 
-        // Capture the instruction's PBR:PC for the VRAM-write source trace
-        // (capture-only; no effect when the trace is disabled).
+        // Capture the instruction's PBR:PC for the VRAM- and WRAM-write source
+        // traces (capture-only; no effect when the traces are disabled).
         self.ppu.writer_pc = (@as(u24, self.cpu.pbr) << 16) | self.cpu.pc;
+        self.bus.writer_pc = self.ppu.writer_pc;
 
         const cycles = self.cpu.step();
 
@@ -286,6 +287,42 @@ pub const Emulator = struct {
     /// Count of writes dropped past the trace capacity (0 = complete).
     pub fn vramTraceDropped(self: *const Emulator) usize {
         return self.ppu.vram_trace.dropped;
+    }
+
+    // ---- WRAM-write source trace (capture-only debug/capture API) ----
+    // The WRAM counterpart of the VRAM trace above, on identical terms: a
+    // general tool for "which routine writes this variable, and when?".
+    // Enabling it only records writes whose WRAM offset falls in a window,
+    // with the writer PBR:PC and which of the three WRAM paths carried it; it
+    // never alters bus, CPU, or DMA behavior, so emulated output is unchanged.
+    // See bus.WramTrace. Not game-specific and not tied to any address.
+    pub const WramWrite = @import("bus.zig").WramWrite;
+
+    /// Begin tracing WRAM writes whose offset is in [lo, hi] (bank $7E maps to
+    /// $00000, $7F to $10000; the $00-$3F low-8KB mirror lands on the same
+    /// offsets, so a zero-page filter catches every writer). Clears any
+    /// previously captured events.
+    pub fn traceWramWrites(self: *Emulator, lo: u24, hi: u24) void {
+        self.bus.wram_trace.filter_lo = lo;
+        self.bus.wram_trace.filter_hi = hi;
+        self.bus.wram_trace.count = 0;
+        self.bus.wram_trace.dropped = 0;
+        self.bus.wram_trace.enabled = true;
+    }
+
+    /// Stop recording (leaves captured events intact for reading).
+    pub fn stopWramTrace(self: *Emulator) void {
+        self.bus.wram_trace.enabled = false;
+    }
+
+    /// The events captured so far (oldest first).
+    pub fn wramTraceEvents(self: *const Emulator) []const WramWrite {
+        return self.bus.wram_trace.events[0..self.bus.wram_trace.count];
+    }
+
+    /// Count of writes dropped past the trace capacity (0 = complete).
+    pub fn wramTraceDropped(self: *const Emulator) usize {
+        return self.bus.wram_trace.dropped;
     }
 
     /// Drain decoded audio from the APU: stereo i16 frames at 32kHz.
