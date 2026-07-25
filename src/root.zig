@@ -343,6 +343,28 @@ pub const Emulator = struct {
         return self.bus.apu.readState(src);
     }
 
+    // ---- Savestate (capture-only machine snapshot / restore) ----
+    // A general emulator capability, on the same terms as the traces above:
+    // nothing here runs during ordinary emulation and taking a snapshot does
+    // not perturb the machine. The format is an explicit pointer-free byte
+    // layout, NOT a struct dump, because the Emulator is self-referential
+    // (see savestate.zig). Restore into a machine that has already had
+    // setup() and loadRom() run with the SAME ROM; every interior pointer in
+    // the destination survives untouched.
+    pub const savestate = @import("savestate.zig");
+    pub const state_len = savestate.state_len;
+    pub const StateError = savestate.Error;
+
+    /// Capture the whole machine into dst (>= state_len bytes).
+    pub fn writeState(self: *const Emulator, dst: []u8) StateError!usize {
+        return savestate.write(&self.cpu, &self.ppu, &self.bus, self.last_scanline, dst);
+    }
+
+    /// Restore a snapshot previously produced by writeState.
+    pub fn readState(self: *Emulator, src: []const u8) StateError!usize {
+        return savestate.read(&self.cpu, &self.ppu, &self.bus, &self.last_scanline, src);
+    }
+
     /// Set the live button state for a controller (0 = pad 1, 1 = pad 2).
     /// Button layout matches the $4219:$4218 auto-read register pair:
     ///   bit 15: B      bit 11: Up      bit 7: A
@@ -367,4 +389,5 @@ test {
     _ = @import("dma.zig");
     _ = @import("coproc/upd7725.zig");
     _ = @import("movie.zig");
+    _ = @import("savestate.zig");
 }

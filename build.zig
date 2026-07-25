@@ -110,6 +110,29 @@ pub fn build(b: *std.Build) void {
         run_screenshot.addArgs(args);
     }
 
+    // Savestate verifier: proves a resumed run is bit-identical to a
+    // from-power-on run of the same input.
+    //   zig build savestate-verify -- <rom.sfc> <frames> <snapshot> [--movie F]
+    const savestate_verify = b.addExecutable(.{
+        .name = "savestate-verify",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/savestate_verify.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zupernes", .module = emu_mod },
+            },
+        }),
+    });
+    b.installArtifact(savestate_verify);
+    const savestate_verify_step = b.step("savestate-verify", "Prove savestate resume is bit-identical");
+    const run_savestate_verify = b.addRunArtifact(savestate_verify);
+    savestate_verify_step.dependOn(&run_savestate_verify.step);
+    run_savestate_verify.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_savestate_verify.addArgs(args);
+    }
+
     // CPU test-vector harness (SingleStepTests 65816 JSON vectors)
     //   zig build cpu-vectors -- <dir-with-json> [filter]
     const cpu_vectors = b.addExecutable(.{
