@@ -98,6 +98,87 @@ fn writePpm(framebuffer: []const u16, path: []const u8) !void {
     try file.writeAll(&buffer);
 }
 
+/// Reach the origin movie a validated sidecar names and return its first
+/// `frame` inputs, or null when it cannot be reached or cannot be trusted.
+///
+/// This is what makes a resumed recording SELF-CONTAINED: with the origin's
+/// prefix in hand the recorder can write one power-on movie instead of a tail
+/// that only replays if a 412 KB blob travels beside it.
+///
+/// Every rejection here is deliberate and prints its reason. The alternative -
+/// splicing whatever the path happens to point at - would silently produce a
+/// movie whose prefix does not reach the state its tail assumes, which
+/// replays as a plausible wrong run. That is the failure class the whole
+/// provenance triple exists to close, so a doubtful splice must degrade to a
+/// marked tail rather than a confident artifact.
+fn originPrefix(
+    allocator: std.mem.Allocator,
+    state_path: []const u8,
+    origin_file: []const u8,
+    sha_hex: []const u8,
+    frame: u32,
+) !?[]u16 {
+    // The writer stores a bare basename when the movie sat beside the state,
+    // and the path as given otherwise. So a name with no separator resolves
+    // against the STATE's directory - which is what keeps a state/sidecar/movie
+    // trio working after it is moved as a group.
+    var path_buf: [1024]u8 = undefined;
+    const resolved = if (std.fs.path.dirname(origin_file) == null) blk: {
+        const dir = std.fs.path.dirname(state_path) orelse ".";
+        break :blk std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir, origin_file }) catch return null;
+    } else origin_file;
+
+    const text = std.fs.cwd().readFileAlloc(allocator, resolved, 16 * 1024 * 1024) catch {
+        std.debug.print("splice: origin movie {s} not readable; keeping the tail\n", .{resolved});
+        return null;
+    };
+    defer allocator.free(text);
+
+    // THE HASH IS AUTHORITATIVE, THE PATH IS ONLY A HINT. A file that has
+    // been edited since the snapshot was taken no longer reaches that state,
+    // and its inputs are exactly the wrong prefix to prepend.
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(text, &digest, .{});
+    var hex: [64]u8 = undefined;
+    _ = try std.fmt.bufPrint(&hex, "{x}", .{&digest});
+    if (!std.ascii.eqlIgnoreCase(&hex, sha_hex)) {
+        std.debug.print(
+            "splice: {s} does not match the recorded origin hash; keeping the tail\n",
+            .{resolved},
+        );
+        return null;
+    }
+
+    var origin = zupernes.movie.Movie.parse(allocator, text) catch {
+        std.debug.print("splice: origin movie {s} does not parse; keeping the tail\n", .{resolved});
+        return null;
+    };
+    defer origin.deinit(allocator);
+
+    // A spliced movie claims to play from power-on. If the origin itself
+    // resumed from a savestate, its frame 0 is not power-on and the claim
+    // would be false. Refusing is honest; chaining back through a second
+    // sidecar is a feature, not a silent assumption.
+    if (origin.meta.start != .power_on) {
+        std.debug.print(
+            "splice: origin {s} is itself a savestate movie; keeping the tail\n",
+            .{resolved},
+        );
+        return null;
+    }
+    if (origin.len() < frame) {
+        std.debug.print(
+            "splice: origin {s} has {d} frames, fewer than the snapshot frame {d}; keeping the tail\n",
+            .{ resolved, origin.len(), frame },
+        );
+        return null;
+    }
+
+    // The state was written at the START of `frame`, before it ran, so
+    // frames 0..frame-1 are exactly the inputs that reached it.
+    return try allocator.dupe(u16, origin.frames.items[0..frame]);
+}
+
 // The Emulator struct is large (VRAM, WRAM, framebuffers...) and holds
 // internal self-pointers, so it must live at a stable address — global,
 // not on the stack.
@@ -222,6 +303,11 @@ pub fn main() !void {
     // runs, before recording is armed, and before a snapshot could be taken.
     // Through Emulator.readStateFile - the same call the interactive frontend
     // makes - so a headless resume and an interactive one cannot drift.
+    // The sidecar's text is borrowed by the parsed struct, so it has to
+    // outlive the record block far below rather than the load block here.
+    var sidecar_text: ?[]u8 = null;
+    defer if (sidecar_text) |t| allocator.free(t);
+    var sidecar: ?zupernes.Emulator.savestate.Sidecar = null;
     if (load_state_path) |path| {
         const snapshot = emulator.readStateFile(allocator, path, &start_state_sha) catch |err| {
             std.debug.print("Savestate {s} rejected: {}\n", .{ path, err });
@@ -230,6 +316,38 @@ pub fn main() !void {
         allocator.free(snapshot);
         start_state_valid = true;
         std.debug.print("Resumed from savestate: {s}\n", .{path});
+
+        // READ BACK THE PROVENANCE THE WRITER ALREADY WROTE. Without this a
+        // recording made from a resume carries `start` and `start-sha256`
+        // but not `start-origin` - two thirds of the triple, and
+        // unregenerable by the format's own definition.
+        var side_name_buf: [512]u8 = undefined;
+        const side_name = try std.fmt.bufPrint(&side_name_buf, "{s}.origin", .{path});
+        if (std.fs.cwd().readFileAlloc(allocator, side_name, 64 * 1024)) |text| {
+            sidecar_text = text;
+            const parsed = zupernes.Emulator.savestate.Sidecar.parse(text);
+            // A sidecar is a claim ABOUT A SPECIFIC FILE. If its hash does
+            // not match the state we actually loaded, it describes some
+            // other snapshot that once had this name, and every field in it
+            // is suspect - so it is discarded whole rather than mined for
+            // the parts that look plausible.
+            const claims_this_state = if (parsed.start_sha256) |h|
+                std.ascii.eqlIgnoreCase(h, &start_state_sha)
+            else
+                false;
+            if (claims_this_state) {
+                sidecar = parsed;
+            } else {
+                std.debug.print(
+                    "Sidecar {s} describes a different savestate (hash mismatch); ignoring it\n",
+                    .{side_name},
+                );
+            }
+        } else |_| {
+            // No sidecar is not an error: a hand-made state legitimately has
+            // none. It only means any recording from it cannot claim to be
+            // regenerable, which the record path states explicitly.
+        }
     }
 
     // Recording uses the EMULATOR's capture API, not a parallel accumulation
@@ -285,20 +403,33 @@ pub fn main() !void {
             // worse than an absent one - so the field is omitted, not faked.
             var state_digest: [32]u8 = undefined;
             std.crypto.hash.sha2.Sha256.hash(bytes, &state_digest, .{});
-            var origin_buf: [512]u8 = undefined;
+            var origin_buf: [1024]u8 = undefined;
             const origin_text = if (movie_path) |mp| blk: {
                 const movie_text = try std.fs.cwd().readFileAlloc(allocator, mp, 16 * 1024 * 1024);
                 defer allocator.free(movie_text);
                 var movie_digest: [32]u8 = undefined;
                 std.crypto.hash.sha2.Sha256.hash(movie_text, &movie_digest, .{});
-                break :blk try std.fmt.bufPrint(&origin_buf, "start-origin: {x}:{d}\n", .{ &movie_digest, spec.frame });
+                // origin-file makes the origin REACHABLE, not merely named.
+                // The hash identifies the movie but cannot locate it, and a
+                // recorder that wants to splice the origin's inputs in front
+                // of a resumed tail has to open the file. Stored relative to
+                // the sidecar when they sit together, so the pair can be
+                // moved without breaking the link; the hash stays
+                // authoritative, so a stale path fails the check rather than
+                // silently splicing the wrong prefix.
+                const side_dir = std.fs.path.dirname(spec.path) orelse ".";
+                const rel = if (std.mem.eql(u8, std.fs.path.dirname(mp) orelse ".", side_dir))
+                    std.fs.path.basename(mp)
+                else
+                    mp;
+                break :blk try std.fmt.bufPrint(&origin_buf, "origin-file: {s}\nstart-origin: {x}:{d}\n", .{ rel, &movie_digest, spec.frame });
             } else try std.fmt.bufPrint(&origin_buf, "start-origin: none (no --movie; this snapshot is not regenerable)\n", .{});
 
             var side_buf: [1024]u8 = undefined;
-            const sidecar = try std.fmt.bufPrint(&side_buf, "start-sha256: {x}\nframe: {d}\n{s}", .{ &state_digest, spec.frame, origin_text });
+            const sidecar_body = try std.fmt.bufPrint(&side_buf, "start-sha256: {x}\nframe: {d}\n{s}", .{ &state_digest, spec.frame, origin_text });
             var side_name_buf: [512]u8 = undefined;
             const side_name = try std.fmt.bufPrint(&side_name_buf, "{s}.origin", .{spec.path});
-            try std.fs.cwd().writeFile(.{ .sub_path = side_name, .data = sidecar });
+            try std.fs.cwd().writeFile(.{ .sub_path = side_name, .data = sidecar_body });
             std.debug.print("Saved state at frame {d} to {s} (+ {s})\n", .{ spec.frame, spec.path, side_name });
         };
         emulator.setJoypad(0, pad);
@@ -355,23 +486,79 @@ pub fn main() !void {
         _ = try std.fmt.bufPrint(&rom_hex, "{x}", .{&digest});
         m.meta.rom_sha256 = &rom_hex;
         m.meta.recorded_frames = @intCast(frames.len);
+        var spliced_buf: [160]u8 = undefined;
         if (load_state_path) |sp| {
-            // A recording that resumed from a snapshot says so, and names the
-            // snapshot by hash. start-origin is NOT invented here: this run
-            // was handed a state and does not know how it was reached - the
-            // .origin sidecar written by --save-state-at carries that claim,
-            // and an unverifiable one is worse than an absent one.
-            m.meta.start = .savestate;
-            // The format says start-file is RELATIVE TO THE .ZMOV. Writing the
-            // absolute path we happened to be invoked with would bake this
-            // machine's layout into a shareable artifact - the same leak as
-            // passing the output path as the movie's name. When the snapshot
-            // sits beside the recording, the basename is the whole answer.
-            m.meta.start_file = if (std.mem.eql(u8, std.fs.path.dirname(sp) orelse ".", std.fs.path.dirname(path) orelse "."))
-                std.fs.path.basename(sp)
-            else
-                sp;
-            if (start_state_valid) m.meta.start_sha256 = &start_state_sha;
+            // start-origin is still never INVENTED here - this run was handed
+            // a state and cannot know how it was reached. It is now READ, from
+            // the .origin sidecar that `--save-state-at` wrote and that was
+            // hash-checked against the state actually loaded. The claim is
+            // still the writer's; what changed is that the reader stopped
+            // throwing it away.
+            const claim = if (sidecar) |sc| sc.originParts() else null;
+
+            // PREFERRED OUTCOME: splice, and emit one self-contained movie.
+            const prefix: ?[]u16 = if (claim) |c| blk: {
+                const of = (sidecar.?.origin_file) orelse {
+                    std.debug.print(
+                        "splice: sidecar names no origin-file (written before that key); keeping the tail\n",
+                        .{},
+                    );
+                    break :blk null;
+                };
+                break :blk originPrefix(allocator, sp, of, c.sha, c.frame) catch null;
+            } else null;
+            defer if (prefix) |p| allocator.free(p);
+
+            if (prefix) |p| {
+                // One movie: the origin's inputs 0..N-1, then this run's tail.
+                // It starts at power-on because the prefix is present, so it
+                // needs no savestate beside it - which is the whole point.
+                try m.frames.insertSlice(allocator, 0, p);
+                m.meta.recorded_frames = @intCast(m.frames.items.len);
+                m.meta.spliced_origin = try std.fmt.bufPrint(
+                    &spliced_buf,
+                    "{s}:{d}",
+                    .{ claim.?.sha, claim.?.frame },
+                );
+                std.debug.print(
+                    "record: spliced {d} origin frames + {d} recorded = {d}; movie is self-contained\n",
+                    .{ p.len, frames.len, m.frames.items.len },
+                );
+            } else {
+                // FALLBACK: the tail stays, and says exactly what it is.
+                m.meta.start = .savestate;
+                // The format says start-file is RELATIVE TO THE .ZMOV. Writing
+                // the absolute path we happened to be invoked with would bake
+                // this machine's layout into a shareable artifact - the same
+                // leak as passing the output path as the movie's name. When
+                // the snapshot sits beside the recording, the basename is the
+                // whole answer.
+                m.meta.start_file = if (std.mem.eql(u8, std.fs.path.dirname(sp) orelse ".", std.fs.path.dirname(path) orelse "."))
+                    std.fs.path.basename(sp)
+                else
+                    sp;
+                if (start_state_valid) m.meta.start_sha256 = &start_state_sha;
+
+                if (claim) |c| {
+                    // THE STAMP. The triple is complete even unspliced: the
+                    // origin movie is named by hash and frame, so the state
+                    // this tail assumes can be regenerated by whoever holds
+                    // that movie. Locating it is a lookup, not a guess.
+                    m.meta.start_origin = try std.fmt.bufPrint(
+                        &spliced_buf,
+                        "{s}:{d}",
+                        .{ c.sha, c.frame },
+                    );
+                } else {
+                    // No claim exists to stamp. Say so in the artifact rather
+                    // than leaving a reader to infer it from a missing key -
+                    // omitted, not faked, but also not silent.
+                    m.meta.non_regenerable = if (sidecar == null)
+                        "no .origin sidecar beside the savestate"
+                    else
+                        "sidecar records no origin movie (snapshot taken without --movie)";
+                }
+            }
         }
         // No name: the old call passed the OUTPUT PATH as the movie's name,
         // baking an absolute local path into an artifact meant to be shared.
@@ -387,6 +574,7 @@ pub fn main() !void {
         try std.fs.cwd().writeFile(.{ .sub_path = path, .data = &emulator.bus.wram });
         std.debug.print("Wrote WRAM (128KB) to {s}\n", .{path});
     }
+
 
     if (wav_path) |path| {
         try writeWav(path, audio.items);

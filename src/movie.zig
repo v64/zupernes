@@ -87,6 +87,15 @@ pub const Meta = struct {
     start_sha256: ?[]const u8 = null,
     /// `<movie-sha256>:<frame>` verbatim; `startOriginFrame` splits it.
     start_origin: ?[]const u8 = null,
+    /// `<movie-sha256>:<N>` — this movie's first N frames were COPIED from
+    /// that origin movie, and frame N is where the resumed tail begins. Set
+    /// only on a spliced recording, which starts at power-on precisely
+    /// because the prefix is present: it needs no external savestate.
+    spliced_origin: ?[]const u8 = null,
+    /// Why this recording cannot be regenerated, when it cannot. Present
+    /// only in that case; a reader that sees it knows the artifact is a
+    /// tail whose starting state has no checkable story.
+    non_regenerable: ?[]const u8 = null,
     recorded_frames: ?u32 = null,
     name: ?[]const u8 = null,
 
@@ -159,6 +168,10 @@ pub const Movie = struct {
             self.meta.start_sha256 = value;
         } else if (std.mem.eql(u8, key, "start-origin")) {
             self.meta.start_origin = value;
+        } else if (std.mem.eql(u8, key, "spliced-origin")) {
+            self.meta.spliced_origin = value;
+        } else if (std.mem.eql(u8, key, "non-regenerable")) {
+            self.meta.non_regenerable = value;
         } else if (std.mem.eql(u8, key, "recorded-frames")) {
             self.meta.recorded_frames = std.fmt.parseInt(u32, value, 10) catch null;
         } else if (std.mem.eql(u8, key, "name")) {
@@ -224,6 +237,19 @@ pub const Movie = struct {
                 try out.appendSlice(allocator, v);
                 try out.append(allocator, '\n');
             }
+        }
+        // Both of these describe a POWER-ON movie, so they sit outside the
+        // savestate block above. A spliced recording carries its prefix in
+        // its own frame list and needs no start-file to replay.
+        if (self.meta.spliced_origin) |v| {
+            try out.appendSlice(allocator, "# spliced-origin: ");
+            try out.appendSlice(allocator, v);
+            try out.append(allocator, '\n');
+        }
+        if (self.meta.non_regenerable) |v| {
+            try out.appendSlice(allocator, "# non-regenerable: ");
+            try out.appendSlice(allocator, v);
+            try out.append(allocator, '\n');
         }
         if (self.meta.recorded_frames) |n| {
             try out.print(allocator, "# recorded-frames: {d}\n", .{n});

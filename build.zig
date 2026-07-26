@@ -155,6 +155,26 @@ pub fn build(b: *std.Build) void {
         run_record_verify.addArgs(args);
     }
 
+    // Splice verifier: proves a recording made from a resume is SELF-CONTAINED
+    // - that the origin prefix it splices in front of the tail reproduces the
+    // resumed run exactly when replayed from power-on.
+    //   zig build splice-verify -- <rom.sfc>
+    //
+    // A shell script rather than a Zig binary because what it exercises is the
+    // FRONTEND's file plumbing: the .origin sidecar, its hash check, and the
+    // three fallbacks. Driving the real `screenshot` executable is the point;
+    // an in-process test would prove the splice arithmetic while skipping
+    // everything that reads and writes the files.
+    //
+    // Build ReleaseFast first - it runs ~1300 emulated frames several times.
+    const splice_verify_step = b.step("splice-verify", "Prove a resumed recording is self-contained");
+    const run_splice_verify = b.addSystemCommand(&.{"test/splice-verify.sh"});
+    run_splice_verify.step.dependOn(b.getInstallStep());
+    splice_verify_step.dependOn(&run_splice_verify.step);
+    if (b.args) |args| {
+        run_splice_verify.addArgs(args);
+    }
+
     // CPU test-vector harness (SingleStepTests 65816 JSON vectors)
     //   zig build cpu-vectors -- <dir-with-json> [filter]
     const cpu_vectors = b.addExecutable(.{

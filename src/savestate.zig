@@ -62,6 +62,109 @@ const fb_bytes = ppu_mod.SCREEN_WIDTH * ppu_mod.SCREEN_HEIGHT * 2;
 
 pub const Error = error{ BadMagic, BadLayout, ShortBuffer };
 
+// =============================================================================
+// THE `.origin` SIDECAR
+// =============================================================================
+// A savestate is 412 KB with no story. The sidecar written beside it carries
+// the provenance triple - the state's own hash, the frame it was taken at, and
+// the movie that reached it - which is what turns "trust this blob" into a
+// checkable assertion: replay that movie to that frame and the bytes must
+// equal `start_sha256`.
+//
+// The WRITER has existed since the savestate path landed. This is the READER,
+// and its absence was the gap: `--record-movie` after `--load-state` emitted
+// two thirds of the triple because nothing read back what the writer had
+// already put on disk. A recording missing `start-origin` is unregenerable by
+// the format's own definition, so the fix belongs here rather than in either
+// frontend.
+//
+// `origin_file` is new. The hash alone identifies the origin movie but cannot
+// LOCATE it, and locating it is what lets a recorder splice the origin's
+// inputs in front of a resumed tail to produce a self-contained movie. It is
+// stored relative to the sidecar, so moving a state and its sidecar together
+// keeps the link intact; the hash remains authoritative, and a path that
+// resolves to different bytes is treated as unreachable rather than trusted.
+pub const Sidecar = struct {
+    /// Hash of the savestate this sidecar describes. A sidecar whose hash
+    /// does not match the state actually loaded describes a DIFFERENT file
+    /// and must be discarded whole, never partially believed.
+    start_sha256: ?[]const u8 = null,
+    frame: ?u32 = null,
+    /// `<movie-sha256>:<frame>`, or null when the snapshot was taken without
+    /// a movie and no regenerable claim exists. The writer emits an explicit
+    /// `none (...)` in that case, which parses to null here: an unverifiable
+    /// provenance is worse than an absent one.
+    start_origin: ?[]const u8 = null,
+    /// Path to the origin movie, relative to the sidecar. Absent in sidecars
+    /// written before this key existed - which is exactly the "not reachable"
+    /// case, and degrades to a marked tail rather than an error.
+    origin_file: ?[]const u8 = null,
+
+    /// Parse sidecar text. The result borrows `text`.
+    pub fn parse(text: []const u8) Sidecar {
+        var out: Sidecar = .{};
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const key = std.mem.trim(u8, line[0..colon], " \t");
+            const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+            if (value.len == 0) continue;
+            if (std.mem.eql(u8, key, "start-sha256")) {
+                out.start_sha256 = value;
+            } else if (std.mem.eql(u8, key, "frame")) {
+                out.frame = std.fmt.parseInt(u32, value, 10) catch null;
+            } else if (std.mem.eql(u8, key, "origin-file")) {
+                out.origin_file = value;
+            } else if (std.mem.eql(u8, key, "start-origin")) {
+                // The writer's "none (no --movie; ...)" form is a statement
+                // that there is nothing to claim. Parsing it as a claim would
+                // manufacture the provenance the writer refused to fake.
+                if (!std.mem.startsWith(u8, value, "none")) out.start_origin = value;
+            }
+        }
+        return out;
+    }
+
+    /// Split `start_origin` into its hash and frame. Null when absent or
+    /// malformed - a half-parsed origin is not a claim.
+    pub fn originParts(self: Sidecar) ?struct { sha: []const u8, frame: u32 } {
+        const v = self.start_origin orelse return null;
+        const colon = std.mem.lastIndexOfScalar(u8, v, ':') orelse return null;
+        const frame = std.fmt.parseInt(u32, v[colon + 1 ..], 10) catch return null;
+        return .{ .sha = v[0..colon], .frame = frame };
+    }
+};
+
+test "sidecar parses the writer's own output" {
+    const s = Sidecar.parse(
+        "start-sha256: aabb\nframe: 1014\norigin-file: prefix.zmov\nstart-origin: ccdd:1014\n",
+    );
+    try std.testing.expectEqualStrings("aabb", s.start_sha256.?);
+    try std.testing.expectEqual(@as(u32, 1014), s.frame.?);
+    try std.testing.expectEqualStrings("prefix.zmov", s.origin_file.?);
+    const parts = s.originParts().?;
+    try std.testing.expectEqualStrings("ccdd", parts.sha);
+    try std.testing.expectEqual(@as(u32, 1014), parts.frame);
+}
+
+test "sidecar treats the no-movie form as no claim, not as a claim named none" {
+    const s = Sidecar.parse(
+        "start-sha256: aabb\nframe: 5\nstart-origin: none (no --movie; this snapshot is not regenerable)\n",
+    );
+    try std.testing.expect(s.start_origin == null);
+    try std.testing.expect(s.originParts() == null);
+    // The rest of the sidecar still parses: one absent claim does not
+    // invalidate the hash that IS present.
+    try std.testing.expectEqualStrings("aabb", s.start_sha256.?);
+}
+
+test "sidecar without origin-file parses - that is the unreachable case" {
+    const s = Sidecar.parse("start-sha256: aa\nframe: 2\nstart-origin: bb:2\n");
+    try std.testing.expect(s.origin_file == null);
+    try std.testing.expectEqualStrings("bb", s.originParts().?.sha);
+}
+
 // ---- little-endian scalar helpers -------------------------------------------
 
 fn putU8(dst: []u8, at: *usize, value: u8) void {
