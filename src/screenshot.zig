@@ -138,6 +138,9 @@ pub fn main() !void {
     var record_path: ?[]const u8 = null;
     const SaveStateSpec = struct { frame: u32, path: []const u8 };
     var save_state: ?SaveStateSpec = null;
+    var load_state_path: ?[]const u8 = null;
+    var start_state_sha: [64]u8 = undefined;
+    var start_state_valid = false;
     var tm_force: ?u8 = null;
     var wram_path: ?[]const u8 = null;
 
@@ -171,6 +174,9 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, args[i], "--record-movie")) {
             i += 1;
             record_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--load-state")) {
+            i += 1;
+            load_state_path = args[i];
         } else if (std.mem.eql(u8, args[i], "--save-state-at")) {
             // FRAME:FILE, matching the oracle recorder's --save-state. The
             // snapshot is taken at the START of FRAME, so resuming from it
@@ -212,6 +218,20 @@ pub fn main() !void {
         playback = try zupernes.movie.Movie.parse(allocator, text);
         std.debug.print("Playing movie: {s} ({d} frames)\n", .{ path, playback.?.len() });
     }
+    // A savestate start REPLACES power-on, so it must happen before any frame
+    // runs, before recording is armed, and before a snapshot could be taken.
+    // Through Emulator.readStateFile - the same call the interactive frontend
+    // makes - so a headless resume and an interactive one cannot drift.
+    if (load_state_path) |path| {
+        const snapshot = emulator.readStateFile(allocator, path, &start_state_sha) catch |err| {
+            std.debug.print("Savestate {s} rejected: {}\n", .{ path, err });
+            return err;
+        };
+        allocator.free(snapshot);
+        start_state_valid = true;
+        std.debug.print("Resumed from savestate: {s}\n", .{path});
+    }
+
     // Recording uses the EMULATOR's capture API, not a parallel accumulation
     // of the pad we are about to set. Those are not the same thing: setJoypad
     // masks the low nibble (the $4218 layout has no bits there), so appending
@@ -335,6 +355,24 @@ pub fn main() !void {
         _ = try std.fmt.bufPrint(&rom_hex, "{x}", .{&digest});
         m.meta.rom_sha256 = &rom_hex;
         m.meta.recorded_frames = @intCast(frames.len);
+        if (load_state_path) |sp| {
+            // A recording that resumed from a snapshot says so, and names the
+            // snapshot by hash. start-origin is NOT invented here: this run
+            // was handed a state and does not know how it was reached - the
+            // .origin sidecar written by --save-state-at carries that claim,
+            // and an unverifiable one is worse than an absent one.
+            m.meta.start = .savestate;
+            // The format says start-file is RELATIVE TO THE .ZMOV. Writing the
+            // absolute path we happened to be invoked with would bake this
+            // machine's layout into a shareable artifact - the same leak as
+            // passing the output path as the movie's name. When the snapshot
+            // sits beside the recording, the basename is the whole answer.
+            m.meta.start_file = if (std.mem.eql(u8, std.fs.path.dirname(sp) orelse ".", std.fs.path.dirname(path) orelse "."))
+                std.fs.path.basename(sp)
+            else
+                sp;
+            if (start_state_valid) m.meta.start_sha256 = &start_state_sha;
+        }
         // No name: the old call passed the OUTPUT PATH as the movie's name,
         // baking an absolute local path into an artifact meant to be shared.
         // The metadata above says what the file is; the path says only where

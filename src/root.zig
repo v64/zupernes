@@ -430,6 +430,36 @@ pub const Emulator = struct {
         return savestate.read(&self.cpu, &self.ppu, &self.bus, &self.last_scanline, src);
     }
 
+    /// Restore from a snapshot FILE, reporting the snapshot's own sha256 so a
+    /// caller can record the provenance it was resumed from.
+    ///
+    /// One code path for every frontend deliberately. The interactive and
+    /// headless loaders differ only in how they report failure, and two
+    /// copies of "read, size-check, restore, hash" is how a headless resume
+    /// would eventually drift from an interactive one - the same class as the
+    /// recorder that accumulated its own pads beside the emulator's.
+    ///
+    /// Reading `state_len + 1` is the size check: a snapshot from a build
+    /// that captured MORE state must fail rather than being truncated into a
+    /// plausible-looking restore. `readState` then rejects a short or
+    /// relaid-out one via the header's layout length.
+    pub fn readStateFile(
+        self: *Emulator,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        sha256_hex_out: ?*[64]u8,
+    ) ![]u8 {
+        const snapshot = try std.fs.cwd().readFileAlloc(allocator, path, state_len + 1);
+        errdefer allocator.free(snapshot);
+        _ = try self.readState(snapshot);
+        if (sha256_hex_out) |out| {
+            var digest: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(snapshot, &digest, .{});
+            _ = std.fmt.bufPrint(out, "{x}", .{&digest}) catch unreachable;
+        }
+        return snapshot;
+    }
+
     /// Set the live button state for a controller (0 = pad 1, 1 = pad 2).
     /// Button layout matches the $4219:$4218 auto-read register pair:
     ///   bit 15: B      bit 11: Up      bit 7: A

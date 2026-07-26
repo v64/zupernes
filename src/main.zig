@@ -118,19 +118,17 @@ export fn init() void {
         // A savestate start replaces power-on entirely, so it must happen
         // before the first frame is recorded or run.
         if (load_state_path) |path| {
-            const snapshot = std.fs.cwd().readFileAlloc(
+            // The SHARED loader (Emulator.readStateFile), not a second copy:
+            // the headless recorder resumes through this exact code.
+            const snapshot = state.emulator.readStateFile(
                 std.heap.page_allocator,
                 path,
-                Emulator.state_len,
+                &start_state_sha_hex,
             ) catch |err| {
-                std.debug.print("Failed to read savestate {s}: {}\n", .{ path, err });
-                return;
-            };
-            _ = state.emulator.readState(snapshot) catch |err| {
                 std.debug.print("Savestate {s} rejected: {}\n", .{ path, err });
                 return;
             };
-            hexDigest(snapshot, &start_state_sha_hex);
+            std.heap.page_allocator.free(snapshot);
             start_state_valid = true;
             std.debug.print("Resumed from savestate: {s}\n", .{path});
         }
