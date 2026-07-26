@@ -24,6 +24,11 @@ pub const Emulator = struct {
     // Track last scanline for HDMA timing
     last_scanline: u16,
 
+    /// Capture-only input recorder; see `recordInputs`. Deliberately NOT
+    /// part of the savestate: a snapshot captures the machine, not the
+    /// instrument watching it.
+    input_record: InputRecord = .{},
+
     pub fn init() Emulator {
         return Emulator{
             .cpu = undefined,
@@ -246,10 +251,70 @@ pub const Emulator = struct {
 
     /// Run until the end of a frame
     pub fn runFrame(self: *Emulator) void {
+        self.input_record.sample(self.bus.joypad1);
         const frame_start = self.ppu.frame_count;
         while (self.ppu.frame_count == frame_start) {
             self.step();
         }
+    }
+
+    // ---- Input recording (capture-only debug/capture API) ----
+    // A general "what did the machine actually play?" recorder, on the same
+    // terms as the VRAM and WRAM traces: it observes and cannot perturb, and
+    // it is not tied to any game.
+    //
+    // Sampled at the FRAME BOUNDARY in runFrame, which is the same point
+    // replay writes with setJoypad - so record and replay are symmetric by
+    // construction rather than by agreement. Two consequences worth stating:
+    //
+    //  - Lag frames are captured definitionally, because the sample is per
+    //    EMULATED frame, which is exactly the .zmov contract.
+    //  - It is deliberately NOT hooked at bus.autoJoypadRead, the true
+    //    hardware consumption point: that only runs when NMITIMEN bit 0 is
+    //    set, so a frame with auto-read disabled would record NOTHING and
+    //    silently shorten the movie. The frame boundary is defined on every
+    //    frame, which is the property that matters.
+    //
+    // The buffer is caller-owned so Emulator stays small and the recorder
+    // never allocates; recording state is not part of a savestate.
+    pub const InputRecord = struct {
+        dst: []u16 = &.{},
+        count: usize = 0,
+        dropped: usize = 0,
+        enabled: bool = false,
+
+        fn sample(self: *InputRecord, pad: u16) void {
+            if (!self.enabled) return;
+            if (self.count == self.dst.len) {
+                self.dropped += 1;
+                return;
+            }
+            self.dst[self.count] = pad;
+            self.count += 1;
+        }
+    };
+
+    /// Begin recording controller 1 into `dst`, one entry per emulated frame.
+    /// Clears any previous capture.
+    pub fn recordInputs(self: *Emulator, dst: []u16) void {
+        self.input_record = .{ .dst = dst, .enabled = true };
+    }
+
+    /// Stop recording (leaves the captured frames intact for reading).
+    pub fn stopRecording(self: *Emulator) void {
+        self.input_record.enabled = false;
+    }
+
+    /// The frames captured so far, in order.
+    pub fn recordedInputs(self: *const Emulator) []const u16 {
+        return self.input_record.dst[0..self.input_record.count];
+    }
+
+    /// Frames dropped past the buffer's capacity (0 = the capture is
+    /// complete). A nonzero value means the recording is TRUNCATED and must
+    /// not be presented as a full run.
+    pub fn recordedInputsDropped(self: *const Emulator) usize {
+        return self.input_record.dropped;
     }
 
     /// Get the current framebuffer for rendering
@@ -390,4 +455,73 @@ test {
     _ = @import("coproc/upd7725.zig");
     _ = @import("movie.zig");
     _ = @import("savestate.zig");
+}
+
+test "recording is symmetric with replay through the .zmov text" {
+    // The acceptance test for the recording path: whatever the machine was
+    // driven with must come back out of the file byte-for-byte, at the same
+    // frame indices, WITHOUT the test agreeing with the recorder about where
+    // the sample point is. Both sides go through the public API only.
+    const allocator = std.testing.allocator;
+    const schedule = [_]u16{ 0x0000, 0x4100, 0x4100, 0x0080, 0x0000, 0x1000 };
+
+    var buf: [schedule.len]u16 = undefined;
+    var emu = Emulator.init();
+    emu.setup();
+    emu.recordInputs(&buf);
+    for (schedule) |pad| {
+        emu.setJoypad(0, pad);
+        emu.runFrame();
+    }
+    emu.stopRecording();
+    try std.testing.expectEqual(@as(usize, 0), emu.recordedInputsDropped());
+    try std.testing.expectEqual(schedule.len, emu.recordedInputs().len);
+
+    // setJoypad masks the low nibble (the $4218 layout has no bits there),
+    // so compare against what the machine actually holds, not the raw ask.
+    for (emu.recordedInputs(), schedule) |got, asked| {
+        try std.testing.expectEqual(asked & 0xFFF0, got);
+    }
+
+    var recorded = movie.Movie{ .frames = .empty };
+    defer recorded.deinit(allocator);
+    try recorded.frames.appendSlice(allocator, emu.recordedInputs());
+    recorded.meta.rom_sha256 = "abc123";
+    recorded.meta.recorded_frames = @intCast(emu.recordedInputs().len);
+
+    const text = try recorded.serialize(allocator, "round trip");
+    defer allocator.free(text);
+    var replayed = try movie.Movie.parse(allocator, text);
+    defer replayed.deinit(allocator);
+
+    try std.testing.expectEqual(recorded.len(), replayed.len());
+    try std.testing.expectEqual(recorded.len(), replayed.meta.recorded_frames.?);
+    try std.testing.expectEqualStrings("abc123", replayed.meta.rom_sha256.?);
+    for (0..replayed.len()) |i| {
+        try std.testing.expectEqual(schedule[i] & 0xFFF0, replayed.buttons(@intCast(i)));
+    }
+}
+
+test "a truncated recording is reported, not silently short" {
+    var small: [2]u16 = undefined;
+    var emu = Emulator.init();
+    emu.setup();
+    emu.recordInputs(&small);
+    for (0..5) |_| emu.runFrame();
+    try std.testing.expectEqual(@as(usize, 2), emu.recordedInputs().len);
+    try std.testing.expectEqual(@as(usize, 3), emu.recordedInputsDropped());
+}
+
+test "recording is off by default and does not survive into a savestate" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.runFrame();
+    try std.testing.expectEqual(@as(usize, 0), emu.recordedInputs().len);
+    try std.testing.expectEqual(@as(usize, 0), emu.recordedInputsDropped());
+    // The recorder is an instrument, not machine state: state_len is the
+    // captured machine only, so arming it cannot change a snapshot's size.
+    const before = Emulator.state_len;
+    var buf: [4]u16 = undefined;
+    emu.recordInputs(&buf);
+    try std.testing.expectEqual(before, Emulator.state_len);
 }

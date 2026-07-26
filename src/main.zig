@@ -36,6 +36,64 @@ var state: State = undefined;
 // ROM data loaded before sokol init - will be loaded into emulator in init()
 var pending_rom_data: ?[]const u8 = null;
 
+// ---- recording (round 82 item 1) --------------------------------------------
+// `--record OUT.zmov` arms the Emulator's capture-only input recorder from
+// power-on; F2 toggles it; the file is written on stop and on quit so a
+// session that ends normally never loses its take. Capacity is fixed and
+// generous (an hour at 60fps) because the recorder REPORTS truncation rather
+// than silently shortening a movie - see Emulator.recordedInputsDropped.
+const RECORD_CAPACITY = 60 * 60 * 60;
+var record_path: ?[]const u8 = null;
+var record_buffer: []u16 = &.{};
+var record_armed = false;
+var rom_sha256_hex: [64]u8 = undefined;
+var rom_sha256_valid = false;
+// `--load-state FILE` starts the session from a snapshot instead of power-on.
+var load_state_path: ?[]const u8 = null;
+var start_state_sha_hex: [64]u8 = undefined;
+var start_state_valid = false;
+
+fn hexDigest(bytes: []const u8, out: *[64]u8) void {
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
+    _ = std.fmt.bufPrint(out, "{x}", .{digest}) catch unreachable;
+}
+
+/// Write whatever has been captured so far to `--record`'s path. Safe to call
+/// repeatedly; a truncated capture is reported and still written, because a
+/// short movie you know about beats a short movie you do not.
+fn writeRecording() void {
+    const path = record_path orelse return;
+    const frames = state.emulator.recordedInputs();
+    if (frames.len == 0) return;
+    const allocator = std.heap.page_allocator;
+    var m = zupernes.movie.Movie{ .frames = .empty };
+    defer m.deinit(allocator);
+    m.frames.appendSlice(allocator, frames) catch return;
+    if (rom_sha256_valid) m.meta.rom_sha256 = &rom_sha256_hex;
+    m.meta.recorded_frames = @intCast(frames.len);
+    if (load_state_path) |p| {
+        m.meta.start = .savestate;
+        m.meta.start_file = p;
+        if (start_state_valid) m.meta.start_sha256 = &start_state_sha_hex;
+        // start-origin is deliberately NOT invented here: this session was
+        // handed a snapshot and does not know how it was reached. Whoever
+        // produced it owns that claim, and an unverifiable one is worse than
+        // an absent one.
+    }
+    const text = m.serialize(allocator, null) catch return;
+    defer allocator.free(text);
+    std.fs.cwd().writeFile(.{ .sub_path = path, .data = text }) catch |err| {
+        std.debug.print("record: could not write {s}: {}\n", .{ path, err });
+        return;
+    };
+    const dropped = state.emulator.recordedInputsDropped();
+    if (dropped != 0) {
+        std.debug.print("record: TRUNCATED - {d} frames past capacity were dropped\n", .{dropped});
+    }
+    std.debug.print("record: wrote {s} ({d} frames)\n", .{ path, frames.len });
+}
+
 export fn init() void {
     sgfx.setup(.{
         .environment = sokol.glue.environment(),
@@ -54,6 +112,39 @@ export fn init() void {
             return;
         };
         state.rom_loaded = true;
+        hexDigest(rom_data, &rom_sha256_hex);
+        rom_sha256_valid = true;
+
+        // A savestate start replaces power-on entirely, so it must happen
+        // before the first frame is recorded or run.
+        if (load_state_path) |path| {
+            const snapshot = std.fs.cwd().readFileAlloc(
+                std.heap.page_allocator,
+                path,
+                Emulator.state_len,
+            ) catch |err| {
+                std.debug.print("Failed to read savestate {s}: {}\n", .{ path, err });
+                return;
+            };
+            _ = state.emulator.readState(snapshot) catch |err| {
+                std.debug.print("Savestate {s} rejected: {}\n", .{ path, err });
+                return;
+            };
+            hexDigest(snapshot, &start_state_sha_hex);
+            start_state_valid = true;
+            std.debug.print("Resumed from savestate: {s}\n", .{path});
+        }
+
+        if (record_path) |path| {
+            record_buffer = std.heap.page_allocator.alloc(u16, RECORD_CAPACITY) catch &.{};
+            if (record_buffer.len == 0) {
+                std.debug.print("record: could not allocate the capture buffer\n", .{});
+            } else {
+                state.emulator.recordInputs(record_buffer);
+                record_armed = true;
+                std.debug.print("record: capturing to {s} (F2 stops and writes)\n", .{path});
+            }
+        }
     }
 
     // Create texture for framebuffer
@@ -185,6 +276,12 @@ export fn frame() void {
 }
 
 export fn cleanup() void {
+    // A session that ends normally never loses its take.
+    if (record_armed) {
+        state.emulator.stopRecording();
+        record_armed = false;
+        writeRecording();
+    }
     saudio.shutdown();
     sgfx.shutdown();
 }
@@ -224,6 +321,22 @@ export fn event(ev: [*c]const sapp.Event) void {
         .KEY_DOWN => {
             if (e.key_code == .ESCAPE) {
                 sapp.requestQuit();
+                return;
+            }
+            // F2 toggles the capture. Stopping writes immediately so a take
+            // survives even if the session later crashes; restarting clears
+            // the previous capture, which is why the write happens on stop
+            // rather than only at quit.
+            if (e.key_code == .F2 and record_path != null and record_buffer.len != 0) {
+                if (record_armed) {
+                    state.emulator.stopRecording();
+                    record_armed = false;
+                    writeRecording();
+                } else {
+                    state.emulator.recordInputs(record_buffer);
+                    record_armed = true;
+                    std.debug.print("record: capturing (previous take discarded)\n", .{});
+                }
                 return;
             }
             joypad_state |= keyToButton(e.key_code);
@@ -299,11 +412,44 @@ fn shaderDesc() sgfx.ShaderDesc {
 }
 
 pub fn main() !void {
-    // Check for ROM argument
     var args = std.process.args();
     _ = args.skip(); // Skip program name
 
-    if (args.next()) |rom_path| {
+    // First positional argument is the ROM; the rest are flags. Kept this
+    // simple deliberately - the headless tools own the elaborate CLIs.
+    var rom_arg: ?[]const u8 = null;
+    var pending: enum { none, record, load_state } = .none;
+    while (args.next()) |arg| {
+        switch (pending) {
+            .record => {
+                record_path = arg;
+                pending = .none;
+                continue;
+            },
+            .load_state => {
+                load_state_path = arg;
+                pending = .none;
+                continue;
+            },
+            .none => {},
+        }
+        if (std.mem.eql(u8, arg, "--record")) {
+            pending = .record;
+        } else if (std.mem.eql(u8, arg, "--load-state")) {
+            pending = .load_state;
+        } else if (rom_arg == null) {
+            rom_arg = arg;
+        } else {
+            std.debug.print("Unexpected argument: {s}\n", .{arg});
+            return;
+        }
+    }
+    if (pending != .none) {
+        std.debug.print("Usage: zupernes <rom.sfc> [--record OUT.zmov] [--load-state FILE]\n", .{});
+        return;
+    }
+
+    if (rom_arg) |rom_path| {
         // Load ROM file
         const file = std.fs.cwd().openFile(rom_path, .{}) catch |err| {
             std.debug.print("Failed to open ROM: {s}: {}\n", .{ rom_path, err });
@@ -321,7 +467,7 @@ pub fn main() !void {
         std.debug.print("Loaded ROM: {s} ({d} bytes)\n", .{ rom_path, rom_data.len });
     } else {
         std.debug.print("ZuperNES\n", .{});
-        std.debug.print("Usage: zupernes <rom.sfc>\n", .{});
+        std.debug.print("Usage: zupernes <rom.sfc> [--record OUT.zmov] [--load-state FILE]\n", .{});
         std.debug.print("Starting without ROM...\n", .{});
     }
 

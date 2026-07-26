@@ -45,14 +45,22 @@ const Ppu = ppu_mod.Ppu;
 const Dma = @import("dma.zig").Dma;
 const Apu = @import("apu/apu.zig").Apu;
 
-/// Bumped whenever the byte layout changes, so a stale snapshot is REJECTED
-/// rather than silently misread - a savestate that quietly disagrees with the
-/// machine would poison every recording built on it.
-pub const magic = "ZNSAVE\x00\x01";
+/// Bumped whenever the byte layout changes DELIBERATELY, so a stale snapshot
+/// is REJECTED rather than silently misread - a savestate that quietly
+/// disagrees with the machine would poison every recording built on it.
+///
+/// A hand-bumped version alone could not deliver that promise: nothing forced
+/// the bump, so adding one captured field would relayout the file while the
+/// magic stayed identical and an old snapshot would restore as garbage. The
+/// header therefore also carries `state_len`, which is a comptime sum over
+/// everything captured, and `read` refuses a mismatch. The version covers a
+/// deliberate REORDER at equal size; the length covers every accidental
+/// change, which is the one that actually happens.
+pub const magic = "ZNSAVE\x00\x02";
 
 const fb_bytes = ppu_mod.SCREEN_WIDTH * ppu_mod.SCREEN_HEIGHT * 2;
 
-pub const Error = error{ BadMagic, ShortBuffer };
+pub const Error = error{ BadMagic, BadLayout, ShortBuffer };
 
 // ---- little-endian scalar helpers -------------------------------------------
 
@@ -113,7 +121,7 @@ fn getI16(src: []const u8, at: *usize) i16 {
 /// Exact snapshot size. Asserted against the cursor at the end of both
 /// `write` and `read`, so a layout edit that forgets one side fails loudly.
 pub const state_len: usize = blk: {
-    var n: usize = magic.len;
+    var n: usize = magic.len + 4; // magic + the u32 layout length below
     // CPU
     n += 2 * 5 + 3 + 2 + 1 + 1 + 1 + 4 + 1 + 4 + 8 + 8 + 3;
     // PPU arrays
@@ -151,6 +159,7 @@ pub fn write(
     var at: usize = 0;
     @memcpy(dst[at..][0..magic.len], magic);
     at += magic.len;
+    putU32(dst, &at, @intCast(state_len));
 
     // ---- CPU ----
     putU16(dst, &at, cpu.a);
@@ -321,6 +330,10 @@ pub fn read(
     if (src.len < state_len) return Error.ShortBuffer;
     if (!std.mem.eql(u8, src[0..magic.len], magic)) return Error.BadMagic;
     var at: usize = magic.len;
+    // The layout guard: any change to WHAT is captured moves this sum, so a
+    // snapshot from a different build is refused instead of being read as
+    // whatever the new field order happens to make of its bytes.
+    if (getU32(src, &at) != @as(u32, @intCast(state_len))) return Error.BadLayout;
 
     // ---- CPU ----
     cpu.a = getU16(src, &at);
@@ -517,6 +530,24 @@ test "read rejects a foreign buffer instead of misreading it" {
     var cpu = Cpu.init(&bus);
     var last: u16 = 0;
     try std.testing.expectError(Error.BadMagic, read(&cpu, &ppu, &bus, &last, buf));
+}
+
+test "read rejects a snapshot whose layout length disagrees" {
+    // The failure this guards is not a corrupt file - it is a snapshot taken
+    // by a build that captured a different set of fields. Simulated by
+    // rewriting the length the writer stamped: the magic still matches, so
+    // without the guard `read` would happily decode the body against the new
+    // field order. Proves the guard has teeth, rather than asserting it does.
+    const buf = try std.testing.allocator.alloc(u8, state_len);
+    defer std.testing.allocator.free(buf);
+    var ppu = Ppu.init();
+    var bus = Bus.init(&ppu);
+    var cpu = Cpu.init(&bus);
+    _ = try write(&cpu, &ppu, &bus, 0, buf);
+    var at: usize = magic.len;
+    putU32(buf, &at, @as(u32, @intCast(state_len)) + 1);
+    var last: u16 = 0;
+    try std.testing.expectError(Error.BadLayout, read(&cpu, &ppu, &bus, &last, buf));
 }
 
 test "read preserves interior pointers and round-trips scalars" {

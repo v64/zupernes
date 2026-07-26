@@ -133,6 +133,28 @@ pub fn build(b: *std.Build) void {
         run_savestate_verify.addArgs(args);
     }
 
+    // Recording verifier: proves a recorded run replays to the same machine.
+    //   zig build record-verify -- <rom.sfc> <frames> [--inject-divergence F]
+    const record_verify = b.addExecutable(.{
+        .name = "record-verify",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/record_verify.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zupernes", .module = emu_mod },
+            },
+        }),
+    });
+    b.installArtifact(record_verify);
+    const record_verify_step = b.step("record-verify", "Prove a recording replays bit-identical");
+    const run_record_verify = b.addRunArtifact(record_verify);
+    record_verify_step.dependOn(&run_record_verify.step);
+    run_record_verify.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_record_verify.addArgs(args);
+    }
+
     // CPU test-vector harness (SingleStepTests 65816 JSON vectors)
     //   zig build cpu-vectors -- <dir-with-json> [filter]
     const cpu_vectors = b.addExecutable(.{
