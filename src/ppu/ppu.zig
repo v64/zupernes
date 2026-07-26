@@ -1942,13 +1942,31 @@ pub const Ppu = struct {
         // Gap between first and second character tables: (NN + 1) * 4K words = (NN + 1) * 8KB
         const obj_name_gap: u32 = (@as(u32, ((self.obsel >> 3) & 0x03)) + 1) << 13;
 
-        // With OAM priority rotation disabled, lower OBJ indexes have higher
-        // priority (fullsnes "OBJ Priority Rotation"; independently matched
-        // by Mesen2). Keep the first opaque pixel, so visit slot 0 first.
+        // OBJ Priority Rotation (fullsnes "OBJ Priority Rotation").
+        //
+        // With rotation DISABLED, lower OBJ indexes have higher priority and
+        // evaluation begins at slot 0. With it ENABLED - OAMADDH ($2103) bit 7
+        // - evaluation instead begins at (OAMADDR >> 1) & 127 and wraps, so
+        // that slot is the highest-priority one and slot 0 is not special.
+        // The index comes from the address RELOADED from $2102/$2103, not the
+        // running address that OAM writes and DMA advance: games set the pair
+        // after their OAM upload precisely to choose the next frame's base.
+        //
+        // Assuming rotation off is not a safe default. Super Mario World turns
+        // it on in the NMI OAM DMA tail (CODE_00846A: LDA #$80 / STA $2103)
+        // on every frame, and picks the base per mode - CODE_00A169 stores
+        // #$F0 for the overworld, giving first-sprite 120, which is why its
+        // border player sits at slots 122/123 and draws IN FRONT of the
+        // low-index tile-$7E box behind it. Evaluating from slot 0 inverts
+        // that, and inverts every equal-priority overlap between a high-index
+        // and a low-index OBJ.
+        const rotation_enabled = (self.oamaddh & 0x80) != 0;
+        const reload_addr: u10 = (@as(u10, self.oamaddh & 1) << 8) | self.oamaddl;
+        const first_sprite: u8 = if (rotation_enabled) @intCast((reload_addr >> 1) & 0x7F) else 0;
         var sprites_on_line: u8 = 0;
         var tiles_on_line: u8 = 0;
         for (0..128) |i| {
-            const sprite_idx: u8 = @intCast(i);
+            const sprite_idx: u8 = @intCast((@as(usize, first_sprite) + i) & 0x7F);
 
             // Read OAM entry (4 bytes per sprite in low table)
             const oam_offset = @as(usize, sprite_idx) * 4;
