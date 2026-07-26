@@ -136,6 +136,8 @@ pub fn main() !void {
     var wav_path: ?[]const u8 = null;
     var movie_path: ?[]const u8 = null;
     var record_path: ?[]const u8 = null;
+    const SaveStateSpec = struct { frame: u32, path: []const u8 };
+    var save_state: ?SaveStateSpec = null;
     var tm_force: ?u8 = null;
     var wram_path: ?[]const u8 = null;
 
@@ -169,6 +171,17 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, args[i], "--record-movie")) {
             i += 1;
             record_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--save-state-at")) {
+            // FRAME:FILE, matching the oracle recorder's --save-state. The
+            // snapshot is taken at the START of FRAME, so resuming from it
+            // and running FRAME onward reproduces the original run.
+            i += 1;
+            const spec = args[i];
+            const colon = std.mem.indexOfScalar(u8, spec, ':') orelse return error.BadArgs;
+            save_state = .{
+                .frame = try std.fmt.parseInt(u32, spec[0..colon], 10),
+                .path = spec[colon + 1 ..],
+            };
         } else if (std.mem.eql(u8, args[i], "--dump-wram")) {
             // Write all 128KB of WRAM after the final frame - the
             // cross-emulator debugging workhorse: diff against a Mesen2
@@ -199,11 +212,19 @@ pub fn main() !void {
         playback = try zupernes.movie.Movie.parse(allocator, text);
         std.debug.print("Playing movie: {s} ({d} frames)\n", .{ path, playback.?.len() });
     }
-    var recording: ?zupernes.movie.Movie = if (record_path != null)
-        zupernes.movie.Movie{ .frames = .empty }
-    else
-        null;
-    defer if (recording) |*m| m.deinit(allocator);
+    // Recording uses the EMULATOR's capture API, not a parallel accumulation
+    // of the pad we are about to set. Those are not the same thing: setJoypad
+    // masks the low nibble (the $4218 layout has no bits there), so appending
+    // `pad` records a value the machine may never have held. Sampling where
+    // Emulator.recordInputs samples - the frame boundary, the same point
+    // replay's setJoypad writes - is what makes a headless recording and an
+    // interactive one the same artifact rather than two lookalikes.
+    var record_buffer: []u16 = &.{};
+    defer if (record_buffer.len != 0) allocator.free(record_buffer);
+    if (record_path != null) {
+        record_buffer = try allocator.alloc(u16, total_frames);
+        emulator.recordInputs(record_buffer);
+    }
 
     // Audio capture: at 32kHz a frame is ~533 samples; collect them all
     var audio: std.ArrayListUnmanaged([2]i16) = .empty;
@@ -223,9 +244,43 @@ pub fn main() !void {
                 }
             }
         }
-        if (recording) |*m| {
-            try m.frames.append(allocator, pad);
-        }
+        if (save_state) |spec| if (frame == spec.frame) {
+            // At the START of the frame, before it runs: resuming here and
+            // running FRAME onward reproduces the original run exactly.
+            const bytes = try allocator.alloc(u8, zupernes.Emulator.state_len);
+            defer allocator.free(bytes);
+            _ = try emulator.writeState(bytes);
+            try std.fs.cwd().writeFile(.{ .sub_path = spec.path, .data = bytes });
+
+            // THE PROVENANCE TRIPLE, BY CONSTRUCTION. A savestate on its own
+            // is 412 KB with no story; these three facts make it
+            // REGENERABLE - replay that movie to that frame and the bytes
+            // must equal this hash. Written as a sidecar beside the state so
+            // it cannot drift from the file it describes, and emitted here
+            // rather than by the caller because only this code knows all
+            // three at once.
+            //
+            // origin is the movie ACTUALLY PLAYED. Without one there is no
+            // regenerable claim to make, and an unverifiable provenance is
+            // worse than an absent one - so the field is omitted, not faked.
+            var state_digest: [32]u8 = undefined;
+            std.crypto.hash.sha2.Sha256.hash(bytes, &state_digest, .{});
+            var origin_buf: [512]u8 = undefined;
+            const origin_text = if (movie_path) |mp| blk: {
+                const movie_text = try std.fs.cwd().readFileAlloc(allocator, mp, 16 * 1024 * 1024);
+                defer allocator.free(movie_text);
+                var movie_digest: [32]u8 = undefined;
+                std.crypto.hash.sha2.Sha256.hash(movie_text, &movie_digest, .{});
+                break :blk try std.fmt.bufPrint(&origin_buf, "start-origin: {x}:{d}\n", .{ &movie_digest, spec.frame });
+            } else try std.fmt.bufPrint(&origin_buf, "start-origin: none (no --movie; this snapshot is not regenerable)\n", .{});
+
+            var side_buf: [1024]u8 = undefined;
+            const sidecar = try std.fmt.bufPrint(&side_buf, "start-sha256: {x}\nframe: {d}\n{s}", .{ &state_digest, spec.frame, origin_text });
+            var side_name_buf: [512]u8 = undefined;
+            const side_name = try std.fmt.bufPrint(&side_name_buf, "{s}.origin", .{spec.path});
+            try std.fs.cwd().writeFile(.{ .sub_path = side_name, .data = sidecar });
+            std.debug.print("Saved state at frame {d} to {s} (+ {s})\n", .{ spec.frame, spec.path, side_name });
+        };
         emulator.setJoypad(0, pad);
 
         emulator.runFrame();
@@ -255,10 +310,39 @@ pub fn main() !void {
     }
 
     if (record_path) |path| {
-        const text = try recording.?.serialize(allocator, path);
+        emulator.stopRecording();
+        const frames = emulator.recordedInputs();
+        if (emulator.recordedInputsDropped() != 0) {
+            // Cannot happen with a buffer sized to total_frames, but a
+            // truncated recording presented as whole is the failure this
+            // counter exists to make impossible.
+            std.debug.print(
+                "record: TRUNCATED - {d} frames dropped; refusing to write {s}\n",
+                .{ emulator.recordedInputsDropped(), path },
+            );
+            return error.RecordingTruncated;
+        }
+        var m = zupernes.movie.Movie{ .frames = .empty };
+        defer m.deinit(allocator);
+        try m.frames.appendSlice(allocator, frames);
+        // A recording declares the ROM it was made against and its own frame
+        // count, exactly like the interactive path - a headless recording
+        // that omitted them would be the legal-but-unpinned artifact that
+        // reopens the wrong-ROM class through the back door.
+        var digest: [32]u8 = undefined;
+        std.crypto.hash.sha2.Sha256.hash(rom_data, &digest, .{});
+        var rom_hex: [64]u8 = undefined;
+        _ = try std.fmt.bufPrint(&rom_hex, "{x}", .{&digest});
+        m.meta.rom_sha256 = &rom_hex;
+        m.meta.recorded_frames = @intCast(frames.len);
+        // No name: the old call passed the OUTPUT PATH as the movie's name,
+        // baking an absolute local path into an artifact meant to be shared.
+        // The metadata above says what the file is; the path says only where
+        // this machine happened to put it.
+        const text = try m.serialize(allocator, null);
         defer allocator.free(text);
         try std.fs.cwd().writeFile(.{ .sub_path = path, .data = text });
-        std.debug.print("Recorded movie ({d} frames) to {s}\n", .{ recording.?.len(), path });
+        std.debug.print("Recorded movie ({d} frames) to {s}\n", .{ m.len(), path });
     }
 
     if (wram_path) |path| {
