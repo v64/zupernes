@@ -53,6 +53,21 @@ var load_state_path: ?[]const u8 = null;
 var start_state_sha_hex: [64]u8 = undefined;
 var start_state_valid = false;
 
+// ---- battery save -----------------------------------------------------------
+// Cartridges whose header declares battery-backed SRAM persist it the way a
+// real cartridge does: the .srm file (raw SRAM bytes, named after the ROM,
+// sitting beside it - the convention every mainstream emulator shares) is
+// loaded into SRAM at power-on and written back whenever the game changes
+// SRAM. The flush runs on a once-per-second dirty check rather than only at
+// exit so a crash costs at most a second of progress, and `cleanup` flushes
+// one final time on a clean quit. Only the interactive frontend does this;
+// the headless tools (screenshot, record-verify, the oracle harness) always
+// power on with fresh $FF-filled SRAM so their runs stay reproducible.
+var srm_path: ?[]const u8 = null;
+var battery_size: usize = 0; // 0 = no battery-backed SRAM on this cartridge
+var sram_shadow: [32 * 1024]u8 = undefined; // SRAM content as last flushed to disk
+var battery_tick: u32 = 0; // frames since the last dirty check
+
 fn hexDigest(bytes: []const u8, out: *[64]u8) void {
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(bytes, &digest, .{});
@@ -94,6 +109,71 @@ fn writeRecording() void {
     std.debug.print("record: wrote {s} ({d} frames)\n", .{ path, frames.len });
 }
 
+/// Decide whether this cartridge persists SRAM, and if so load the .srm file.
+/// Called once, right after the ROM is loaded and BEFORE any `--load-state`
+/// snapshot is applied - real cartridge SRAM exists before the machine's
+/// state is restored on top of it, and a savestate carries its own SRAM
+/// image that must win over the file.
+///
+/// Battery detection reads the internal header the cartridge mapper already
+/// located (Cartridge.detectCartridgeType picked LoROM/HiROM; `cart.rom` has
+/// the 512-byte copier header stripped):
+///   - chip-type byte at header+$16 ($xFD6): low nibble $2/$5/$6/$9/$A means
+///     a battery is on the board ($02 = ROM+RAM+battery is the common case;
+///     SMW is exactly that).
+///   - SRAM-size byte at header+$18 ($xFD8): size = 1KB << value. This is
+///     the size we persist - the emulator core rounds a zero declaration up
+///     to 8KB for mapping convenience, but the FILE respects the header, so
+///     SMW's declared 2KB writes a 2048-byte .srm like every other emulator.
+fn setupBatterySave() void {
+    const cart = if (state.emulator.bus.cartridge) |*c| c else return;
+    const header_base: usize = if (cart.cart_type == .LoROM) 0x7FC0 else 0xFFC0;
+    if (cart.rom.len <= header_base + 0x18) return;
+    const chip_type = cart.rom[header_base + 0x16];
+    const sram_shift = cart.rom[header_base + 0x18];
+    const has_battery = switch (chip_type & 0x0F) {
+        0x02, 0x05, 0x06, 0x09, 0x0A => true,
+        else => false,
+    };
+    if (!has_battery or sram_shift == 0 or sram_shift > 5) return;
+    const path = srm_path orelse return;
+    battery_size = @as(usize, 0x400) << @intCast(sram_shift);
+
+    const loaded = std.fs.cwd().readFile(path, cart.sram[0..battery_size]) catch |err| {
+        if (err == error.FileNotFound) {
+            // Fresh cartridge: SRAM keeps its $FF fill (see Cartridge.init -
+            // games' save validation depends on a fresh cart failing it).
+            std.debug.print("battery: no {s} yet - starting with fresh SRAM\n", .{path});
+        } else {
+            std.debug.print("battery: could not read {s}: {} - starting fresh\n", .{ path, err });
+        }
+        return;
+    };
+    if (loaded.len != battery_size) {
+        std.debug.print(
+            "battery: {s} is {d} bytes but the header declares {d} - loading what fits\n",
+            .{ path, loaded.len, battery_size },
+        );
+    }
+    std.debug.print("battery: loaded {d} bytes from {s}\n", .{ loaded.len, path });
+}
+
+/// Write SRAM back to the .srm file if it changed since the last flush.
+/// Cheap enough to call once a second: the dirty check is a memcmp of at
+/// most 32KB against the shadow copy, and the write only happens when the
+/// game actually stored something.
+fn flushBatterySave() void {
+    if (battery_size == 0) return;
+    const path = srm_path orelse return;
+    const cart = if (state.emulator.bus.cartridge) |*c| c else return;
+    if (std.mem.eql(u8, cart.sram[0..battery_size], sram_shadow[0..battery_size])) return;
+    std.fs.cwd().writeFile(.{ .sub_path = path, .data = cart.sram[0..battery_size] }) catch |err| {
+        std.debug.print("battery: could not write {s}: {}\n", .{ path, err });
+        return;
+    };
+    @memcpy(sram_shadow[0..battery_size], cart.sram[0..battery_size]);
+}
+
 export fn init() void {
     sgfx.setup(.{
         .environment = sokol.glue.environment(),
@@ -115,6 +195,11 @@ export fn init() void {
         hexDigest(rom_data, &rom_sha256_hex);
         rom_sha256_valid = true;
 
+        // Battery SRAM loads first: it is part of the powered-on cartridge,
+        // so a `--load-state` snapshot below restores ON TOP of it, exactly
+        // as it would on the machine the snapshot was taken from.
+        setupBatterySave();
+
         // A savestate start replaces power-on entirely, so it must happen
         // before the first frame is recorded or run.
         if (load_state_path) |path| {
@@ -131,6 +216,15 @@ export fn init() void {
             std.heap.page_allocator.free(snapshot);
             start_state_valid = true;
             std.debug.print("Resumed from savestate: {s}\n", .{path});
+        }
+
+        // The shadow is taken AFTER any savestate restore so the first
+        // dirty-check compares against what the machine actually holds now;
+        // the .srm is only rewritten once the game itself touches SRAM.
+        if (battery_size != 0) {
+            if (state.emulator.bus.cartridge) |*cart| {
+                @memcpy(sram_shadow[0..battery_size], cart.sram[0..battery_size]);
+            }
         }
 
         if (record_path) |path| {
@@ -234,6 +328,16 @@ export fn frame() void {
             }
         }
 
+        // Battery save: once a second, flush SRAM to the .srm if the game
+        // changed it. A crash therefore costs at most a second of progress.
+        if (battery_size != 0) {
+            battery_tick += 1;
+            if (battery_tick >= 60) {
+                battery_tick = 0;
+                flushBatterySave();
+            }
+        }
+
         // Convert framebuffer from 15-bit BGR to RGBA8
         const fb = state.emulator.getFramebuffer();
         for (0..fb.len) |i| {
@@ -280,6 +384,9 @@ export fn cleanup() void {
         record_armed = false;
         writeRecording();
     }
+    // ...nor its save file. (The periodic flush already caught everything
+    // older than a second; this picks up the tail.)
+    flushBatterySave();
     saudio.shutdown();
     sgfx.shutdown();
 }
@@ -287,28 +394,34 @@ export fn cleanup() void {
 // =============================================================================
 // KEYBOARD -> SNES CONTROLLER MAPPING
 // =============================================================================
-// Layout (roughly matching a real pad held in two hands):
-//   Arrow keys = D-pad          Enter = Start    Right Shift = Select
-//   Z = B (jump)   A = Y (run/carry)   X = A (spin)   S = X
-//   Q = L shoulder   W = R shoulder
-// Button bit layout matches Emulator.setJoypad ($4219:$4218 order).
+// ZuperWorld's layout: left hand on WASD, right hand on the JKL home row -
+// the two clusters mirror a pad's d-pad and face buttons.
+//   W/A/S/D = Up/Left/Down/Right
+//   K = B (jump)    J = Y (run/carry)    L = A (spin)    H = X
+//   O = Start       U = Select
+//   Q = L shoulder  E = R shoulder
+// Arrow keys, Enter (Start), and Right Shift (Select) remain as aliases from
+// the previous default layout; they don't collide with the letter clusters.
+// Button bit layout matches Emulator.setJoypad ($4219:$4218 order):
+//   B=$8000 Y=$4000 Select=$2000 Start=$1000 Up=$0800 Down=$0400 Left=$0200
+//   Right=$0100 A=$0080 X=$0040 L=$0020 R=$0010
 // =============================================================================
 var joypad_state: u16 = 0;
 
 fn keyToButton(key: sapp.Keycode) u16 {
     return switch (key) {
-        .Z => 0x8000, // B
-        .A => 0x4000, // Y
-        .RIGHT_SHIFT => 0x2000, // Select
-        .ENTER => 0x1000, // Start
-        .UP => 0x0800,
-        .DOWN => 0x0400,
-        .LEFT => 0x0200,
-        .RIGHT => 0x0100,
-        .X => 0x0080, // A
-        .S => 0x0040, // X
-        .Q => 0x0020, // L
-        .W => 0x0010, // R
+        .K => 0x8000, // B (jump)
+        .J => 0x4000, // Y (run/carry)
+        .U, .RIGHT_SHIFT => 0x2000, // Select
+        .O, .ENTER => 0x1000, // Start
+        .W, .UP => 0x0800,
+        .S, .DOWN => 0x0400,
+        .A, .LEFT => 0x0200,
+        .D, .RIGHT => 0x0100,
+        .L => 0x0080, // A (spin)
+        .H => 0x0040, // X
+        .Q => 0x0020, // L shoulder
+        .E => 0x0010, // R shoulder
         else => 0,
     };
 }
@@ -463,6 +576,18 @@ pub fn main() !void {
         // Store ROM data - will be loaded into emulator in init() callback
         pending_rom_data = rom_data;
         std.debug.print("Loaded ROM: {s} ({d} bytes)\n", .{ rom_path, rom_data.len });
+
+        // Battery saves live beside the ROM with the extension swapped to
+        // .srm ("Super Mario World (USA).sfc" -> "Super Mario World
+        // (USA).srm") - the convention shared by Mesen2/bsnes/Snes9x, so
+        // saves travel between emulators. Whether the file is actually used
+        // is decided in setupBatterySave once the cartridge header is known.
+        const ext = std.fs.path.extension(rom_path);
+        srm_path = std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "{s}.srm",
+            .{rom_path[0 .. rom_path.len - ext.len]},
+        ) catch null;
     } else {
         std.debug.print("ZuperNES\n", .{});
         std.debug.print("Usage: zupernes <rom.sfc> [--record OUT.zmov] [--load-state FILE]\n", .{});
