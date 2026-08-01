@@ -37,6 +37,8 @@ pub const WramWrite = struct {
     value: u8, // the byte written
     pc: u24, // PBR:PC of the instruction performing the write
     via: Via, // which of the three paths reached WRAM
+    scanline: u16,
+    dot: u16,
 
     pub const Via = enum(u8) {
         /// Banks $00-$3F / $80-$BF, $0000-$1FFF - the low-8KB mirror.
@@ -536,8 +538,10 @@ pub const Bus = struct {
         if (effective_bank <= 0x3F) {
             if (addr < 0x2000) {
                 self.wram[addr] = value;
-                if (self.wram_trace.enabled)
-                    self.wram_trace.record(.{ .addr = addr, .value = value, .pc = self.writer_pc, .via = .mirror });
+                if (self.wram_trace.enabled) {
+                    const beam = self.ppu.beamPosition();
+                    self.wram_trace.record(.{ .addr = addr, .value = value, .pc = self.writer_pc, .via = .mirror, .scanline = beam.scanline, .dot = beam.dot });
+                }
             } else if (addr >= 0x2140 and addr <= 0x2143) {
                 self.writeApuPort(addr, value);
             } else if (addr >= 0x2180 and addr <= 0x2183) {
@@ -579,8 +583,10 @@ pub const Bus = struct {
             const wram_addr = (@as(u24, effective_bank - 0x7E) << 16) | addr;
             if (wram_addr < self.wram.len) {
                 self.wram[wram_addr] = value;
-                if (self.wram_trace.enabled)
-                    self.wram_trace.record(.{ .addr = wram_addr, .value = value, .pc = self.writer_pc, .via = .direct });
+                if (self.wram_trace.enabled) {
+                    const beam = self.ppu.beamPosition();
+                    self.wram_trace.record(.{ .addr = wram_addr, .value = value, .pc = self.writer_pc, .via = .direct, .scanline = beam.scanline, .dot = beam.dot });
+                }
             }
         }
     }
@@ -897,8 +903,10 @@ pub const Bus = struct {
                 // WMDATA - Write to WRAM at current address
                 if (self.wram_addr < self.wram.len) {
                     self.wram[self.wram_addr] = value;
-                    if (self.wram_trace.enabled)
-                        self.wram_trace.record(.{ .addr = self.wram_addr, .value = value, .pc = self.writer_pc, .via = .port });
+                    if (self.wram_trace.enabled) {
+                        const beam = self.ppu.beamPosition();
+                        self.wram_trace.record(.{ .addr = self.wram_addr, .value = value, .pc = self.writer_pc, .via = .port, .scanline = beam.scanline, .dot = beam.dot });
+                    }
                 }
                 self.wram_addr = (self.wram_addr + 1) & 0x1FFFF;
             },

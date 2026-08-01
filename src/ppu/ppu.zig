@@ -346,6 +346,12 @@ pub const Ppu = struct {
         self.scroll_latch_set = false;
     }
 
+    /// Capture-only beam position for timestamping external debug events.
+    /// This observes the PPU scheduler; it does not alter emulation timing.
+    pub fn beamPosition(self: *const Ppu) struct { scanline: u16, dot: u16 } {
+        return .{ .scanline = self.scanline, .dot = self.dot };
+    }
+
     /// Advance PPU by given number of master clock cycles
     /// Advance the PPU by the given number of MASTER clock cycles.
     /// Internally the PPU state machine moves one dot (4 master cycles) at
