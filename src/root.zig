@@ -396,6 +396,17 @@ pub const Emulator = struct {
         return self.bus.apu.readSamples(dst);
     }
 
+    /// Capture-only field timing for a consumer which must replay this
+    /// emulator's CPU-driven APU clock in another host.  It observes neither
+    /// sound state nor ports, and ordinary emulation never enables it.
+    pub fn beginAudioFrameClockCapture(self: *Emulator) void {
+        self.bus.apu.beginFrameClockCapture();
+    }
+
+    pub fn endAudioFrameClockCapture(self: *Emulator) ?@import("apu/apu.zig").Apu.FrameClock {
+        return self.bus.apu.endFrameClockCapture();
+    }
+
     /// Canonical APU capture-state byte count. The state is pointer-free and
     /// excludes already-produced PCM; drain audio before taking an anchor.
     pub const audio_state_len = @import("apu/apu.zig").Apu.state_len;

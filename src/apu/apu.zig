@@ -47,6 +47,26 @@ const Spc700 = @import("spc700.zig").Spc700;
 const dbg = @import("../debug.zig");
 
 pub const Apu = struct {
+    pub const FrameClock = struct {
+        /// Actual master clocks billed to the APU during one presented field.
+        master_cycles: u32,
+        /// Offset of the first CPU->APU port write in that field, if NMI/CPU
+        /// service ran.  A null phase means the APU free-ran unserviced.
+        command_phase_cycles: ?u32,
+    };
+
+    const FrameClockCapture = struct {
+        start_master_cycles: u64,
+        first_port_write_cycles: ?u64 = null,
+    };
+
+    /// Capture-only master-clock cursor.  This is deliberately outside the
+    /// portable APU state: a restored anchor owns the hardware's *future*
+    /// state, while a capture client uses the cursor only to measure the
+    /// elapsed CPU/PPU clock between two frame boundaries.
+    master_cycles: u64 = 0,
+    frame_clock_capture: ?FrameClockCapture = null,
+
     /// The SPC700 CPU core
     spc: Spc700,
 
@@ -94,6 +114,10 @@ pub const Apu = struct {
     /// Write to APU port (called by main CPU writing $2140-$2143)
     /// Stores value in the SPC700's input port buffer
     pub fn writePort(self: *Apu, port: u2, value: u8) void {
+        if (self.frame_clock_capture) |*capture| {
+            if (capture.first_port_write_cycles == null)
+                capture.first_port_write_cycles = self.master_cycles;
+        }
         self.spc.port_in[port] = value;
         if (comptime dbg.trace_apu) {
             std.debug.print("[APU] CPU write port {d} = ${x:0>2}\n", .{ port, value });
@@ -110,6 +134,7 @@ pub const Apu = struct {
     /// Run the APU for the specified number of master cycles
     /// This should be called after each main CPU instruction
     pub fn runCycles(self: *Apu, master_cycles: u32) void {
+        self.master_cycles += master_cycles;
         // Add master cycles to counter (in 16.16 fixed point)
         self.cycle_counter += @as(i64, master_cycles) << 16;
 
@@ -132,6 +157,28 @@ pub const Apu = struct {
     /// Returns the number of frames written into dst.
     pub fn readSamples(self: *Apu, dst: [][2]i16) usize {
         return self.spc.dsp.readSamples(dst);
+    }
+
+    /// Begin a non-invasive timing sample around an emulator frame.  The
+    /// ordinary APU state and port semantics are untouched; only a diagnostic
+    /// cursor observes when the CPU first serviced an APU port.
+    pub fn beginFrameClockCapture(self: *Apu) void {
+        std.debug.assert(self.frame_clock_capture == null);
+        self.frame_clock_capture = .{ .start_master_cycles = self.master_cycles };
+    }
+
+    /// Finish the matching timing sample.  Callers that did not begin one get
+    /// null rather than a fabricated fixed-field budget.
+    pub fn endFrameClockCapture(self: *Apu) ?FrameClock {
+        const capture = self.frame_clock_capture orelse return null;
+        self.frame_clock_capture = null;
+        return .{
+            .master_cycles = @intCast(self.master_cycles - capture.start_master_cycles),
+            .command_phase_cycles = if (capture.first_port_write_cycles) |at|
+                @intCast(at - capture.start_master_cycles)
+            else
+                null,
+        };
     }
 
     /// Canonical, pointer-free APU state for deterministic capture anchors.
@@ -267,6 +314,8 @@ pub const Apu = struct {
     pub fn reset(self: *Apu) void {
         self.spc = Spc700.init();
         self.cycle_counter = 0;
+        self.master_cycles = 0;
+        self.frame_clock_capture = null;
     }
 };
 
@@ -305,6 +354,23 @@ test "audio capture state round-trips continuous PCM" {
     const actual_n = restored.readSamples(&actual);
     try std.testing.expectEqual(expected_n, actual_n);
     try std.testing.expectEqualSlices([2]i16, expected[0..expected_n], actual[0..actual_n]);
+}
+
+test "capture-only frame clock measures elapsed master clocks and first port service" {
+    var apu = Apu.init();
+    apu.beginFrameClockCapture();
+    apu.runCycles(17);
+    apu.writePort(2, 0x06);
+    apu.runCycles(31);
+    const clock = apu.endFrameClockCapture().?;
+    try std.testing.expectEqual(@as(u32, 48), clock.master_cycles);
+    try std.testing.expectEqual(@as(?u32, 17), clock.command_phase_cycles);
+
+    apu.beginFrameClockCapture();
+    apu.runCycles(9);
+    const unserviced = apu.endFrameClockCapture().?;
+    try std.testing.expectEqual(@as(u32, 9), unserviced.master_cycles);
+    try std.testing.expectEqual(@as(?u32, null), unserviced.command_phase_cycles);
 }
 
 test "apu port communication" {
