@@ -50,14 +50,19 @@ pub const Apu = struct {
     pub const FrameClock = struct {
         /// Actual master clocks billed to the APU during one presented field.
         master_cycles: u32,
-        /// Offset of the first CPU->APU port write in that field, if NMI/CPU
-        /// service ran.  A null phase means the APU free-ran unserviced.
-        command_phase_cycles: ?u32,
+        /// Every CPU->APU write offset in chronological order.  A normal SMW
+        /// NMI block has at most four writes, while eight keeps this general
+        /// capture API useful to other software without allocating per field.
+        port_write_cycles: [8]u32,
+        port_write_count: u8,
+        port_write_overflow: bool,
     };
 
     const FrameClockCapture = struct {
         start_master_cycles: u64,
-        first_port_write_cycles: ?u64 = null,
+        port_write_cycles: [8]u64 = undefined,
+        port_write_count: u8 = 0,
+        port_write_overflow: bool = false,
     };
 
     /// Capture-only master-clock cursor.  This is deliberately outside the
@@ -115,8 +120,10 @@ pub const Apu = struct {
     /// Stores value in the SPC700's input port buffer
     pub fn writePort(self: *Apu, port: u2, value: u8) void {
         if (self.frame_clock_capture) |*capture| {
-            if (capture.first_port_write_cycles == null)
-                capture.first_port_write_cycles = self.master_cycles;
+            if (capture.port_write_count < capture.port_write_cycles.len) {
+                capture.port_write_cycles[capture.port_write_count] = self.master_cycles;
+                capture.port_write_count += 1;
+            } else capture.port_write_overflow = true;
         }
         self.spc.port_in[port] = value;
         if (comptime dbg.trace_apu) {
@@ -172,12 +179,14 @@ pub const Apu = struct {
     pub fn endFrameClockCapture(self: *Apu) ?FrameClock {
         const capture = self.frame_clock_capture orelse return null;
         self.frame_clock_capture = null;
+        var port_write_cycles: [8]u32 = @splat(0);
+        for (port_write_cycles[0..capture.port_write_count], 0..) |*out, index|
+            out.* = @intCast(capture.port_write_cycles[index] - capture.start_master_cycles);
         return .{
             .master_cycles = @intCast(self.master_cycles - capture.start_master_cycles),
-            .command_phase_cycles = if (capture.first_port_write_cycles) |at|
-                @intCast(at - capture.start_master_cycles)
-            else
-                null,
+            .port_write_cycles = port_write_cycles,
+            .port_write_count = capture.port_write_count,
+            .port_write_overflow = capture.port_write_overflow,
         };
     }
 
@@ -364,13 +373,14 @@ test "capture-only frame clock measures elapsed master clocks and first port ser
     apu.runCycles(31);
     const clock = apu.endFrameClockCapture().?;
     try std.testing.expectEqual(@as(u32, 48), clock.master_cycles);
-    try std.testing.expectEqual(@as(?u32, 17), clock.command_phase_cycles);
+    try std.testing.expectEqual(@as(u8, 1), clock.port_write_count);
+    try std.testing.expectEqual(@as(u32, 17), clock.port_write_cycles[0]);
 
     apu.beginFrameClockCapture();
     apu.runCycles(9);
     const unserviced = apu.endFrameClockCapture().?;
     try std.testing.expectEqual(@as(u32, 9), unserviced.master_cycles);
-    try std.testing.expectEqual(@as(?u32, null), unserviced.command_phase_cycles);
+    try std.testing.expectEqual(@as(u8, 0), unserviced.port_write_count);
 }
 
 test "apu port communication" {
