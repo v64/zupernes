@@ -13432,7 +13432,7 @@ SpriteInitPtr:         75 85      .dw InitStandardSprite    ; 00 - Green Koopa, 
                        7D 83      .dw InitSlidingKoopa      ; BD - Sliding Koopa without a shell 
                        C2 85      .dw Return0185C2          ; BE - Swooper bat 
                        7C 85      .dw FaceMario             ; BF - Mega Mole 
-                       0F 83      .dw InitGreyLavaPlat      ; C0 - Grey platform on lava 
+                       0F 83      .dw InitGreyLavaPlat01830F      ; C0 - Grey platform on lava 
                        CE 84      .dw InitMontyMole         ; C1 - Flying grey turnblocks 
                        7C 85      .dw FaceMario             ; C2 - Blurp fish 
                        7C 85      .dw FaceMario             ; C3 - Porcu-Puffer fish 
@@ -13442,7 +13442,7 @@ SpriteInitPtr:         75 85      .dw InitStandardSprite    ; 00 - Green Koopa, 
                        C2 85      .dw Return0185C2          ; C7 - Invisible mushroom 
                        C2 85      .dw Return0185C2          ; C8 - Light switch block for dark room 
 
-InitGreyLavaPlat:   F6 D8         INC RAM_SpriteYLo,X     ;\  Now all the INIT routines! Great...?
+InitGreyLavaPlat01830F:   F6 D8         INC RAM_SpriteYLo,X     ;\  Now all the INIT routines! Great...?
 CODE_018311:        F6 D8         INC RAM_SpriteYLo,X     ;/   < This will make the sprite float down
 Return018313:       60            RTS                       
 
@@ -14037,7 +14037,7 @@ SpriteMainPtr:         04 89      .dw ShellessKoopas        ; 00 - Green Koopa, 
                        8E 87      .dw Bank3SprHandler       ; C6 - Dark room with spot light 
                        8E 87      .dw Bank3SprHandler       ; C7 - Invisible mushroom 
                        8E 87      .dw Bank3SprHandler       ; C8 - Light switch block for dark room
-InitGreyLavaPlat:   F6 D8         INC RAM_SpriteYLo,X       
+InitGreyLavaPlat01830F:   F6 D8         INC RAM_SpriteYLo,X       
 CODE_018311:        F6 D8         INC RAM_SpriteYLo,X       
 Return018313:       60            RTS                       
 
@@ -22490,7 +22490,7 @@ CODE_01C54A:        8D FC 1D      STA.W $1DFC               ; / Play sound effec
 NoItem:             B9 24 C5      LDA.W GivePowerPtrIndex,Y ; \ Call routine to change Mario's status 
 CODE_01C550:        22 DF 86 00   JSL.L ExecutePtr          ; / 
 
-HandlePowerUpPtrs:     61 C5      .dw GiveMarioMushroom     ; 0 - Big 
+HandlePowerUpPtrs:     61 C5      .dw GiveMarioMushroom01C561     ; 0 - Big 
                        6F C5      .dw CODE_01C56F           ; 1 - No change 
                        92 C5      .dw GiveMarioStar         ; 2 - Star 
                        98 C5      .dw GiveMarioCape         ; 3 - Cape 
@@ -22499,7 +22499,7 @@ HandlePowerUpPtrs:     61 C5      .dw GiveMarioMushroom     ; 0 - Big
 
 Return01C560:       60            RTS                       
 
-GiveMarioMushroom:  A9 02         LDA.B #$02                ; \ Set growing action 
+GiveMarioMushroom01C561:  A9 02         LDA.B #$02                ; \ Set growing action 
 CODE_01C563:        85 71         STA RAM_MarioAnimation    ; / 
 CODE_01C565:        A9 2F         LDA.B #$2F                ; \  
 CODE_01C567:        99 96 14      STA.W $1496,Y             ;  | Set animation timer 
@@ -22523,7 +22523,7 @@ CODE_01C58D:        38            SEC
 CODE_01C58E:        6E DA 0D      ROR.W $0DDA               
 Return01C591:       6B            RTL                       ; Return 
 
-GiveMarioMushroom:  A9 02         LDA.B #$02                ; \ Set growing action 
+GiveMarioMushroom01C561:  A9 02         LDA.B #$02                ; \ Set growing action 
 CODE_01C563:        85 71         STA RAM_MarioAnimation    ; / 
 CODE_01C565:        A9 2F         LDA.B #$2F                ; \  Set animation timer:
 CODE_01C567:        99 96 14      STA.W $1496,Y             ;  | 48 frames
@@ -107019,7 +107019,7 @@ CODE_0DA5AE:        F0 01         BEQ CODE_0DA5B1           ;/
 Return0DA5B0:       60            RTS                       ; Return 
 
 CODE_0DA5B1:        A4 57         LDY $57                   ; Position of the block
-CODE_0DA5B3:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DA5B3:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DA5B6:        A6 00         LDX $00                   ; |
 CODE_0DA5B8:        E0 13         CPX.B #$13                ; | Check and set which map16 page it uses
 CODE_0DA5BA:        30 03         BMI CODE_0DA5BF           ; |
@@ -107150,10 +107150,10 @@ CODE_0DA699:        AD CE 13      LDA.W $13CE               ;\
 CODE_0DA69C:        D0 12         BNE Return0DA6B0          ;/ Check another midway flag
 CODE_0DA69E:        A4 57         LDY $57                   ; Position again
 CODE_0DA6A0:        88            DEY                       ; Odd... why is the left tile to the left of the actual object?
-CODE_0DA6A1:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\ (Offtopic: Not ANOTHER four byte routine...)
+CODE_0DA6A1:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\ (Offtopic: Not ANOTHER four byte routine...)
 CODE_0DA6A4:        A9 35         LDA.B #$35                ; | Set the left tile
 CODE_0DA6A6:        20 5B A9      JSR.W CODE_0DA95B         ;/ (Offtopic: There's no way that this code will work around screen boundaries.)
-CODE_0DA6A9:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DA6A9:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DA6AC:        A9 38         LDA.B #$38                ; | Set right tile
 CODE_0DA6AE:        97 6B         STA [$6B],Y               ;/
 Return0DA6B0:       60            RTS                       ; Return 
@@ -107187,11 +107187,11 @@ CODE_0DA6D3:        8A            TXA                       ;\
 CODE_0DA6D4:        38            SEC                       ; |
 CODE_0DA6D5:        E9 47         SBC.B #$47                ; | Load object type
 CODE_0DA6D7:        AA            TAX                       ;/
-CODE_0DA6D8:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DA6D8:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DA6DB:        BF CD A6 0D   LDA.L DATA_0DA6CD,X       ; | Set top tile
 CODE_0DA6DF:        97 6B         STA [$6B],Y               ;/
 CODE_0DA6E1:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
-CODE_0DA6E4:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DA6E4:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DA6E7:        BF CF A6 0D   LDA.L DATA_0DA6CF,X       ; | Set bottom tile
 CODE_0DA6EB:        97 6B         STA [$6B],Y               ;/
 Return0DA6ED:       60            RTS                       ; Return 
@@ -107214,7 +107214,7 @@ CODE_0DA725:        A2 00         LDX.B #$00                ; Block we're at
 CODE_0DA727:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve the pointer
 CODE_0DA72A:        A5 00         LDA $00                   ;\
 CODE_0DA72C:        85 02         STA $02                   ;/ Reload number of blocks in a row
-CODE_0DA72E:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DA72E:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DA731:        BF EE A6 0D   LDA.L DATA_0DA6EE,X       ; |
 CODE_0DA735:        20 8D A7      JSR.W CODE_0DA78D         ; | Add block and go to the next one
 CODE_0DA738:        E8            INX                       ;/
@@ -107243,7 +107243,7 @@ CODE_0DA76A:        A2 00         LDX.B #$00                ; Block we're at
 CODE_0DA76C:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve the pointer
 CODE_0DA76F:        A5 00         LDA $00                   ;\
 CODE_0DA771:        85 02         STA $02                   ;/ Reload number of blocks in a row
-CODE_0DA773:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DA773:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DA776:        BF 48 A7 0D   LDA.L DATA_0DA748,X       ; |
 CODE_0DA77A:        20 8D A7      JSR.W CODE_0DA78D         ; | Add block and go to the next one
 CODE_0DA77D:        E8            INX                       ;/
@@ -107308,7 +107308,7 @@ DATA_0DA7E5:                      .db $68,$69
 CODE_0DA7E7:        A4 57         LDY $57                   ; Position again... Nintendo should've added this in ExecutePtrLong instead
 CODE_0DA7E9:        A2 00         LDX.B #$00                
 CODE_0DA7EB:        20 B1 A6      JSR.W CODE_0DA6B1         ; Save pointer
-CODE_0DA7EE:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DA7EE:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DA7F1:        BF E3 A7 0D   LDA.L DATA_0DA7E3,X       ; | Add block
 CODE_0DA7F5:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DA7F8:        E8            INX                       ;\
@@ -107481,7 +107481,7 @@ CODE_0DA92B:        4C 43 A9      JMP.W CODE_0DA943         ;/ / If it has been 
 
 CODE_0DA92E:        BF B4 A8 0D   LDA.L DATA_0DA8B4,X       ;\
 CODE_0DA932:        85 0C         STA $0C                   ;/ Get object number
-CODE_0DA934:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DA934:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DA937:        E0 07         CPX.B #$07                ; |
 CODE_0DA939:        30 03         BMI CODE_0DA93E           ; | Set map16 page
 CODE_0DA93B:        20 08 AA      JSR.W Sta1To6ePointer     ;/
@@ -107615,7 +107615,7 @@ CODE_0DAA0A:        97 6E         STA [$6E],Y
 Return0DAA0C:       60            RTS                       ; Return 
 
 ;This one sets the map16 page for the current object to #00.
-StzTo6ePointer0080E7:A9 00         LDA.B #$00                ; Why make routines that are this short? (Also, where did the 0080E7 come from?)
+StzTo6ePointer0DAA0D:A9 00         LDA.B #$00                ; Why make routines that are this short? (Also, where did the 0080E7 come from?)
 CODE_0DAA0F:        97 6E         STA [$6E],Y               
 Return0DAA11:       60            RTS                       ; Return 
 
@@ -107825,7 +107825,7 @@ CODE_0DABA6:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DABA9:        CA            DEX                       ;\
 CODE_0DABAA:        4C B5 AB      JMP.W CODE_0DABB5         ;/ Go to next tiles
 
-CODE_0DABAD:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DABAD:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DABB0:        A9 3F         LDA.B #$3F                ; |
 CODE_0DABB2:        20 5B A9      JSR.W CODE_0DA95B         ; | Add 0x03F tiles
 CODE_0DABB5:        CA            DEX                       ; |
@@ -107916,7 +107916,7 @@ CODE_0DAC44:        A9 E2         LDA.B #$E2                ; | Add bottom tile
 CODE_0DAC46:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DAC49:        4C 54 AC      JMP.W CODE_0DAC54         
 
-CODE_0DAC4C:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DAC4C:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DAC4F:        A9 3F         LDA.B #$3F                ; |
 CODE_0DAC51:        20 5B A9      JSR.W CODE_0DA95B         ; | Add ground tiles
 CODE_0DAC54:        CA            DEX                       ; |
@@ -108003,7 +108003,7 @@ CODE_0DACF0:        CA            DEX                       ; |
 CODE_0DACF1:        CA            DEX                       ; | Update index
 CODE_0DACF2:        4C FD AC      JMP.W CODE_0DACFD         ;/
 
-CODE_0DACF5:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DACF5:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DACF8:        A9 3F         LDA.B #$3F                ; |
 CODE_0DACFA:        20 5B A9      JSR.W CODE_0DA95B         ; | Add bottom tiles
 CODE_0DACFD:        CA            DEX                       ; |
@@ -108064,7 +108064,7 @@ CODE_0DAD55:        85 00         STA $00                   ; |
 CODE_0DAD57:        E6 00         INC $00                   ;/
 CODE_0DAD59:        4C 7F AD      JMP.W CODE_0DAD7F         ; Go to loop
 
-CODE_0DAD5C:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DAD5C:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DAD5F:        A9 3F         LDA.B #$3F                ; |
 CODE_0DAD61:        20 5B A9      JSR.W CODE_0DA95B         ; |
 CODE_0DAD64:        CA            DEX                       ; | Add dirt tiles
@@ -108113,7 +108113,7 @@ CODE_0DADB4:        85 00         STA $00                   ; |
 CODE_0DADB6:        E6 00         INC $00                   ;/
 CODE_0DADB8:        4C D0 AD      JMP.W CODE_0DADD0         ; Go to loop
 
-CODE_0DADBB:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DADBB:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DADBE:        A9 3F         LDA.B #$3F                ; |
 CODE_0DADC0:        20 5B A9      JSR.W CODE_0DA95B         ; |
 CODE_0DADC3:        CA            DEX                       ; | Add dirt tiles
@@ -108151,7 +108151,7 @@ CODE_0DADFC:        E6 00         INC $00                   ;/
 CODE_0DADFE:        4C 36 AE      JMP.W CODE_0DAE36         ; Go to loop
 
 
-CODE_0DAE01:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DAE01:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DAE04:        A9 3F         LDA.B #$3F                ; |
 CODE_0DAE06:        20 5B A9      JSR.W CODE_0DA95B         ; | Add dirt tiles
 CODE_0DAE09:        CA            DEX                       ; | (silly all.log thought that the first four instructions here was a table...)
@@ -108475,7 +108475,7 @@ CODE_0DB07D:        85 00         STA $00                   ;/
 CODE_0DB07F:        A5 59         LDA $59                   ;\
 CODE_0DB081:        29 0F         AND.B #$0F                ; | Get type
 CODE_0DB083:        AA            TAX                       ;/
-CODE_0DB084:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB084:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB087:        E0 03         CPX.B #$03                ; |
 CODE_0DB089:        30 03         BMI CODE_0DB08E           ; | Set correct map16 page
 CODE_0DB08B:        20 08 AA      JSR.W Sta1To6ePointer     ;/
@@ -108485,7 +108485,7 @@ CODE_0DB095:        97 6B         STA [$6B],Y               ;/
 CODE_0DB097:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer down
 CODE_0DB09A:        C6 00         DEC $00                   ;\
 CODE_0DB09C:        30 44         BMI CODE_0DB0E2           ;/ Check if size=0
-CODE_0DB09E:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB09E:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB0A1:        E0 09         CPX.B #$09                ; |
 CODE_0DB0A3:        10 08         BPL CODE_0DB0AD           ; |
 CODE_0DB0A5:        E0 07         CPX.B #$07                ; |
@@ -108499,7 +108499,7 @@ CODE_0DB0B7:        97 6B         STA [$6B],Y               ;/
 CODE_0DB0B9:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
 CODE_0DB0BC:        C6 00         DEC $00                   ;\
 CODE_0DB0BE:        30 22         BMI CODE_0DB0E2           ;/ Check for end of the object (except the bottom tile)
-CODE_0DB0C0:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB0C0:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB0C3:        E0 09         CPX.B #$09                ; |
 CODE_0DB0C5:        10 08         BPL CODE_0DB0CF           ; |
 CODE_0DB0C7:        E0 07         CPX.B #$07                ; |
@@ -108633,7 +108633,7 @@ CODE_0DB1F1:        E0 FF         CPX.B #$FF                ; |
 CODE_0DB1F3:        D0 F3         BNE CODE_0DB1E8           ; | Check for end of the row
 CODE_0DB1F5:        4C 05 B2      JMP.W CODE_0DB205         ;/
 
-CODE_0DB1F8:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB1F8:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB1FB:        A9 3F         LDA.B #$3F                ; | Add bottom tile
 CODE_0DB1FD:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB200:        CA            DEX                       ;\
@@ -108675,7 +108675,7 @@ CODE_0DB241:        A5 02         LDA $02                   ; |
 CODE_0DB243:        F0 06         BEQ CODE_0DB24B           ; | Check which tile we need
 CODE_0DB245:        BF 1B B2 0D   LDA.L DATA_0DB21B,X       ; |
 CODE_0DB249:        85 03         STA $03                   ;/
-CODE_0DB24B:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB24B:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB24E:        A5 03         LDA $03                   ; | Add top tile
 CODE_0DB250:        97 6B         STA [$6B],Y               ;/
 CODE_0DB252:        98            TYA                       ;\
@@ -108695,7 +108695,7 @@ CODE_0DB26B:        A5 02         LDA $02                   ; |
 CODE_0DB26D:        F0 06         BEQ CODE_0DB275           ; | Check which tile we need
 CODE_0DB26F:        BF 1E B2 0D   LDA.L DATA_0DB21E,X       ; |
 CODE_0DB273:        85 03         STA $03                   ;/
-CODE_0DB275:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB275:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB278:        A5 03         LDA $03                   ; | Add middle tile
 CODE_0DB27A:        97 6B         STA [$6B],Y               ;/
 CODE_0DB27C:        98            TYA                       ;\
@@ -108715,7 +108715,7 @@ CODE_0DB295:        A5 02         LDA $02                   ; |
 CODE_0DB297:        F0 06         BEQ CODE_0DB29F           ; | Check which tile we need
 CODE_0DB299:        BF 21 B2 0D   LDA.L DATA_0DB221,X       ; |
 CODE_0DB29D:        85 03         STA $03                   ;/
-CODE_0DB29F:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB29F:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB2A2:        A5 03         LDA $03                   ; | Add bottom tile
 CODE_0DB2A4:        97 6B         STA [$6B],Y               ;/
 CODE_0DB2A6:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
@@ -108785,11 +108785,11 @@ CODE_0DB31A:        B1 08         LDA ($08),Y               ; |
 CODE_0DB31C:        3F A6 A8 0D   AND.L DATA_0DA8A6,X       ; |
 CODE_0DB320:        D0 13         BNE Return0DB335          ;/
 CODE_0DB322:        A4 57         LDY $57                   ; Position
-CODE_0DB324:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB324:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB327:        A9 2D         LDA.B #$2D                ; | Add top tile
 CODE_0DB329:        97 6B         STA [$6B],Y               ;/
 CODE_0DB32B:        20 7D A9      JSR.W CODE_0DA97D         ; Go to next tile
-CODE_0DB32E:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB32E:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB331:        A9 2E         LDA.B #$2E                ; | Add bottom tile
 CODE_0DB333:        97 6B         STA [$6B],Y               ;/
 Return0DB335:       60            RTS                       ; Return 
@@ -108847,7 +108847,7 @@ ADDR_0DB38E:        68            PLA                       ; |\
 ADDR_0DB38F:        AA            TAX                       ; | |
 ADDR_0DB390:        68            PLA                       ; | | Reload indexes
 ADDR_0DB391:        A8            TAY                       ;/ /
-ADDR_0DB392:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; Set map16 page (even if the coin has been taken)
+ADDR_0DB392:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; Set map16 page (even if the coin has been taken)
 ADDR_0DB395:        A9 2C         LDA.B #$2C                ;\
 ADDR_0DB397:        85 0C         STA $0C                   ;/ Object to generate
 ADDR_0DB399:        A5 0F         LDA $0F                   ;\
@@ -108910,14 +108910,14 @@ CODE_0DB3F6:        38            SEC                       ; |
 CODE_0DB3F7:        E9 17         SBC.B #$17                ; | Type
 CODE_0DB3F9:        AA            TAX                       ;/
 CODE_0DB3FA:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-CODE_0DB3FD:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB3FD:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB400:        BF DB B3 0D   LDA.L DATA_0DB3DB,X       ; | Add top tile
 CODE_0DB404:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB407:        C6 02         DEC $02                   ;\
 CODE_0DB409:        10 F2         BPL CODE_0DB3FD           ; | Check for end of the row
 CODE_0DB40B:        4C 1C B4      JMP.W CODE_0DB41C         ;/
 
-CODE_0DB40E:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB40E:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB411:        BF DF B3 0D   LDA.L DATA_0DB3DF,X       ; | Add middle tiles
 CODE_0DB415:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB418:        C6 02         DEC $02                   ;\
@@ -108942,7 +108942,7 @@ CODE_0DB433:        85 00         STA $00                   ; | Width (the heigh
 CODE_0DB435:        85 01         STA $01                   ;/
 CODE_0DB437:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
 CODE_0DB43A:        A2 00         LDX.B #$00                
-CODE_0DB43C:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB43C:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB43F:        E0 00         CPX.B #$00                ; |
 CODE_0DB441:        F0 03         BEQ CODE_0DB446           ; | Set map16 page
 CODE_0DB443:        20 08 AA      JSR.W Sta1To6ePointer     ;/
@@ -108975,7 +108975,7 @@ CODE_0DB471:        AA            TAX                       ;/
 CODE_0DB472:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
 CODE_0DB475:        A5 00         LDA $00                   ;\
 CODE_0DB477:        F0 17         BEQ CODE_0DB490           ;/ Check if it's one tile high
-CODE_0DB479:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB479:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB47C:        A9 0B         LDA.B #$0B                ; | Add middle tiles
 CODE_0DB47E:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB481:        CA            DEX                       ;\
@@ -108985,7 +108985,7 @@ CODE_0DB487:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downw
 CODE_0DB48A:        A6 01         LDX $01                   ; Reload size
 CODE_0DB48C:        C6 00         DEC $00                   ;\
 CODE_0DB48E:        D0 E9         BNE CODE_0DB479           ;/ Check if we're on the last line
-CODE_0DB490:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB490:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB493:        A9 0E         LDA.B #$0E                ; | Add tile
 CODE_0DB495:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB498:        CA            DEX                       ;\
@@ -109010,7 +109010,7 @@ CODE_0DB4AD:        BF 9C B4 0D   LDA.L DATA_0DB49C,X       ;\
 CODE_0DB4B1:        20 D9 B4      JSR.W CODE_0DB4D9         ;/ Add top tile
 CODE_0DB4B4:        4C C0 B4      JMP.W CODE_0DB4C0         ; Go to loop
 
-CODE_0DB4B7:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB4B7:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB4BA:        BF 9C B4 0D   LDA.L DATA_0DB49C,X       ; | Add middle tile
 CODE_0DB4BE:        97 6B         STA [$6B],Y               ;/
 CODE_0DB4C0:        98            TYA                       ;\
@@ -109040,7 +109040,7 @@ CODE_0DB4E8:        C9 0E         CMP.B #$0E                ;\
 CODE_0DB4EA:        D0 06         BNE CODE_0DB4F2           ;/ Check if we're on a bottom edge
 CODE_0DB4EC:        BF D7 B4 0D   LDA.L DATA_0DB4D7,X       ;\
 CODE_0DB4F0:        85 0C         STA $0C                   ;/ Change to new tile
-CODE_0DB4F2:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB4F2:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB4F5:        A5 0C         LDA $0C                   ; | Add tile
 CODE_0DB4F7:        97 6B         STA [$6B],Y               ;/
 Return0DB4F9:       60            RTS                       ; Return 
@@ -109061,7 +109061,7 @@ CODE_0DB50D:        C9 08         CMP.B #$08                ;\
 CODE_0DB50F:        D0 06         BNE CODE_0DB517           ;/ Check if we're on a top edge
 CODE_0DB511:        BF FC B4 0D   LDA.L DATA_0DB4FC,X       ;\
 CODE_0DB515:        85 0C         STA $0C                   ;/ Change to new tile
-CODE_0DB517:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB517:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB51A:        A5 0C         LDA $0C                   ; | Add tile
 CODE_0DB51C:        97 6B         STA [$6B],Y               ;/
 Return0DB51E:       60            RTS                       ; Return 
@@ -109120,7 +109120,7 @@ ADDR_0DB573:        A5 59         LDA $59                   ; That's a new versi
 ADDR_0DB575:        38            SEC                       ;\
 ADDR_0DB576:        E9 68         SBC.B #$68                ; | Update block number
 ADDR_0DB578:        AA            TAX                       ;/
-ADDR_0DB579:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DB579:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DB57C:        BF 69 B5 0D   LDA.L DATA_0DB569,X       ; | Add block
 ADDR_0DB580:        97 6B         STA [$6B],Y               ;/
 Return0DB582:       60            RTS                       ; Return 
@@ -109140,7 +109140,7 @@ CODE_0DB58B:        A2 00         LDX.B #$00                ; Index points to th
 CODE_0DB58D:        A4 57         LDY $57                   ; Position
 CODE_0DB58F:        BD 27 1F      LDA.W $1F27,X             ;\
 CODE_0DB592:        D0 0A         BNE CODE_0DB59E           ;/ Check whether the switch has been hit and go to the correct place
-CODE_0DB594:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB594:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB597:        BF 89 B5 0D   LDA.L DATA_0DB589,X       ; | Add outline block
 CODE_0DB59B:        97 6B         STA [$6B],Y               ;/
 Return0DB59D:       60            RTS                       ; Return 
@@ -109166,16 +109166,16 @@ CODE_0DB5C2:        4A            LSR                       ; |
 CODE_0DB5C3:        4A            LSR                       ; | Type
 CODE_0DB5C4:        4A            LSR                       ; |
 CODE_0DB5C5:        AA            TAX                       ;/
-CODE_0DB5C6:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB5C6:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB5C9:        BF A8 B5 0D   LDA.L DATA_0DB5A8,X       ; | Add left tile
 CODE_0DB5CD:        4C D7 B5      JMP.W CODE_0DB5D7         ;/
 
-CODE_0DB5D0:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB5D0:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB5D3:        BF AD B5 0D   LDA.L DATA_0DB5AD,X       ; | Add middle tiles
 CODE_0DB5D7:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB5DA:        C6 00         DEC $00                   ;\
 CODE_0DB5DC:        D0 F2         BNE CODE_0DB5D0           ;/ Check for end of the object
-CODE_0DB5DE:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB5DE:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB5E1:        BF B2 B5 0D   LDA.L DATA_0DB5B2,X       ; | Add right tile
 CODE_0DB5E5:        97 6B         STA [$6B],Y               ;/
 Return0DB5E7:       60            RTS                       ; Return 
@@ -109232,7 +109232,7 @@ CODE_0DB666:        A5 00         LDA $00                   ;\
 CODE_0DB668:        85 02         STA $02                   ;/ Reload width
 CODE_0DB66A:        A9 02         LDA.B #$02                ;\
 CODE_0DB66C:        85 01         STA $01                   ;/ Number of tiles in left area
-CODE_0DB66E:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB66E:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB671:        BF E8 B5 0D   LDA.L DATA_0DB5E8,X       ; | Add left tiles
 CODE_0DB675:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB678:        E8            INX                       ;\
@@ -109240,13 +109240,13 @@ CODE_0DB679:        C6 01         DEC $01                   ; | Check if we need
 CODE_0DB67B:        10 F1         BPL CODE_0DB66E           ;/
 CODE_0DB67D:        C6 02         DEC $02                   ;\
 CODE_0DB67F:        F0 22         BEQ CODE_0DB6A3           ;/ Check if it has a middle area
-CODE_0DB681:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB681:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB684:        BF E8 B5 0D   LDA.L DATA_0DB5E8,X       ; |
 CODE_0DB688:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DB68B:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; |
+CODE_0DB68B:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; |
 CODE_0DB68E:        BF E9 B5 0D   LDA.L DATA_0DB5E8+1,X     ; | Add middle tiles
 CODE_0DB692:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DB695:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; |
+CODE_0DB695:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; |
 CODE_0DB698:        BF EA B5 0D   LDA.L DATA_0DB5E8+2,X     ; |
 CODE_0DB69C:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB69F:        C6 02         DEC $02                   ;\
@@ -109255,7 +109255,7 @@ CODE_0DB6A3:        8A            TXA                       ;\
 CODE_0DB6A4:        18            CLC                       ; |
 CODE_0DB6A5:        69 03         ADC.B #$03                ; | Update index to table
 CODE_0DB6A7:        AA            TAX                       ;/
-CODE_0DB6A8:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB6A8:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB6AB:        BF E8 B5 0D   LDA.L DATA_0DB5E8,X       ; | Add right tile
 CODE_0DB6AF:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB6B2:        E8            INX                       
@@ -109281,7 +109281,7 @@ CODE_0DB6CE:        4A            LSR                       ; |
 CODE_0DB6CF:        4A            LSR                       ; | Type
 CODE_0DB6D0:        4A            LSR                       ; |
 CODE_0DB6D1:        AA            TAX                       ;/
-CODE_0DB6D2:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB6D2:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB6D5:        BF C1 B6 0D   LDA.L DATA_0DB6C1,X       ; | Add tile
 CODE_0DB6D9:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB6DC:        C6 00         DEC $00                   ;\
@@ -109297,7 +109297,7 @@ CODE_0DB6E5:        A5 59         LDA $59                   ;\
 CODE_0DB6E7:        38            SEC                       ; |
 CODE_0DB6E8:        E9 88         SBC.B #$88                ; | "Fix" object number
 CODE_0DB6EA:        AA            TAX                       ;/
-CODE_0DB6EB:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB6EB:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB6EE:        BF E1 B6 0D   LDA.L DATA_0DB6E1,X       ; | Add block
 CODE_0DB6F2:        97 6B         STA [$6B],Y               ;/
 Return0DB6F4:       60            RTS                       ; Return 
@@ -109317,11 +109317,11 @@ ADDR_0DB70D:        85 00         STA $00                   ;/
 ADDR_0DB70F:        A5 59         LDA $59                   ;\
 ADDR_0DB711:        29 0F         AND.B #$0F                ; | Type
 ADDR_0DB713:        AA            TAX                       ;/
-ADDR_0DB714:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DB714:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DB717:        BF F5 B6 0D   LDA.L DATA_0DB6F5,X       ; | Add top tile
 ADDR_0DB71B:        4C 25 B7      JMP.W ADDR_0DB725         ;/
 
-ADDR_0DB71E:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DB71E:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DB721:        BF FD B6 0D   LDA.L DATA_0DB6FD,X       ; | Add middle tiles
 ADDR_0DB725:        97 6B         STA [$6B],Y               ;/
 ADDR_0DB727:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
@@ -109407,7 +109407,7 @@ CODE_0DB7C0:        20 B1 A6      JSR.W CODE_0DA6B1         ; Save pointer
 CODE_0DB7C3:        20 08 AA      JSR.W Sta1To6ePointer     ;\
 CODE_0DB7C6:        A9 AA         LDA.B #$AA                ; |
 CODE_0DB7C8:        20 FD AB      JSR.W CODE_0DABFD         ; |
-CODE_0DB7CB:        AD 0D AA      LDA.W StzTo6ePointer0080E7 ; | Add top row
+CODE_0DB7CB:        AD 0D AA      LDA.W StzTo6ePointer0DAA0D ; | Add top row
 CODE_0DB7CE:        A9 A1         LDA.B #$A1                ; |
 CODE_0DB7D0:        20 4E B8      JSR.W CODE_0DB84E         ;/
 CODE_0DB7D3:        4C FD B7      JMP.W CODE_0DB7FD         
@@ -109421,12 +109421,12 @@ CODE_0DB7E2:        A9 E2         LDA.B #$E2                ; | Add slope assist
 CODE_0DB7E4:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB7E7:        4C F2 B7      JMP.W CODE_0DB7F2         
 
-CODE_0DB7EA:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB7EA:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB7ED:        A9 3F         LDA.B #$3F                ; | Add dirt tiles
 CODE_0DB7EF:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB7F2:        CA            DEX                       ;\
 CODE_0DB7F3:        D0 F5         BNE CODE_0DB7EA           ;/ Check if we need any dirt tiles
-CODE_0DB7F5:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB7F5:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB7F8:        A9 A6         LDA.B #$A6                ; | Add the right tile with the diagonal line
 CODE_0DB7FA:        20 4E B8      JSR.W CODE_0DB84E         ;/
 CODE_0DB7FD:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
@@ -109446,17 +109446,17 @@ CODE_0DB81B:        A9 F7         LDA.B #$F7                ; | Add lower leftmo
 CODE_0DB81D:        20 FD AB      JSR.W CODE_0DABFD         ;/
 CODE_0DB820:        4C 36 B8      JMP.W CODE_0DB836         
 
-CODE_0DB823:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB823:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB826:        A9 A3         LDA.B #$A3                ; | Add the left tile with the diagonal line
 CODE_0DB828:        20 4E B8      JSR.W CODE_0DB84E         ;/
 CODE_0DB82B:        4C 36 B8      JMP.W CODE_0DB836         
 
-CODE_0DB82E:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB82E:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB831:        A9 3F         LDA.B #$3F                ; | Add ground tiles
 CODE_0DB833:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB836:        CA            DEX                       ;\
 CODE_0DB837:        D0 F5         BNE CODE_0DB82E           ;/ Check if we need more ground tiles
-CODE_0DB839:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB839:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB83C:        A9 A6         LDA.B #$A6                ; | Add the right tile with the diagonal line
 CODE_0DB83E:        20 4E B8      JSR.W CODE_0DB84E         ;/
 CODE_0DB841:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
@@ -109494,7 +109494,7 @@ CODE_0DB873:        85 03         STA $03                   ;/
 CODE_0DB875:        A2 01         LDX.B #$01                ;\
 CODE_0DB877:        86 01         STX $01                   ;/ Width of first row
 CODE_0DB879:        20 B1 A6      JSR.W CODE_0DA6B1         ; Save pointer
-CODE_0DB87C:        AD 0D AA      LDA.W StzTo6ePointer0080E7 ;\
+CODE_0DB87C:        AD 0D AA      LDA.W StzTo6ePointer0DAA0D ;\
 CODE_0DB87F:        A9 AF         LDA.B #$AF                ; |
 CODE_0DB881:        20 4E B8      JSR.W CODE_0DB84E         ; |
 CODE_0DB884:        20 08 AA      JSR.W Sta1To6ePointer     ; | Add top row
@@ -109502,12 +109502,12 @@ CODE_0DB887:        A9 AF         LDA.B #$AF                ; |
 CODE_0DB889:        20 FD AB      JSR.W CODE_0DABFD         ;/
 CODE_0DB88C:        4C B7 B8      JMP.W CODE_0DB8B7         
 
-CODE_0DB88F:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB88F:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB892:        A9 A9         LDA.B #$A9                ; | Add the left tile with the diagonal line 
 CODE_0DB894:        20 4E B8      JSR.W CODE_0DB84E         ;/
 CODE_0DB897:        4C A2 B8      JMP.W CODE_0DB8A2         
 
-CODE_0DB89A:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB89A:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB89D:        A9 3F         LDA.B #$3F                ; | Add dirt tile
 CODE_0DB89F:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB8A2:        CA            DEX                       ;\
@@ -109528,12 +109528,12 @@ CODE_0DB8C3:        C6 02         DEC $02                   ;\
 CODE_0DB8C5:        10 C8         BPL CODE_0DB88F           ;/ Check if we need dirt tiles
 CODE_0DB8C7:        CA            DEX                       ;\
 CODE_0DB8C8:        86 01         STX $01                   ;/ Lower width of the next line
-CODE_0DB8CA:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB8CA:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB8CD:        A9 A9         LDA.B #$A9                ; | Add the left tile with the diagonal line
 CODE_0DB8CF:        20 4E B8      JSR.W CODE_0DB84E         ;/
 CODE_0DB8D2:        4C DD B8      JMP.W CODE_0DB8DD         
 
-CODE_0DB8D5:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB8D5:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB8D8:        A9 3F         LDA.B #$3F                ; | Add dirt tiles
 CODE_0DB8DA:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB8DD:        CA            DEX                       ;\
@@ -109543,17 +109543,17 @@ CODE_0DB8E3:        A9 F9         LDA.B #$F9                ; | Add the lower ri
 CODE_0DB8E5:        20 4E B8      JSR.W CODE_0DB84E         ;/
 CODE_0DB8E8:        4C 09 B9      JMP.W CODE_0DB909         
 
-CODE_0DB8EB:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB8EB:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB8EE:        A9 A9         LDA.B #$A9                ; | Add the left tile with the diagonal line
 CODE_0DB8F0:        20 4E B8      JSR.W CODE_0DB84E         ;/
 CODE_0DB8F3:        4C FE B8      JMP.W CODE_0DB8FE         
 
-CODE_0DB8F6:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB8F6:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB8F9:        A9 3F         LDA.B #$3F                ; | Add dirt tiles
 CODE_0DB8FB:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DB8FE:        CA            DEX                       ;\
 CODE_0DB8FF:        D0 F5         BNE CODE_0DB8F6           ;/ Check if we need more dirt tiles
-CODE_0DB901:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB901:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB904:        A9 AC         LDA.B #$AC                ; | Add the right tile with the diagonal line
 CODE_0DB906:        20 4E B8      JSR.W CODE_0DB84E         ;/
 CODE_0DB909:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
@@ -109587,7 +109587,7 @@ CODE_0DB92E:        85 01         STA $01                   ;/
 CODE_0DB930:        A5 00         LDA $00                   ;\
 CODE_0DB932:        85 02         STA $02                   ;/ Load width
 CODE_0DB934:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-CODE_0DB937:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB937:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB93A:        BF 1A B9 0D   LDA.L DATA_0DB91A,X       ; |
 CODE_0DB93E:        85 0F         STA $0F                   ; |
 CODE_0DB940:        BD 29 1F      LDA.W $1F29,X             ; |
@@ -109620,13 +109620,13 @@ CODE_0DB970:        4A            LSR                       ; |
 CODE_0DB971:        4A            LSR                       ; | Height
 CODE_0DB972:        4A            LSR                       ; |
 CODE_0DB973:        85 00         STA $00                   ;/
-CODE_0DB975:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB975:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB978:        BF 62 B9 0D   LDA.L DATA_0DB962,X       ; | Add upper tile
 CODE_0DB97C:        20 97 B9      JSR.W CODE_0DB997         ;/
 CODE_0DB97F:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
 CODE_0DB982:        C6 00         DEC $00                   ;\
 CODE_0DB984:        30 10         BMI Return0DB996          ;/ Check for end of the object
-CODE_0DB986:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB986:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB989:        BF 64 B9 0D   LDA.L DATA_0DB964,X       ; | Add lower tile
 CODE_0DB98D:        97 6B         STA [$6B],Y               ;/
 CODE_0DB98F:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
@@ -109673,10 +109673,10 @@ CODE_0DB9D2:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
 CODE_0DB9D5:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
 CODE_0DB9D8:        C6 00         DEC $00                   ;\
 CODE_0DB9DA:        30 19         BMI Return0DB9F5          ;/ Check for end of the object
-CODE_0DB9DC:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB9DC:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB9DF:        A9 BB         LDA.B #$BB                ; | Add 0BB tile
 CODE_0DB9E1:        20 5B A9      JSR.W CODE_0DA95B         ;/
-CODE_0DB9E4:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DB9E4:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DB9E7:        A9 BC         LDA.B #$BC                ; | Add 0BC tile
 CODE_0DB9E9:        97 6B         STA [$6B],Y               ;/
 CODE_0DB9EB:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
@@ -109719,7 +109719,7 @@ CODE_0DBA26:        CA            DEX                       ;\
 CODE_0DBA27:        10 F5         BPL CODE_0DBA1E           ; | Check for end of the row
 CODE_0DBA29:        4C 37 BA      JMP.W CODE_0DBA37         ;/
 
-CODE_0DBA2C:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DBA2C:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DBA2F:        A9 B8         LDA.B #$B8                ; | Add dirt tiles
 CODE_0DBA31:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DBA34:        CA            DEX                       ;\
@@ -110150,7 +110150,7 @@ CODE_0DC2E9:        A4 57         LDY $57                   ; Load position
 CODE_0DC2EB:        A2 00         LDX.B #$00                
 CODE_0DC2ED:        A9 08         LDA.B #$08                ; Width
 CODE_0DC2EF:        85 00         STA $00                   
-CODE_0DC2F1:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC2F1:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC2F4:        BF 6B C2 0D   LDA.L DATA_0DC26B,X       ; | Add tile
 CODE_0DC2F8:        C9 25         CMP.B #$25                ; | \
 CODE_0DC2FA:        F0 02         BEQ CODE_0DC2FE           ; | / Don't add the blank tiles for some reason
@@ -110159,7 +110159,7 @@ CODE_0DC2FE:        20 5D A9      JSR.W CODE_0DA95D         ;\
 CODE_0DC301:        E8            INX                       ;/ Go to next tile
 CODE_0DC302:        C6 00         DEC $00                   ;\
 CODE_0DC304:        D0 EB         BNE CODE_0DC2F1           ;/ Check for end of line
-CODE_0DC306:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC306:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC309:        BF 6B C2 0D   LDA.L DATA_0DC26B,X       ; | Add tile without checking for tile 25?
 CODE_0DC30D:        97 6B         STA [$6B],Y               ;/
 CODE_0DC30F:        E8            INX                       ;\
@@ -110180,7 +110180,7 @@ CODE_0DC322:        A9 01         LDA.B #$01                ; Width
 CODE_0DC324:        85 00         STA $00                   
 CODE_0DC326:        A5 00         LDA $00                   ;\
 CODE_0DC328:        85 01         STA $01                   ;/ Reload size
-CODE_0DC32A:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC32A:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC32D:        BF 18 C3 0D   LDA.L DATA_0DC318,X       ; | Add object
 CODE_0DC331:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC334:        E8            INX                       ;\
@@ -110230,7 +110230,7 @@ CODE_0DC385:        BF 54 C3 0D   LDA.L DATA_0DC354,X       ; | Add slope assist
 CODE_0DC389:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC38C:        4C 97 C3      JMP.W CODE_0DC397         
 
-CODE_0DC38F:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC38F:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC392:        A9 3F         LDA.B #$3F                ; | Add dirt tiles
 CODE_0DC394:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC397:        C6 03         DEC $03                   ;\
@@ -110285,7 +110285,7 @@ CODE_0DC3EC:        85 00         STA $00                   ; |
 CODE_0DC3EE:        E6 00         INC $00                   ;/
 CODE_0DC3F0:        4C 0D C4      JMP.W CODE_0DC40D         
 
-CODE_0DC3F3:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC3F3:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC3F6:        A9 3F         LDA.B #$3F                ; | Add dirt tiles
 CODE_0DC3F8:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC3FB:        C6 03         DEC $03                   ;\
@@ -110410,7 +110410,7 @@ CODE_0DC4DB:        CA            DEX                       ;\
 CODE_0DC4DC:        10 F5         BPL CODE_0DC4D3           ;/ Check if we need more top tiles
 CODE_0DC4DE:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
 CODE_0DC4E1:        A6 00         LDX $00                   ; Reload width
-CODE_0DC4E3:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC4E3:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC4E6:        A9 86         LDA.B #$86                ; | Add bottom tile
 CODE_0DC4E8:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC4EB:        CA            DEX                       ;\
@@ -110433,15 +110433,15 @@ CODE_0DC4FE:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
 CODE_0DC501:        E0 00         CPX.B #$00                ;\
 CODE_0DC503:        F0 19         BEQ CODE_0DC51E           ;/ Check if it points upwards
 CODE_0DC505:        20 5D A9      JSR.W CODE_0DA95D         ; Don't put anything at the first spot
-CODE_0DC508:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC508:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC50B:        A9 87         LDA.B #$87                ; |
 CODE_0DC50D:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DC510:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; | Add top tiles
+CODE_0DC510:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; | Add top tiles
 CODE_0DC513:        A9 88         LDA.B #$88                ; |
 CODE_0DC515:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC518:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
 CODE_0DC51B:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
-CODE_0DC51E:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC51E:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC521:        A9 89         LDA.B #$89                ; |
 CODE_0DC523:        20 5B A9      JSR.W CODE_0DA95B         ; |
 CODE_0DC526:        20 08 AA      JSR.W Sta1To6ePointer     ; |
@@ -110450,14 +110450,14 @@ CODE_0DC52B:        20 5B A9      JSR.W CODE_0DA95B         ; | Add upper row
 CODE_0DC52E:        20 08 AA      JSR.W Sta1To6ePointer     ; |
 CODE_0DC531:        A9 67         LDA.B #$67                ; |
 CODE_0DC533:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DC536:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; |
+CODE_0DC536:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; |
 CODE_0DC539:        A9 8A         LDA.B #$8A                ; |
 CODE_0DC53B:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC53E:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
 CODE_0DC541:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
 CODE_0DC544:        C6 00         DEC $00                   ;\
 CODE_0DC546:        30 2A         BMI CODE_0DC572           ;/ Check for end of the object
-CODE_0DC548:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC548:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC54B:        A9 8B         LDA.B #$8B                ; |
 CODE_0DC54D:        20 5B A9      JSR.W CODE_0DA95B         ; |
 CODE_0DC550:        20 08 AA      JSR.W Sta1To6ePointer     ; |
@@ -110466,7 +110466,7 @@ CODE_0DC555:        20 5B A9      JSR.W CODE_0DA95B         ; | Add lower row
 CODE_0DC558:        20 08 AA      JSR.W Sta1To6ePointer     ; |
 CODE_0DC55B:        A9 69         LDA.B #$69                ; |
 CODE_0DC55D:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DC560:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; |
+CODE_0DC560:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; |
 CODE_0DC563:        A9 8C         LDA.B #$8C                ; |
 CODE_0DC565:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC568:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
@@ -110476,10 +110476,10 @@ CODE_0DC570:        10 AC         BPL CODE_0DC51E           ;/ Check for end of 
 CODE_0DC572:        E0 00         CPX.B #$00                ;\
 CODE_0DC574:        D0 13         BNE Return0DC589          ;/ Check if it points downwards
 CODE_0DC576:        20 5D A9      JSR.W CODE_0DA95D         ; Don't put anything at the first spot
-CODE_0DC579:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC579:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC57C:        A9 8D         LDA.B #$8D                ; |
 CODE_0DC57E:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DC581:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; | Add bottom tiles
+CODE_0DC581:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; | Add bottom tiles
 CODE_0DC584:        A9 8E         LDA.B #$8E                ; |
 CODE_0DC586:        20 5B A9      JSR.W CODE_0DA95B         ;/
 Return0DC589:       60            RTS                       ; Return 
@@ -110498,10 +110498,10 @@ CODE_0DC597:        4A            LSR                       ; |
 CODE_0DC598:        85 01         STA $01                   ;/
 CODE_0DC59A:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
 CODE_0DC59D:        A6 00         LDX $00                   ; Load width
-CODE_0DC59F:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC59F:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC5A2:        A9 94         LDA.B #$94                ; |
 CODE_0DC5A4:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DC5A7:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; | Add upper row
+CODE_0DC5A7:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; | Add upper row
 CODE_0DC5AA:        A9 95         LDA.B #$95                ; |
 CODE_0DC5AC:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC5AF:        CA            DEX                       ;\
@@ -110509,10 +110509,10 @@ CODE_0DC5B0:        10 ED         BPL CODE_0DC59F           ;/ Check for end of 
 CODE_0DC5B2:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
 CODE_0DC5B5:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
 CODE_0DC5B8:        A6 00         LDX $00                   ; Reload width
-CODE_0DC5BA:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC5BA:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC5BD:        A9 96         LDA.B #$96                ; |
 CODE_0DC5BF:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DC5C2:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; | Add lower row
+CODE_0DC5C2:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; | Add lower row
 CODE_0DC5C5:        A9 97         LDA.B #$97                ; |
 CODE_0DC5C7:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DC5CA:        CA            DEX                       ;\
@@ -110541,10 +110541,10 @@ CODE_0DC5F0:        A9 34         LDA.B #$34                ; | Add top right ti
 CODE_0DC5F2:        97 6B         STA [$6B],Y               ;/
 CODE_0DC5F4:        4C 06 C6      JMP.W CODE_0DC606         
 
-CODE_0DC5F7:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC5F7:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC5FA:        A9 9D         LDA.B #$9D                ; | Add middle left tile
 CODE_0DC5FC:        20 5B A9      JSR.W CODE_0DA95B         ;/
-CODE_0DC5FF:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DC5FF:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DC602:        A9 9E         LDA.B #$9E                ; | Add middle right tile
 CODE_0DC604:        97 6B         STA [$6B],Y               ;/
 CODE_0DC606:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
@@ -110892,7 +110892,7 @@ CODE_0DCE6E:        0A            ASL                       ; | "Fix" object num
 CODE_0DCE6F:        0A            ASL                       ; |
 CODE_0DCE70:        AA            TAX                       ;/
 CODE_0DCE71:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-CODE_0DCE74:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DCE74:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DCE77:        BF 57 CE 0D   LDA.L DATA_0DCE57,X       ; | Add object
 CODE_0DCE7B:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DCE7E:        E8            INX                       ;\
@@ -110915,7 +110915,7 @@ CODE_0DCE96:        A5 59         LDA $59                   ;\
 CODE_0DCE98:        38            SEC                       ; |
 CODE_0DCE99:        E9 51         SBC.B #$51                ; | "Fix" object number
 CODE_0DCE9B:        AA            TAX                       ;/
-CODE_0DCE9C:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DCE9C:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DCE9F:        BF 90 CE 0D   LDA.L DATA_0DCE90,X       ; | Add object
 CODE_0DCEA3:        97 6B         STA [$6B],Y               ;/
 Return0DCEA5:       60            RTS                       ; Return 
@@ -110927,10 +110927,10 @@ ADDR_0DCEA8:        A5 59         LDA $59                   ;\
 ADDR_0DCEAA:        38            SEC                       ; |
 ADDR_0DCEAB:        E9 51         SBC.B #$51                ; | "Fix" object number (it's not used anyways, morons)
 ADDR_0DCEAD:        AA            TAX                       ;/
-ADDR_0DCEAE:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DCEAE:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DCEB1:        A9 84         LDA.B #$84                ; | Add top tile
 ADDR_0DCEB3:        20 5B A9      JSR.W CODE_0DA95B         ;/
-ADDR_0DCEB6:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DCEB6:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DCEB9:        A9 85         LDA.B #$85                ; | Add bottom tile
 ADDR_0DCEBB:        97 6B         STA [$6B],Y               ;/
 Return0DCEBD:       60            RTS                       ; Return 
@@ -110943,7 +110943,7 @@ DATA_0DCEBF:                      .db $97
 CODE_0DCEC0:        A4 57         LDY $57                   ; Position
 CODE_0DCEC2:        A5 59         LDA $59                   ; Hi timewasters, is it fun to waste time?
 CODE_0DCEC4:        A2 00         LDX.B #$00                
-CODE_0DCEC6:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DCEC6:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DCEC9:        BF BE CE 0D   LDA.L DATA_0DCEBE,X       ; | Add block
 CODE_0DCECD:        97 6B         STA [$6B],Y               ;/
 CODE_0DCECF:        20 7D A9      JSR.W CODE_0DA97D         ;\
@@ -110959,7 +110959,7 @@ DATA_0DCED8:                      .db $98,$99
 CODE_0DCEDA:        A4 57         LDY $57                   ; Position
 CODE_0DCEDC:        A5 59         LDA $59                   ; Hi again, timewasters
 CODE_0DCEDE:        A2 00         LDX.B #$00                
-CODE_0DCEE0:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DCEE0:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DCEE3:        BF D8 CE 0D   LDA.L DATA_0DCED8,X       ; | Add block
 CODE_0DCEE7:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DCEEA:        E8            INX                       ;\
@@ -111002,7 +111002,7 @@ CODE_0DCF1D:        4A            LSR                       ; |
 CODE_0DCF1E:        4A            LSR                       ; | Type
 CODE_0DCF1F:        4A            LSR                       ; |
 CODE_0DCF20:        AA            TAX                       ;/
-CODE_0DCF21:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DCF21:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DCF24:        BF 10 CF 0D   LDA.L DATA_0DCF10,X       ; | Add tile
 CODE_0DCF28:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DCF2B:        C6 00         DEC $00                   ;\
@@ -111023,7 +111023,7 @@ CODE_0DCF3D:        4A            LSR                       ; |
 CODE_0DCF3E:        4A            LSR                       ; | Height
 CODE_0DCF3F:        4A            LSR                       ; |
 CODE_0DCF40:        85 00         STA $00                   ;/
-CODE_0DCF42:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DCF42:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DCF45:        BF 30 CF 0D   LDA.L DATA_0DCF30,X       ; | Add tile
 CODE_0DCF49:        97 6B         STA [$6B],Y               ;/
 CODE_0DCF4B:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
@@ -111053,10 +111053,10 @@ CODE_0DCF74:        4A            LSR                       ; | Size
 CODE_0DCF75:        4A            LSR                       ; |
 CODE_0DCF76:        AA            TAX                       ;/
 CODE_0DCF77:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-CODE_0DCF7A:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DCF7A:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DCF7D:        A9 8C         LDA.B #$8C                ; | Add left tile
 CODE_0DCF7F:        20 5B A9      JSR.W CODE_0DA95B         ;/
-CODE_0DCF82:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DCF82:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DCF85:        A9 8D         LDA.B #$8D                ; | Add right tile
 CODE_0DCF87:        97 6B         STA [$6B],Y               ;/
 CODE_0DCF89:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
@@ -111094,7 +111094,7 @@ CODE_0DCFC0:        4A            LSR                       ; |
 CODE_0DCFC1:        4A            LSR                       ; | Size
 CODE_0DCFC2:        4A            LSR                       ; |
 CODE_0DCFC3:        AA            TAX                       ;/
-CODE_0DCFC4:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DCFC4:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DCFC7:        A5 00         LDA $00                   ; | Add tile
 CODE_0DCFC9:        97 6B         STA [$6B],Y               ;/
 CODE_0DCFCB:        A5 57         LDA $57                   ;\
@@ -111127,10 +111127,10 @@ ADDR_0DCFF6:        4A            LSR                       ; | Size
 ADDR_0DCFF7:        4A            LSR                       ; |
 ADDR_0DCFF8:        AA            TAX                       ;/
 ADDR_0DCFF9:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-ADDR_0DCFFC:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DCFFC:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DCFFF:        A9 8E         LDA.B #$8E                ; |
 ADDR_0DD001:        20 5B A9      JSR.W CODE_0DA95B         ;/
-ADDR_0DD004:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DD004:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DD007:        A9 8F         LDA.B #$8F                ; | Add right tile
 ADDR_0DD009:        97 6B         STA [$6B],Y               ;/
 ADDR_0DD00B:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer (waste of time...)
@@ -111170,7 +111170,7 @@ CODE_0DD043:        4A            LSR                       ; |
 CODE_0DD044:        4A            LSR                       ; | Size
 CODE_0DD045:        4A            LSR                       ; |
 CODE_0DD046:        AA            TAX                       ;/
-CODE_0DD047:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DD047:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DD04A:        A5 00         LDA $00                   ; | Add tile
 CODE_0DD04C:        97 6B         STA [$6B],Y               ;/
 CODE_0DD04E:        A5 57         LDA $57                   ;\
@@ -111211,7 +111211,7 @@ ADDR_0DD080:        A4 57         LDY $57                   ; Position
 ADDR_0DD082:        A5 59         LDA $59                   ;\
 ADDR_0DD084:        29 0F         AND.B #$0F                ; | Size
 ADDR_0DD086:        AA            TAX                       ;/
-ADDR_0DD087:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DD087:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DD08A:        A9 88         LDA.B #$88                ; | Add upper tile
 ADDR_0DD08C:        97 6B         STA [$6B],Y               ;/
 ADDR_0DD08E:        98            TYA                       ;\
@@ -111220,7 +111220,7 @@ ADDR_0DD090:        69 10         ADC.B #$10                ; |
 ADDR_0DD092:        A8            TAY                       ; | Move pointer downwards
 ADDR_0DD093:        90 03         BCC ADDR_0DD098           ; |
 ADDR_0DD095:        20 87 A9      JSR.W CODE_0DA987         ;/
-ADDR_0DD098:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DD098:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DD09B:        A9 8A         LDA.B #$8A                ; | Add lower tile
 ADDR_0DD09D:        97 6B         STA [$6B],Y               ;/
 ADDR_0DD09F:        98            TYA                       ;\
@@ -111249,7 +111249,7 @@ ADDR_0DD0C3:        A4 57         LDY $57                   ; Position
 ADDR_0DD0C5:        A5 59         LDA $59                   ;\
 ADDR_0DD0C7:        29 0F         AND.B #$0F                ; | Size
 ADDR_0DD0C9:        AA            TAX                       ;/
-ADDR_0DD0CA:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DD0CA:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DD0CD:        A9 89         LDA.B #$89                ; | Add upper tile
 ADDR_0DD0CF:        97 6B         STA [$6B],Y               ;/
 ADDR_0DD0D1:        98            TYA                       ;\
@@ -111258,7 +111258,7 @@ ADDR_0DD0D3:        69 10         ADC.B #$10                ; |
 ADDR_0DD0D5:        A8            TAY                       ; | Move pointer downwards
 ADDR_0DD0D6:        90 03         BCC ADDR_0DD0DB           ; |
 ADDR_0DD0D8:        20 87 A9      JSR.W CODE_0DA987         ;/
-ADDR_0DD0DB:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DD0DB:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DD0DE:        A9 8B         LDA.B #$8B                ; | Add lower tile
 ADDR_0DD0E0:        97 6B         STA [$6B],Y               ;/
 ADDR_0DD0E2:        98            TYA                       ;\
@@ -111332,16 +111332,16 @@ CODE_0DD152:        4A            LSR                       ; |
 CODE_0DD153:        85 01         STA $01                   ;/
 CODE_0DD155:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
 CODE_0DD158:        A6 00         LDX $00                   ; Load width
-CODE_0DD15A:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DD15A:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DD15D:        A9 73         LDA.B #$73                ; | Add left tile
 CODE_0DD15F:        4C 67 D1      JMP.W CODE_0DD167         ;/
 
-CODE_0DD162:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DD162:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DD165:        A9 74         LDA.B #$74                ; | Add middle tile
 CODE_0DD167:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DD16A:        CA            DEX                       ;\
 CODE_0DD16B:        D0 F5         BNE CODE_0DD162           ;/ Check if we need more middle tiles
-CODE_0DD16D:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DD16D:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DD170:        A9 75         LDA.B #$75                ; | Add right tile
 CODE_0DD172:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DD175:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
@@ -111412,10 +111412,10 @@ CODE_0DD1E4:        4A            LSR                       ; | Height
 CODE_0DD1E5:        4A            LSR                       ; |
 CODE_0DD1E6:        85 00         STA $00                   ;/
 CODE_0DD1E8:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-CODE_0DD1EB:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DD1EB:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DD1EE:        BF CB D1 0D   LDA.L DATA_0DD1CB,X       ; | Add left plant tile
 CODE_0DD1F2:        20 5B A9      JSR.W CODE_0DA95B         ;/
-CODE_0DD1F5:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DD1F5:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DD1F8:        BF CF D1 0D   LDA.L DATA_0DD1CF,X       ; | Add right plant tile
 CODE_0DD1FC:        97 6B         STA [$6B],Y               ;/
 CODE_0DD1FE:        C6 00         DEC $00                   ;\
@@ -111463,7 +111463,7 @@ CODE_0DD254:        85 00         STA $00                   ; | Width
 CODE_0DD256:        85 01         STA $01                   ;/
 CODE_0DD258:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
 CODE_0DD25B:        A2 00         LDX.B #$00                
-CODE_0DD25D:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DD25D:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DD260:        E0 00         CPX.B #$00                ; |
 CODE_0DD262:        F0 03         BEQ CODE_0DD267           ; | Set correct map16 page
 CODE_0DD264:        20 08 AA      JSR.W Sta1To6ePointer     ;/
@@ -111796,7 +111796,7 @@ CODE_0DDA6A:        A5 59         LDA $59                   ;\
 CODE_0DDA6C:        38            SEC                       ; |
 CODE_0DDA6D:        E9 75         SBC.B #$75                ; | "Fix" object number
 CODE_0DDA6F:        AA            TAX                       ;/
-CODE_0DDA70:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DDA70:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DDA73:        BF 61 DA 0D   LDA.L DATA_0DDA61,X       ; | Add tile
 CODE_0DDA77:        97 6B         STA [$6B],Y               ;/
 Return0DDA79:       60            RTS                       ; Return 
@@ -111812,11 +111812,11 @@ CODE_0DDA82:        A5 59         LDA $59                   ;\
 CODE_0DDA84:        38            SEC                       ; |
 CODE_0DDA85:        E9 7C         SBC.B #$7C                ; | "Fix" object number
 CODE_0DDA87:        AA            TAX                       ;/
-CODE_0DDA88:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DDA88:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DDA8B:        BF 7A DA 0D   LDA.L DATA_0DDA7A,X       ; | Top tile
 CODE_0DDA8F:        97 6B         STA [$6B],Y               ;/
 CODE_0DDA91:        20 7D A9      JSR.W CODE_0DA97D         ; Go to next tile
-CODE_0DDA94:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DDA94:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DDA97:        BF 7D DA 0D   LDA.L DATA_0DDA7D,X       ; | Bottom tile
 CODE_0DDA9B:        97 6B         STA [$6B],Y               ;/
 Return0DDA9D:       60            RTS                       ; Return 
@@ -112285,7 +112285,7 @@ CODE_0DDDEE:        CA            DEX                       ;\
 CODE_0DDDEF:        CA            DEX                       ; | Update number of remaining tiles in the line and go to loop
 CODE_0DDDF0:        4C 09 DE      JMP.W CODE_0DDE09         ;/
 
-CODE_0DDDF3:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DDDF3:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DDDF6:        A9 3F         LDA.B #$3F                ; | Add dirt tile
 CODE_0DDDF8:        97 6B         STA [$6B],Y               ;/
 CODE_0DDDFA:        98            TYA                       ;\
@@ -112377,7 +112377,7 @@ CODE_0DDE91:        CA            DEX                       ;\
 CODE_0DDE92:        CA            DEX                       ; | Update number of remaining tiles in the line and go to loop
 CODE_0DDE93:        4C AC DE      JMP.W CODE_0DDEAC         ;/
 
-CODE_0DDE96:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DDE96:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DDE99:        A9 3F         LDA.B #$3F                ; | Add dirt tile
 CODE_0DDE9B:        97 6B         STA [$6B],Y               ;/
 CODE_0DDE9D:        98            TYA                       ;\
@@ -112491,13 +112491,13 @@ CODE_0DDFA8:        C6 02         DEC $02                   ; |
 CODE_0DDFAA:        10 F1         BPL CODE_0DDF9D           ;/
 CODE_0DDFAC:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
 CODE_0DDFAF:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
-CODE_0DDFB2:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DDFB2:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DDFB5:        BF DC DE 0D   LDA.L DATA_0DDEDC,X       ; |
 CODE_0DDFB9:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DDFBC:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; |
+CODE_0DDFBC:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; |
 CODE_0DDFBF:        BF DD DE 0D   LDA.L DATA_0DDEDC+1,X     ; |
 CODE_0DDFC3:        20 5B A9      JSR.W CODE_0DA95B         ; |
-CODE_0DDFC6:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; | Add middle lines
+CODE_0DDFC6:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; | Add middle lines
 CODE_0DDFC9:        BF DE DE 0D   LDA.L DATA_0DDEDC+2,X     ; |
 CODE_0DDFCD:        97 6B         STA [$6B],Y               ; |
 CODE_0DDFCF:        20 7D A9      JSR.W CODE_0DA97D         ; |
@@ -112518,7 +112518,7 @@ CODE_0DDFEC:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
 CODE_0DDFEF:        A9 02         LDA.B #$02                ;\
 CODE_0DDFF1:        85 02         STA $02                   ;/
 CODE_0DDFF3:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
-CODE_0DDFF6:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DDFF6:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DDFF9:        BF DC DE 0D   LDA.L DATA_0DDEDC,X       ; |
 CODE_0DDFFD:        20 5B A9      JSR.W CODE_0DA95B         ; | Add bottom line
 
@@ -112623,7 +112623,7 @@ CODE_0DE0D5:        20 BA A6      JSR.W CODE_0DA6BA         ;\
 CODE_0DE0D8:        20 7D A9      JSR.W CODE_0DA97D         ;/ Reload pointer and go to next row
 CODE_0DE0DB:        A9 02         LDA.B #$02                ; Width of other rows
 CODE_0DE0DD:        85 02         STA $02                   
-CODE_0DE0DF:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\ \
+CODE_0DE0DF:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\ \
 CODE_0DE0E2:        BF 5E E0 0D   LDA.L DATA_0DE05E,X       ; |  | Add tile
 CODE_0DE0E6:        20 5B A9      JSR.W CODE_0DA95B         ; | /
 CODE_0DE0E9:        E8            INX                       ; |
@@ -112635,7 +112635,7 @@ CODE_0DE0F4:        C6 01         DEC $01                   ; |
 CODE_0DE0F6:        10 E3         BPL CODE_0DE0DB           ;/
 CODE_0DE0F8:        A9 02         LDA.B #$02                ; Width of the second-to-bottom row
 CODE_0DE0FA:        85 02         STA $02                   
-CODE_0DE0FC:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DE0FC:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DE0FF:        BF 5E E0 0D   LDA.L DATA_0DE05E,X       ; |
 CODE_0DE103:        20 5B A9      JSR.W CODE_0DA95B         ; |
 CODE_0DE106:        E8            INX                       ; | This code adds the second-to-bottom row.
@@ -112648,7 +112648,7 @@ CODE_0DE112:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
 CODE_0DE115:        A9 02         LDA.B #$02                ; Width of the bottom row
 CODE_0DE117:        85 02         STA $02                   
 CODE_0DE119:        20 7D A9      JSR.W CODE_0DA97D         ; Go to next row
-CODE_0DE11C:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DE11C:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DE11F:        BF 5E E0 0D   LDA.L DATA_0DE05E,X       ; |
 CODE_0DE123:        20 5B A9      JSR.W CODE_0DA95B         ; |
 CODE_0DE126:        E8            INX                       ; | This code adds the bottom row.
@@ -113008,7 +113008,7 @@ CODE_0DE961:        A5 59         LDA $59                   ;\
 CODE_0DE963:        38            SEC                       ; |
 CODE_0DE964:        E9 57         SBC.B #$57                ; | "Fix" object number
 CODE_0DE966:        AA            TAX                       ;/
-CODE_0DE967:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DE967:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DE96A:        BF 57 E9 0D   LDA.L DATA_0DE957,X       ; | Add tile
 CODE_0DE96E:        97 6B         STA [$6B],Y               ;/
 Return0DE970:       60            RTS                       ; Return 
@@ -113018,7 +113018,7 @@ Return0DE970:       60            RTS                       ; Return
 ADDR_0DE971:        A9 03         LDA.B #$03                ; Size of this object
 ADDR_0DE973:        85 00         STA $00                   
 ADDR_0DE975:        A0 00         LDY.B #$00                ;\
-ADDR_0DE977:        20 0D AA      JSR.W StzTo6ePointer0080E7 ; |
+ADDR_0DE977:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ; |
 ADDR_0DE97A:        A9 77         LDA.B #$77                ; | Add tile
 ADDR_0DE97C:        97 6B         STA [$6B],Y               ;/
 ADDR_0DE97E:        C8            INY                       ;\
@@ -113061,7 +113061,7 @@ CODE_0DE9BA:        A9 02         LDA.B #$02                ; Size of first row,
 CODE_0DE9BC:        85 00         STA $00                   
 CODE_0DE9BE:        85 01         STA $01                   
 CODE_0DE9C0:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-CODE_0DE9C3:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DE9C3:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DE9C6:        BF 8F E9 0D   LDA.L DATA_0DE98F,X       ; | Add block
 CODE_0DE9CA:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DE9CD:        E8            INX                       ;\
@@ -113097,7 +113097,7 @@ CODE_0DE9F7:        A9 01         LDA.B #$01                ; Size of the first 
 CODE_0DE9F9:        85 00         STA $00                   
 CODE_0DE9FB:        85 01         STA $01                   
 CODE_0DE9FD:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-CODE_0DEA00:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEA00:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEA03:        BF E1 E9 0D   LDA.L DATA_0DE9E1,X       ; | Add block
 CODE_0DEA07:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DEA0A:        E8            INX                       ;\
@@ -113136,7 +113136,7 @@ ADDR_0DEA4A:        A9 03         LDA.B #$03                ; Size of the first 
 ADDR_0DEA4C:        85 00         STA $00                   
 ADDR_0DEA4E:        85 01         STA $01                   
 ADDR_0DEA50:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-ADDR_0DEA53:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DEA53:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DEA56:        BF 1E EA 0D   LDA.L DATA_0DEA1E,X       ; | Add block
 ADDR_0DEA5A:        20 5B A9      JSR.W CODE_0DA95B         ;/
 ADDR_0DEA5D:        E8            INX                       ;\
@@ -113170,7 +113170,7 @@ CODE_0DEABF:        A4 57         LDY $57                   ; Position
 CODE_0DEAC1:        A2 00         LDX.B #$00                
 CODE_0DEAC3:        A9 05         LDA.B #$05                ; Width
 CODE_0DEAC5:        85 00         STA $00                   
-CODE_0DEAC7:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEAC7:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEACA:        BF 71 EA 0D   LDA.L DATA_0DEA71,X       ; |  Add block
 CODE_0DEACE:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DEAD1:        E8            INX                       ;\
@@ -113202,13 +113202,13 @@ CODE_0DEB6A:        A4 57         LDY $57                   ; Position
 CODE_0DEB6C:        A2 00         LDX.B #$00                
 CODE_0DEB6E:        A9 09         LDA.B #$09                ; Width
 CODE_0DEB70:        85 00         STA $00                   
-CODE_0DEB72:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEB72:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEB75:        BF DE EA 0D   LDA.L DATA_0DEADE,X       ; | Add tile
 CODE_0DEB79:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DEB7C:        E8            INX                       ;\
 CODE_0DEB7D:        C6 00         DEC $00                   ; | Go to next tile
 CODE_0DEB7F:        D0 F1         BNE CODE_0DEB72           ;/
-CODE_0DEB81:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEB81:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEB84:        BF DE EA 0D   LDA.L DATA_0DEADE,X       ; | Add the last tile on the row
 CODE_0DEB88:        97 6B         STA [$6B],Y               ;/
 CODE_0DEB8A:        E8            INX                       ;\
@@ -113234,13 +113234,13 @@ CODE_0DEC33:        A4 57         LDY $57
 CODE_0DEC35:        A2 00         LDX.B #$00                
 CODE_0DEC37:        A9 0F         LDA.B #$0F                ; Width
 CODE_0DEC39:        85 00         STA $00                   
-CODE_0DEC3B:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEC3B:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEC3E:        BF 93 EB 0D   LDA.L DATA_0DEB93,X       ; | Add tile
 CODE_0DEC42:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DEC45:        E8            INX                       ;\
 CODE_0DEC46:        C6 00         DEC $00                   ; | Go to next tile
 CODE_0DEC48:        D0 F1         BNE CODE_0DEC3B           ;/
-CODE_0DEC4A:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEC4A:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEC4D:        BF 93 EB 0D   LDA.L DATA_0DEB93,X       ; | Add the last tile on the row
 CODE_0DEC51:        97 6B         STA [$6B],Y               ;/
 CODE_0DEC53:        E8            INX                       ;\
@@ -113264,7 +113264,7 @@ DATA_0DEC67:                      .db $CA ; This was CMP.B #$CA in all.log. *Ins
 
 ADDR_0DEC68:        A4 57         LDY $57                   ; Position
 ADDR_0DEC6A:        A2 00         LDX.B #$00                
-ADDR_0DEC6C:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+ADDR_0DEC6C:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 ADDR_0DEC6F:        BF 66 EC 0D   LDA.L ADDR_0DEC66,X       ; | Add tile (why not unroll this loop?)
 ADDR_0DEC73:        97 6B         STA [$6B],Y               ;/
 ADDR_0DEC75:        20 7D A9      JSR.W CODE_0DA97D         ;\
@@ -113303,7 +113303,7 @@ CODE_0DECA2:        85 00         STA $00                   ;\
 CODE_0DECA4:        85 01         STA $01                   ;/ Preserve sizes
 CODE_0DECA6:        A5 00         LDA $00                   ;\
 CODE_0DECA8:        85 02         STA $02                   ;/ Reload width
-CODE_0DECAA:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DECAA:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DECAD:        BF 7E EC 0D   LDA.L DATA_0DEC7E,X       ; | Add tile
 CODE_0DECB1:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DECB4:        E8            INX                       ;\
@@ -113339,7 +113339,7 @@ CODE_0DECDC:        4A            LSR                       ; | Height
 CODE_0DECDD:        4A            LSR                       ; |
 CODE_0DECDE:        85 01         STA $01                   ;/
 CODE_0DECE0:        20 B1 A6      JSR.W CODE_0DA6B1         ; Preserve pointer
-CODE_0DECE3:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DECE3:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DECE6:        E0 01         CPX.B #$01                ; |
 CODE_0DECE8:        D0 03         BNE CODE_0DECED           ; | Set map16 page
 CODE_0DECEA:        20 08 AA      JSR.W Sta1To6ePointer     ;/
@@ -113372,16 +113372,16 @@ CODE_0DED1D:        4A            LSR                       ; |
 CODE_0DED1E:        4A            LSR                       ; | Type
 CODE_0DED1F:        4A            LSR                       ; |
 CODE_0DED20:        AA            TAX                       ;/
-CODE_0DED21:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DED21:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DED24:        BF 09 ED 0D   LDA.L DATA_0DED09,X       ; | Add left tile
 CODE_0DED28:        4C 32 ED      JMP.W CODE_0DED32         ;/
 
-CODE_0DED2B:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DED2B:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DED2E:        BF 0C ED 0D   LDA.L DATA_0DED0C,X       ; | Add middle tile
 CODE_0DED32:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DED35:        C6 00         DEC $00                   ;\
 CODE_0DED37:        D0 F2         BNE CODE_0DED2B           ;/
-CODE_0DED39:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DED39:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DED3C:        BF 0F ED 0D   LDA.L DATA_0DED0F,X       ; | Add right tile
 CODE_0DED40:        97 6B         STA [$6B],Y               ;/
 Return0DED42:       60            RTS                       ; Return 
@@ -113421,11 +113421,11 @@ CODE_0DED73:        85 00         STA $00                   ;/
 CODE_0DED75:        A5 59         LDA $59                   ;\
 CODE_0DED77:        29 0F         AND.B #$0F                ; | Type
 CODE_0DED79:        AA            TAX                       ;/
-CODE_0DED7A:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DED7A:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DED7D:        BF 65 ED 0D   LDA.L DATA_0DED65,X       ; | Add top tile
 CODE_0DED81:        4C 8B ED      JMP.W CODE_0DED8B         ;/
 
-CODE_0DED84:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DED84:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DED87:        BF 68 ED 0D   LDA.L DATA_0DED68,X       ; | Add middle tile
 CODE_0DED8B:        97 6B         STA [$6B],Y               ;/
 CODE_0DED8D:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
@@ -113640,11 +113640,11 @@ CODE_0DEEF8:        90 03         BCC CODE_0DEEFD           ; |
 ADDR_0DEEFA:        20 87 A9      JSR.W CODE_0DA987         ;/
 CODE_0DEEFD:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
 CODE_0DEF00:        A6 01         LDX $01                   ; Load height (looks like this object is added in vertical stripes)
-CODE_0DEF02:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEF02:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEF05:        A9 78         LDA.B #$78                ; | Add top tile
 CODE_0DEF07:        4C 0F EF      JMP.W CODE_0DEF0F         ;/
 
-CODE_0DEF0A:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEF0A:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEF0D:        A9 79         LDA.B #$79                ; | Add middle tile
 CODE_0DEF0F:        97 6B         STA [$6B],Y               ;/
 CODE_0DEF11:        98            TYA                       ;\
@@ -113685,16 +113685,16 @@ CODE_0DEF45:        A4 57         LDY $57                   ; Position
 CODE_0DEF47:        A5 59         LDA $59                   ;\
 CODE_0DEF49:        29 0F         AND.B #$0F                ; | Width
 CODE_0DEF4B:        AA            TAX                       ;/
-CODE_0DEF4C:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEF4C:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEF4F:        A9 A0         LDA.B #$A0                ; | Add left tile
 CODE_0DEF51:        4C 59 EF      JMP.W CODE_0DEF59         ;/
 
-CODE_0DEF54:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEF54:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEF57:        A9 A1         LDA.B #$A1                ; | Add middle tile
 CODE_0DEF59:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DEF5C:        CA            DEX                       ;\
 CODE_0DEF5D:        D0 F5         BNE CODE_0DEF54           ;/ Check for end of the object
-CODE_0DEF5F:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEF5F:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEF62:        A9 A2         LDA.B #$A2                ; | Add right tile
 CODE_0DEF64:        97 6B         STA [$6B],Y               ;/
 Return0DEF66:       60            RTS                       ; Return 
@@ -113723,7 +113723,7 @@ CODE_0DEF89:        30 16         BMI Return0DEFA1          ;/ Check if we need 
 CODE_0DEF8B:        20 BA A6      JSR.W CODE_0DA6BA         ; Reload pointer
 CODE_0DEF8E:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downwards
 CODE_0DEF91:        A6 00         LDX $00                   ; Reload width
-CODE_0DEF93:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEF93:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEF96:        A9 A3         LDA.B #$A3                ; | Add lower tile
 CODE_0DEF98:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DEF9B:        CA            DEX                       ;\
@@ -113768,7 +113768,7 @@ CODE_0DEFDB:        4C FE EF      JMP.W CODE_0DEFFE
 CODE_0DEFDE:        20 08 AA      JSR.W Sta1To6ePointer     ;\
 CODE_0DEFE1:        BF A2 EF 0D   LDA.L DATA_0DEFA2,X       ; | Add left tile
 CODE_0DEFE5:        D0 07         BNE CODE_0DEFEE           ;/
-CODE_0DEFE7:        20 0D AA      JSR.W StzTo6ePointer0080E7 ;\
+CODE_0DEFE7:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DEFEA:        BF A4 EF 0D   LDA.L DATA_0DEFA4,X       ; | Add middle tile
 CODE_0DEFEE:        20 5B A9      JSR.W CODE_0DA95B         ;/
 CODE_0DEFF1:        C6 02         DEC $02                   ;\
