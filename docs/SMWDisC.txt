@@ -34173,7 +34173,7 @@ CODE_02A4DE:        A9 07         LDA.B #$07
 CODE_02A4E0:        9D 6F 17      STA.W $176F,X             
 CODE_02A4E3:        A9 01         LDA.B #$01                
 
-Instr02A4E5:                      STA.W $170B,x
+Instr02A4E5:        9D 0B 17      STA.W $170B,x
 
 Return02A4E8:       60            RTS                       ; Return 
 
@@ -112521,6 +112521,7 @@ CODE_0DDFF3:        20 7D A9      JSR.W CODE_0DA97D         ; Move pointer downw
 CODE_0DDFF6:        20 0D AA      JSR.W StzTo6ePointer0DAA0D ;\
 CODE_0DDFF9:        BF DC DE 0D   LDA.L DATA_0DDEDC,X       ; |
 CODE_0DDFFD:        20 5B A9      JSR.W CODE_0DA95B         ; | Add bottom line
+CODE_0DE000:        E8            INX                       ; |
 
 CODE_0DE001:        C6 02         DEC $02                   ; |
 CODE_0DE003:        10 F1         BPL CODE_0DDFF6           ;/
