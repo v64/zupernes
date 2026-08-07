@@ -29,6 +29,11 @@ pub const Emulator = struct {
     /// instrument watching it.
     input_record: InputRecord = .{},
 
+    /// Capture-only executed-instruction recorder; see `traceExec`. Like
+    /// `input_record` above it is deliberately NOT part of the savestate: a
+    /// snapshot captures the machine, not the instrument watching it.
+    exec_trace: ExecTrace = .{},
+
     pub fn init() Emulator {
         return Emulator{
             .cpu = undefined,
@@ -107,6 +112,8 @@ pub const Emulator = struct {
         // traces (capture-only; no effect when the traces are disabled).
         self.ppu.writer_pc = (@as(u24, self.cpu.pbr) << 16) | self.cpu.pc;
         self.bus.writer_pc = self.ppu.writer_pc;
+        // Capture-only; see `traceExec`. One never-taken branch when disabled.
+        self.exec_trace.record(self.ppu.writer_pc);
 
         const cycles = self.cpu.step();
 
@@ -293,6 +300,63 @@ pub const Emulator = struct {
             self.count += 1;
         }
     };
+
+    /// Every instruction the 65816 executes, as `PBR:PC`, while enabled and
+    /// while the address falls in `[filter_lo, filter_hi]`.
+    ///
+    /// It ONLY observes: `step` already computes this exact value for the VRAM
+    /// and WRAM write traces, so recording it cannot alter bus, CPU or DMA
+    /// state or timing, and enabling it has zero effect on emulated output.
+    /// Answers "what did the CPU actually execute here?" - the counterpart to
+    /// the write traces' "which routine wrote this?", and the one question a
+    /// write trace can only answer by elimination.
+    ///
+    /// The buffer belongs to the caller (like `recordInputs`), because a useful
+    /// instruction window is far larger than a write window and does not belong
+    /// embedded in the machine. `dropped` counts instructions past the end, so
+    /// a truncated capture convicts itself instead of reading as a short path -
+    /// a nonzero `dropped` means narrow the filter or enlarge the buffer, never
+    /// interpret the result.
+    pub const ExecTrace = struct {
+        dst: []u24 = &.{},
+        count: usize = 0,
+        dropped: usize = 0,
+        enabled: bool = false,
+        filter_lo: u24 = 0,
+        filter_hi: u24 = 0xFFFFFF,
+
+        fn record(self: *ExecTrace, pc: u24) void {
+            if (!self.enabled) return;
+            if (pc < self.filter_lo or pc > self.filter_hi) return;
+            if (self.count == self.dst.len) {
+                self.dropped += 1;
+                return;
+            }
+            self.dst[self.count] = pc;
+            self.count += 1;
+        }
+    };
+
+    /// Begin recording executed `PBR:PC` values into `dst`, one entry per
+    /// instruction whose address is in [lo, hi]. Clears any previous capture.
+    pub fn traceExec(self: *Emulator, dst: []u24, lo: u24, hi: u24) void {
+        self.exec_trace = .{ .dst = dst, .enabled = true, .filter_lo = lo, .filter_hi = hi };
+    }
+
+    /// Stop recording (leaves the captured instructions intact for reading).
+    pub fn stopExecTrace(self: *Emulator) void {
+        self.exec_trace.enabled = false;
+    }
+
+    /// The instructions captured so far (oldest first).
+    pub fn execTraceEvents(self: *const Emulator) []const u24 {
+        return self.exec_trace.dst[0..self.exec_trace.count];
+    }
+
+    /// Count of instructions dropped past the buffer (0 = complete).
+    pub fn execTraceDropped(self: *const Emulator) usize {
+        return self.exec_trace.dropped;
+    }
 
     /// Begin recording controller 1 into `dst`, one entry per emulated frame.
     /// Clears any previous capture.
