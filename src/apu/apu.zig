@@ -47,20 +47,26 @@ const Spc700 = @import("spc700.zig").Spc700;
 const dbg = @import("../debug.zig");
 
 pub const Apu = struct {
+    /// Capture-only chronology horizon.  Eight covered a normal SMW NMI, but
+    /// loader/jingle fields can legitimately service more CPU->APU ports.
+    /// Keep the bound finite so a corrupt producer still raises the explicit
+    /// overflow evidence flag rather than allocating unboundedly per field.
+    pub const frame_clock_port_write_capacity = 64;
+
     pub const FrameClock = struct {
         /// Actual master clocks billed to the APU during one presented field.
         master_cycles: u32,
         /// Every CPU->APU write offset in chronological order.  A normal SMW
-        /// NMI block has at most four writes, while eight keeps this general
-        /// capture API useful to other software without allocating per field.
-        port_write_cycles: [8]u32,
+        /// NMI block has at most four writes, while the wider finite horizon
+        /// retains loader and jingle chronology exactly.
+        port_write_cycles: [frame_clock_port_write_capacity]u32,
         port_write_count: u8,
         port_write_overflow: bool,
     };
 
     const FrameClockCapture = struct {
         start_master_cycles: u64,
-        port_write_cycles: [8]u64 = undefined,
+        port_write_cycles: [frame_clock_port_write_capacity]u64 = undefined,
         port_write_count: u8 = 0,
         port_write_overflow: bool = false,
     };
@@ -71,6 +77,8 @@ pub const Apu = struct {
     /// elapsed CPU/PPU clock between two frame boundaries.
     master_cycles: u64 = 0,
     frame_clock_capture: ?FrameClockCapture = null,
+    // Test-only lowering proves that the overflow bit remains a hard guard.
+    frame_clock_capture_limit: u8 = frame_clock_port_write_capacity,
 
     /// The SPC700 CPU core
     spc: Spc700,
@@ -120,7 +128,7 @@ pub const Apu = struct {
     /// Stores value in the SPC700's input port buffer
     pub fn writePort(self: *Apu, port: u2, value: u8) void {
         if (self.frame_clock_capture) |*capture| {
-            if (capture.port_write_count < capture.port_write_cycles.len) {
+            if (capture.port_write_count < self.frame_clock_capture_limit) {
                 capture.port_write_cycles[capture.port_write_count] = self.master_cycles;
                 capture.port_write_count += 1;
             } else capture.port_write_overflow = true;
@@ -179,7 +187,7 @@ pub const Apu = struct {
     pub fn endFrameClockCapture(self: *Apu) ?FrameClock {
         const capture = self.frame_clock_capture orelse return null;
         self.frame_clock_capture = null;
-        var port_write_cycles: [8]u32 = @splat(0);
+        var port_write_cycles: [frame_clock_port_write_capacity]u32 = @splat(0);
         for (port_write_cycles[0..capture.port_write_count], 0..) |*out, index|
             out.* = @intCast(capture.port_write_cycles[index] - capture.start_master_cycles);
         return .{
@@ -325,6 +333,7 @@ pub const Apu = struct {
         self.cycle_counter = 0;
         self.master_cycles = 0;
         self.frame_clock_capture = null;
+        self.frame_clock_capture_limit = frame_clock_port_write_capacity;
     }
 };
 
@@ -381,6 +390,28 @@ test "capture-only frame clock measures elapsed master clocks and first port ser
     const unserviced = apu.endFrameClockCapture().?;
     try std.testing.expectEqual(@as(u32, 9), unserviced.master_cycles);
     try std.testing.expectEqual(@as(u8, 0), unserviced.port_write_count);
+}
+
+test "capture-only frame clock retains loader-scale chronology and keeps the old horizon guard" {
+    var apu = Apu.init();
+    apu.beginFrameClockCapture();
+    for (0..9) |index| {
+        apu.runCycles(7);
+        apu.writePort(@intCast(index & 3), @intCast(index));
+    }
+    const widened = apu.endFrameClockCapture().?;
+    try std.testing.expectEqual(@as(u8, 9), widened.port_write_count);
+    try std.testing.expect(!widened.port_write_overflow);
+    try std.testing.expectEqual(@as(u32, 63), widened.port_write_cycles[8]);
+
+    // Break-it-once: force the former eight-write horizon.  The ninth write
+    // must remain incomplete evidence, never a truncated successful capture.
+    apu.frame_clock_capture_limit = 8;
+    apu.beginFrameClockCapture();
+    for (0..9) |index| apu.writePort(@intCast(index & 3), @intCast(index));
+    const forced_old_horizon = apu.endFrameClockCapture().?;
+    try std.testing.expectEqual(@as(u8, 8), forced_old_horizon.port_write_count);
+    try std.testing.expect(forced_old_horizon.port_write_overflow);
 }
 
 test "apu port communication" {
