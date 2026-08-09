@@ -51,7 +51,10 @@ pub const Apu = struct {
     /// loader/jingle fields can legitimately service more CPU->APU ports.
     /// Keep the bound finite so a corrupt producer still raises the explicit
     /// overflow evidence flag rather than allocating unboundedly per field.
-    pub const frame_clock_port_write_capacity = 64;
+    // A CPU can issue at most about 12K $2140-$2143 stores in one NTSC field
+    // (the fastest legal store takes five CPU cycles).  16K covers that whole
+    // hardware field, including the loader upload burst, with headroom.
+    pub const frame_clock_port_write_capacity = 16 * 1024;
 
     pub const FrameClock = struct {
         /// Actual master clocks billed to the APU during one presented field.
@@ -60,14 +63,14 @@ pub const Apu = struct {
         /// NMI block has at most four writes, while the wider finite horizon
         /// retains loader and jingle chronology exactly.
         port_write_cycles: [frame_clock_port_write_capacity]u32,
-        port_write_count: u8,
+        port_write_count: u16,
         port_write_overflow: bool,
     };
 
     const FrameClockCapture = struct {
         start_master_cycles: u64,
         port_write_cycles: [frame_clock_port_write_capacity]u64 = undefined,
-        port_write_count: u8 = 0,
+        port_write_count: u16 = 0,
         port_write_overflow: bool = false,
     };
 
@@ -78,7 +81,7 @@ pub const Apu = struct {
     master_cycles: u64 = 0,
     frame_clock_capture: ?FrameClockCapture = null,
     // Test-only lowering proves that the overflow bit remains a hard guard.
-    frame_clock_capture_limit: u8 = frame_clock_port_write_capacity,
+    frame_clock_capture_limit: u16 = frame_clock_port_write_capacity,
 
     /// The SPC700 CPU core
     spc: Spc700,
@@ -382,14 +385,14 @@ test "capture-only frame clock measures elapsed master clocks and first port ser
     apu.runCycles(31);
     const clock = apu.endFrameClockCapture().?;
     try std.testing.expectEqual(@as(u32, 48), clock.master_cycles);
-    try std.testing.expectEqual(@as(u8, 1), clock.port_write_count);
+    try std.testing.expectEqual(@as(u16, 1), clock.port_write_count);
     try std.testing.expectEqual(@as(u32, 17), clock.port_write_cycles[0]);
 
     apu.beginFrameClockCapture();
     apu.runCycles(9);
     const unserviced = apu.endFrameClockCapture().?;
     try std.testing.expectEqual(@as(u32, 9), unserviced.master_cycles);
-    try std.testing.expectEqual(@as(u8, 0), unserviced.port_write_count);
+    try std.testing.expectEqual(@as(u16, 0), unserviced.port_write_count);
 }
 
 test "capture-only frame clock retains loader-scale chronology and keeps the old horizon guard" {
@@ -400,7 +403,7 @@ test "capture-only frame clock retains loader-scale chronology and keeps the old
         apu.writePort(@intCast(index & 3), @intCast(index));
     }
     const widened = apu.endFrameClockCapture().?;
-    try std.testing.expectEqual(@as(u8, 9), widened.port_write_count);
+    try std.testing.expectEqual(@as(u16, 9), widened.port_write_count);
     try std.testing.expect(!widened.port_write_overflow);
     try std.testing.expectEqual(@as(u32, 63), widened.port_write_cycles[8]);
 
@@ -410,7 +413,7 @@ test "capture-only frame clock retains loader-scale chronology and keeps the old
     apu.beginFrameClockCapture();
     for (0..9) |index| apu.writePort(@intCast(index & 3), @intCast(index));
     const forced_old_horizon = apu.endFrameClockCapture().?;
-    try std.testing.expectEqual(@as(u8, 8), forced_old_horizon.port_write_count);
+    try std.testing.expectEqual(@as(u16, 8), forced_old_horizon.port_write_count);
     try std.testing.expect(forced_old_horizon.port_write_overflow);
 }
 
