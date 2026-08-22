@@ -234,6 +234,16 @@ pub const Ppu = struct {
     cgram_latch: u8,
     vram_prefetch: u16,
 
+    // The two physical PPU chips have independent memory-data registers
+    // (MDRs). Reads drive their result through the appropriate chip's MDR;
+    // writes use a separate input bus and do not disturb these values.
+    // Source: fullsnes, "PPU Picture Processing Unit (Read-Only Ports)";
+    // cross-checked against Mesen2 Core/SNES/SnesPpu.cpp:SnesPpu::Read.
+    ppu1_mdr: u8,
+    ppu2_mdr: u8,
+    h_counter_high: bool,
+    v_counter_high: bool,
+
     // Timing
     scanline: u16,
     dot: u16,
@@ -317,6 +327,10 @@ pub const Ppu = struct {
             .oam_addr = 0,
             .cgram_latch = 0,
             .vram_prefetch = 0,
+            .ppu1_mdr = 0,
+            .ppu2_mdr = 0,
+            .h_counter_high = false,
+            .v_counter_high = false,
             .scanline = 0,
             .dot = 0,
             .master_accum = 0,
@@ -2204,23 +2218,76 @@ pub const Ppu = struct {
     }
 
     pub fn readRegister(self: *Ppu, addr: u16) u8 {
-        return switch (addr) {
-            // PPU multiplier result: m7a (16-bit signed) * m7b high byte
-            // (8-bit signed), 24-bit signed result
+        // Citation for the chip assignment and partial-bit masks below:
+        // fullsnes, "PPU Register Reads" / $2134-$213F,
+        // https://patrickjohnston.org/ASM/ROM%20data/snestek.htm
+        // Independently cross-checked in Mesen2:
+        // Core/SNES/SnesPpu.cpp, SnesPpu::Read cases $2134-$213F.
+        const value: u8 = switch (addr) {
+            // PPU1: a complete byte is driven, replacing PPU1 MDR.
             0x2134 => @truncate(@as(u32, @bitCast(self.mpy_result))), // MPYL
             0x2135 => @truncate(@as(u32, @bitCast(self.mpy_result)) >> 8), // MPYM
             0x2136 => @truncate(@as(u32, @bitCast(self.mpy_result)) >> 16), // MPYH
-            0x2137 => 0, // SLHV - Software latch
             0x2138 => self.readOam(),
             0x2139 => self.readVramLow(),
             0x213A => self.readVramHigh(),
-            0x213B => self.readCgram(),
-            0x213C => 0, // OPHCT - Horizontal scanline counter
-            0x213D => 0, // OPVCT - Vertical scanline counter
-            0x213E => 0x01, // STAT77 - PPU1 status
-            0x213F => 0x03, // STAT78 - PPU2 status (NTSC, not interlaced)
-            else => 0,
+
+            // SLHV is a strobe, not data: PPU1 leaves its MDR driven. The
+            // $4201-controlled H/V counter latch itself is not modeled yet.
+            0x2137 => return self.ppu1_mdr,
+
+            // PPU2: CGRAM's unused high bit is PPU2 MDR, then the composite
+            // result becomes the new PPU2 MDR.
+            0x213B => blk: {
+                const cgram = self.readCgram();
+                break :blk if ((self.cgram_addr & 1) == 0)
+                    (cgram & 0x7F) | (self.ppu2_mdr & 0x80)
+                else
+                    cgram;
+            },
+
+            // OPHCT/OPVCT high-byte reads only drive bit 0; bits 1-7 retain
+            // PPU2 MDR. Counter latching is not yet implemented, so the live
+            // value is presently zero, but the documented MDR composition and
+            // independently toggled low/high selectors are preserved.
+            0x213C => blk: {
+                const high = self.h_counter_high;
+                self.h_counter_high = !high;
+                break :blk if (high) self.ppu2_mdr & 0xFE else 0;
+            },
+            0x213D => blk: {
+                const high = self.v_counter_high;
+                self.v_counter_high = !high;
+                break :blk if (high) self.ppu2_mdr & 0xFE else 0;
+            },
+
+            // STAT77: flags (bits 7-5), PPU1 MDR bit 4, 5C77 version (1).
+            // The current renderer does not yet calculate the two OBJ flags.
+            0x213E => (self.ppu1_mdr & 0x10) | 0x01,
+
+            // STAT78: field/latch/PAL are currently 0 (non-interlace NTSC),
+            // PPU2 MDR supplies bit 5, and 5C78 version is 3.
+            0x213F => blk: {
+                self.h_counter_high = false;
+                self.v_counter_high = false;
+                break :blk (self.ppu2_mdr & 0x20) | 0x03;
+            },
+
+            // PPU1's write-only mirrors $21x4-6 and $21x8-A (x=0..2) read
+            // its MDR. This is the PPU-side open-bus exception; other
+            // unmapped B-bus reads remain the CPU/system bus's responsibility.
+            else => switch (addr & 0x210F) {
+                0x2104...0x2106, 0x2108...0x210A => return self.ppu1_mdr,
+                else => return 0,
+            },
         };
+
+        if ((addr >= 0x2134 and addr <= 0x213A) or addr == 0x213E) {
+            self.ppu1_mdr = value;
+        } else {
+            self.ppu2_mdr = value;
+        }
+        return value;
     }
 
     pub fn writeRegister(self: *Ppu, addr: u16, value: u8) void {
@@ -2497,6 +2564,28 @@ pub const Ppu = struct {
 test "ppu init" {
     const ppu = Ppu.init();
     _ = ppu;
+}
+
+test "PPU1 and PPU2 MDR read composition" {
+    var ppu = Ppu.init();
+
+    // A complete PPU1 data-register read replaces PPU1 MDR, and PPU1's
+    // write-only mirrors expose that value.
+    ppu.mpy_result = 0x0055BA;
+    try std.testing.expectEqual(@as(u8, 0xBA), ppu.readRegister(0x2134));
+    try std.testing.expectEqual(@as(u8, 0xBA), ppu.readRegister(0x2104));
+    try std.testing.expectEqual(@as(u8, 0x11), ppu.readRegister(0x213E));
+
+    // PPU2 high-byte CGRAM data keeps MDR bit 7. The read result becomes the
+    // new MDR, which feeds the high H/V-counter bits and STAT78 bit 5.
+    ppu.cgram_addr = 1;
+    ppu.cgram[1] = 0x12;
+    ppu.ppu2_mdr = 0xA0;
+    try std.testing.expectEqual(@as(u8, 0x92), ppu.readRegister(0x213B));
+    ppu.h_counter_high = true;
+    try std.testing.expectEqual(@as(u8, 0x92), ppu.readRegister(0x213C));
+    ppu.ppu2_mdr = 0x20;
+    try std.testing.expectEqual(@as(u8, 0x23), ppu.readRegister(0x213F));
 }
 
 test "vram-write source trace records filtered writes and is capture-only" {

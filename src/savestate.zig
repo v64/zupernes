@@ -231,7 +231,7 @@ pub const state_len: usize = blk: {
     n += 64 * 1024 + 512 + 544 + fb_bytes;
     // PPU scalars
     n += 15 + 8 * 2 + 1 + 2 + 1 + 13 + 2 + 1 + 1 + 1 + 8 * 2 + 1 + 4 +
-        2 + 2 + 2 + 1 + 2 + 2 + 2 + 8 + 4 + 1 + 4 + 4;
+        2 + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 8 + 4 + 1 + 4 + 4;
     // Bus arrays
     n += 128 * 1024 + 1 + 32 * 1024;
     // DMA
@@ -329,6 +329,10 @@ pub fn write(
     putU16(dst, &at, ppu.oam_addr);
     putU8(dst, &at, ppu.cgram_latch);
     putU16(dst, &at, ppu.vram_prefetch);
+    putU8(dst, &at, ppu.ppu1_mdr);
+    putU8(dst, &at, ppu.ppu2_mdr);
+    putBool(dst, &at, ppu.h_counter_high);
+    putBool(dst, &at, ppu.v_counter_high);
     putU16(dst, &at, ppu.scanline);
     putU16(dst, &at, ppu.dot);
     putU64(dst, &at, ppu.frame_count);
@@ -504,6 +508,10 @@ pub fn read(
     ppu.oam_addr = @truncate(getU16(src, &at));
     ppu.cgram_latch = getU8(src, &at);
     ppu.vram_prefetch = getU16(src, &at);
+    ppu.ppu1_mdr = getU8(src, &at);
+    ppu.ppu2_mdr = getU8(src, &at);
+    ppu.h_counter_high = getBool(src, &at);
+    ppu.v_counter_high = getBool(src, &at);
     ppu.scanline = getU16(src, &at);
     ppu.dot = getU16(src, &at);
     ppu.frame_count = getU64(src, &at);
