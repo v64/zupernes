@@ -238,7 +238,7 @@ pub const Cpu = struct {
     }
 
     fn handleNmi(self: *Cpu) void {
-        self.cycles = 7;
+        self.cycles = 0;
 
         if (self.emulation_mode) {
             // Emulation mode: push PC and P
@@ -259,13 +259,14 @@ pub const Cpu = struct {
 
         // Read NMI vector
         const vector_addr: u16 = if (self.emulation_mode) 0xFFFA else 0xFFEA;
-        const low = self.bus.read(0, vector_addr);
-        const high = self.bus.read(0, vector_addr + 1);
+        const low = self.readByte(0, vector_addr);
+        const high = self.readByte(0, vector_addr + 1);
         self.pc = @as(u16, high) << 8 | low;
+        self.cycles += 2; // interrupt-internal cycles
     }
 
     fn handleIrq(self: *Cpu) void {
-        self.cycles = 7;
+        self.cycles = 0;
 
         if (self.emulation_mode) {
             self.pushByte(@truncate(self.pc >> 8));
@@ -283,9 +284,10 @@ pub const Cpu = struct {
         self.pbr = 0;
 
         const vector_addr: u16 = if (self.emulation_mode) 0xFFFE else 0xFFEE;
-        const low = self.bus.read(0, vector_addr);
-        const high = self.bus.read(0, vector_addr + 1);
+        const low = self.readByte(0, vector_addr);
+        const high = self.readByte(0, vector_addr + 1);
         self.pc = @as(u16, high) << 8 | low;
+        self.cycles += 2; // interrupt-internal cycles
     }
 
     // ==================== Memory Access ====================
@@ -2989,6 +2991,28 @@ test "cpu flags" {
     const restored = Flags.fromByte(byte);
     try std.testing.expect(restored.c == true);
     try std.testing.expect(restored.z == true);
+}
+
+test "interrupt entry accounts both SlowROM vector fetches" {
+    var ppu = @import("../ppu/ppu.zig").Ppu.init();
+    var bus = Bus.init(&ppu);
+    var cpu = Cpu.init(&bus);
+
+    // Three stack writes and two vector reads are SlowROM/WRAM accesses at
+    // 8 master clocks each. The seven-cycle interrupt sequence has two
+    // internal cycles at 6 clocks each: 5 * 8 + 2 * 6 = 52.
+    cpu.triggerNmi();
+    try std.testing.expectEqual(@as(u8, 7), cpu.step());
+    try std.testing.expectEqual(@as(u8, 5), cpu.mem_accesses);
+    try std.testing.expectEqual(@as(u32, 40), cpu.mem_masters);
+    try std.testing.expectEqual(@as(u32, 52), cpu.mem_masters + (@as(u32, cpu.cycles) - cpu.mem_accesses) * 6);
+
+    cpu.p.i = false;
+    cpu.triggerIrq();
+    try std.testing.expectEqual(@as(u8, 7), cpu.step());
+    try std.testing.expectEqual(@as(u8, 5), cpu.mem_accesses);
+    try std.testing.expectEqual(@as(u32, 40), cpu.mem_masters);
+    try std.testing.expectEqual(@as(u32, 52), cpu.mem_masters + (@as(u32, cpu.cycles) - cpu.mem_accesses) * 6);
 }
 
 test "adc 8-bit" {

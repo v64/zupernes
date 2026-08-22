@@ -158,11 +158,11 @@ The goal is pixel-per-pixel and sample-per-sample identical output to
 hardware. Current model: instruction-granularity CPU, scanline-
 granularity PPU rendering, dot-granularity PPU counters. The path:
 
-1. **Per-access memory timing**: CPU cycles are counted per instruction
-   table and multiplied by 6 master cycles; real accesses cost 6/8/12
-   depending on region (and MEMSEL). Requires the CPU to report memory
-   accesses, not just cycle counts. This is the prerequisite for
-   everything below.
+1. **Per-access memory timing — DONE (fc411d6)**: CPU cycles are counted
+   per instruction table and real accesses cost 6/8/12 depending on region
+   (and MEMSEL), with the CPU reporting each access. Interrupt entry now also
+   accounts both NMI/IRQ vector reads through the same path, completing the
+   remaining vector-fetch hole.
 2. **DMA cycle accounting**: CLOSED as a byte-timing item, re-scoped
    2026-08-22. The old claim ("runDma returns cycles but the caller
    discards them") went stale at fc411d6: tickDmaByte() bills 8 master
@@ -177,15 +177,20 @@ granularity PPU rendering, dot-granularity PPU counters. The path:
    matters once a scheduler models the CPU pausing mid-instruction —
    today DMA executes synchronously inside the $420B write. Re-open only
    together with that scheduler work.
-3. **Mid-scanline register changes**: renderScanline() samples registers
-   once per line. Games that write PPU registers mid-line (via HDMA or
-   tight IRQ loops - the inidisp/hdma test ROMs in test/snes-test-roms
-   exercise exactly this) need either dot-based rendering or a
-   change-log replayed during line rendering.
-4. **HDMA timing**: currently fires at scanline start; hardware runs it
-   at H≈278 with specific per-channel costs.
-5. **NMI/IRQ jitter**: interrupts are polled between instructions;
-   hardware delays them by specific cycle counts after the trigger dot.
+3. **Mid-scanline register changes — GENUINELY OPEN**: `Ppu.tick()` advances
+   dot counters, but `renderScanline()` still samples registers once per line
+   (`src/ppu/ppu.zig:645`, `1214-1215`). No register change-log or dot-based
+   replay exists for the mid-line writes exercised by the inidisp/hdma ROMs.
+4. **HDMA timing — PARTIALLY IMPLEMENTED**: HDMA setup, line-counter/repeat
+   handling, and per-byte billing exist in `Dma.initHdma()`/`runHdma()`
+   (`src/dma.zig:288-455`), and the emulator invokes it on scanline
+   transitions (`src/root.zig:252-253`). It still runs at scanline start,
+   not hardware H≈278, and lacks the hardware per-channel/start-end timing.
+5. **NMI/IRQ jitter — PARTIALLY IMPLEMENTED**: the emulator detects timer
+   crossings and raises IRQ/NMI pending state (`src/root.zig:171-216`,
+   `220-245`), then polls interrupts between instructions
+   (`src/cpu/cpu.zig:169-183`). It does not model the hardware's
+   trigger-to-service delay/jitter, so exact cycle placement remains open.
 6. **Golden-image regression suite**: the harness + test/snes-test-roms
    are ready for this - capture known-good screenshots per test ROM
    (compare against bsnes/Mesen output or hardware photos) and wire
