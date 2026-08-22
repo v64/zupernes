@@ -74,12 +74,15 @@ half the time) instead of per-channel shifts.
 
 ## Bus / CPU
 
-### DMA consumes zero emulated time (bus.zig `writeSystemRegister` $420B)
-`runDma` returns a cycle count but the caller discards it, so the PPU/APU
-don't advance during transfers. This is an *accuracy* bug that also skews
-any future cycle-budget scheduling: a 64KB DMA takes ~8 master cycles/byte
-(~0.5M cycles) during which NMI/IRQ/HDMA timing shifts. Plumb the returned
-cycles into the main step loop when doing the timing rework.
+### DMA time accounting (bus.zig `writeSystemRegister` $420B) — STALE, see NEXTSTEPS
+This entry predates fc411d6, which made tickDmaByte() bill 8 master
+cycles per transferred byte into dma_masters (drained into the PPU/APU
+clocks by root.zig). The PPU/APU DO advance during transfers now; do not
+"plumb the returned cycles" — that double-charges every byte. The
+remaining gap is per-transfer/per-channel overhead and start/end
+alignment sync, measured 2026-08-22 to be witness-invisible without a
+scheduler that can pause the CPU mid-instruction. See NEXTSTEPS.md
+"Cycle accuracy roadmap" item 2 for the re-scoped item and citations.
 
 ### Bus `read()`/`write()` cascade of range compares (bus.zig)
 Every memory access walks an if/else chain. A 256-entry bank descriptor

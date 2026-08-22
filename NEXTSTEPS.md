@@ -163,9 +163,20 @@ granularity PPU rendering, dot-granularity PPU counters. The path:
    depending on region (and MEMSEL). Requires the CPU to report memory
    accesses, not just cycle counts. This is the prerequisite for
    everything below.
-2. **DMA cycle accounting**: runDma returns cycles but the caller
-   discards them (bus.zig $420B write). DMA also has 8-cycle-per-byte +
-   per-channel overhead and syncs to whole CPU cycles.
+2. **DMA cycle accounting**: CLOSED as a byte-timing item, re-scoped
+   2026-08-22. The old claim ("runDma returns cycles but the caller
+   discards them") went stale at fc411d6: tickDmaByte() bills 8 master
+   cycles per transferred byte into dma_masters, which root.zig drains
+   into the PPU/APU clocks — plumbing runDma's return would double-charge
+   every byte. What remains unmodeled is overhead and synchronization
+   only: 8 fixed clocks per transfer, 8 per active channel, and 2-8-clock
+   start/end alignment waits (SNESdev DMA registers; superfamicom wiki
+   timing; bsnes dma.cpp; Mesen2 SnesDmaController.cpp). A measured trial
+   adding the fixed+per-channel overhead left a 2900-frame SMW trace
+   byte-identical and Mesen2 transition alignment unchanged, so this only
+   matters once a scheduler models the CPU pausing mid-instruction —
+   today DMA executes synchronously inside the $420B write. Re-open only
+   together with that scheduler work.
 3. **Mid-scanline register changes**: renderScanline() samples registers
    once per line. Games that write PPU registers mid-line (via HDMA or
    tight IRQ loops - the inidisp/hdma test ROMs in test/snes-test-roms
