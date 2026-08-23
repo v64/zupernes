@@ -114,6 +114,27 @@ zig build -Ddebug=true run -- path/to/game.sfc
 zig build test
 ```
 
+### Headless event input
+
+The screenshot harness supports both absolute-frame input and generic WRAM
+predicates. `--input F:BTNS[:HOLD]` keeps its existing behavior (30-frame
+hold). For timing-independent navigation, use
+`--input-when 'PRED[,PRED...]:BTNS[:HOLD]'`: predicates are byte comparisons
+against physical WRAM addresses, triggers fire once in declaration order,
+and the default hold is 2 frames. The next trigger is considered only after
+the previous one fires; if its predicate is already true, it must leave that
+state and return before firing. Predicate addresses and values use hexadecimal
+notation (bare fields or `0x`/`$`-prefixed fields, matching SNES addresses).
+Buttons are `S` (Start), `s` (Select), `A/B/X/Y`, `U/D/L/R`, and
+`l/r` (shoulders). For example:
+
+```bash
+zig build screenshot -- game.sfc 5000 final.ppm \
+  --input-when '100=07:S' \
+  --input-when '100=08:A' \
+  --input-when '100=0A:A'
+```
+
 ## Game Compatibility
 
 The emulator can run many SNES games that use Modes 0-1 graphics without Mode 7 or audio requirements. Super Mario World's title screen renders correctly including the spotlight effect (HDMA-driven window masking).
