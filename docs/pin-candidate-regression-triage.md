@@ -40,7 +40,31 @@ The three requested representatives exercise different anchor classes:
 
 ## Load-cadence measurement
 
-Pending direct measurement.
+Both revisions replayed the same `yi1-overworld-reveal.zmov` from power-on in
+the ReleaseFast headless runner. A temporary diagnostic sampled physical WRAM
+`$7E:0100` after every completed video frame. The diagnostic was not retained
+in either source tree. Here, "frame index" is zero-based and "frames from
+power-on" is the number of calls to `runFrame` which have completed when the
+new mode is first observable.
+
+| milestone | live `9b5270c` | candidate `52f4b81` | candidate minus live |
+| --- | ---: | ---: | ---: |
+| first file-select mode `$08` | index 701 / 702 completed | index 701 / 702 completed | **0 frames** |
+| first gameplay mode `$14` | index 1025 / 1026 completed | index 1025 / 1026 completed | **0 frames** |
+
+Every `$0100` transition from power-on through that first `$14` is at the same
+frame on the two builds. Thus the proposed 14--26-frame-per-load cadence shift
+does **not** occur at either requested boot/load milestone and cannot explain a
+corpus-wide constant re-anchoring requirement.
+
+The same trace does find a later, transition-local difference: after the second
+entry to mode `$14` at index 2705 on both builds, the live build leaves `$14`
+for `$0C` after frame 6172 (6173 completed), while the candidate leaves after
+frame 6179 (6180 completed). The candidate therefore remains in the YI1
+gameplay/goal sequence **7 frames longer**; subsequent `$0C->$0D->$0E`
+transitions retain the same +7 displacement. This is not boot-prefix
+consumption and points the representative analysis at the goal/exit transition
+itself.
 
 ## Representative first-divergence analysis
 
