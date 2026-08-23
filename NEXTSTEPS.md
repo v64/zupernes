@@ -200,11 +200,17 @@ granularity PPU rendering, dot-granularity PPU counters. The path:
    2,900-frame SMW evidence is in `docs/hdma-transfer-timing.md`. Exact
    within-instruction CPU-cycle pause alignment and mid-general-DMA HDMA
    priority remain future scheduler refinements.
-5. **NMI/IRQ jitter — PARTIALLY IMPLEMENTED**: the emulator detects timer
-   crossings and raises IRQ/NMI pending state (`src/root.zig:171-216`,
-   `220-245`), then polls interrupts between instructions
-   (`src/cpu/cpu.zig:169-183`). It does not model the hardware's
-   trigger-to-service delay/jitter, so exact cycle placement remains open.
+5. **NMI/IRQ jitter — DONE (`6e84543`, `1bc1235`, `f4d4957`)**: RDNMI sets at
+   V=225/H=0.5 with its exact-edge read-clear hold, H/V timer compare output
+   uses the measured 14-clock (or H=0/V-only 10-clock) circuit timing, and the
+   CPU samples both inputs before each instruction's final 6/8/12-clock cycle.
+   Late edges therefore produce instruction-length jitter without mid-opcode
+   service. CLI/SEI/PLP/REP/SEP old-I sampling, WAI's 12-clock wake, TIMEUP's
+   set-edge hold, and `$4200` enable-during-VBlank NMI edges are covered by
+   focused tests. Unit, 29-ROM before/after, savestate-resume, and 2,900-frame
+   SMW evidence is in `docs/nmi-irq-timing.md`. Exact pause-cycle alignment and
+   the post-general-DMA NMI sequence remain part of the already-scoped future
+   mid-instruction DMA scheduler refinement, not this interrupt-boundary item.
 6. **Golden-image regression suite**: the harness + test/snes-test-roms
    are ready for this - capture known-good screenshots per test ROM
    (compare against bsnes/Mesen output or hardware photos) and wire
