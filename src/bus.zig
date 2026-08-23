@@ -36,6 +36,12 @@ const line_masters: u64 = @as(u64, @import("ppu/ppu.zig").DOTS_PER_SCANLINE) *
     @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT;
 const frame_masters: u64 = line_masters * @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
 const nmi_set_master: u64 = 225 * line_masters + 2; // V=225, H=0.5
+const max_irq_transitions = 8;
+
+const IrqTransition = struct {
+    master: u64,
+    level: bool,
+};
 
 fn absolutePpuMaster(ppu: *const Ppu) u64 {
     return ppu.frame_count * frame_masters + @as(u64, ppu.scanline) * line_masters +
@@ -189,6 +195,10 @@ pub const Bus = struct {
     // the I flag is clear) - games acknowledge by reading $4211 inside
     // the handler.
     irq_flag: bool,
+    // TIMEUP cannot be cleared during the four-master-clock pulse which sets
+    // it. Unlike the per-instruction transition journal below, this deadline
+    // is machine state and must survive a savestate taken on the edge.
+    irq_hold_until_master: u64,
 
     // =========================================================================
     // APU I/O PORTS ($2140-$2143) - SPC700 Communication Interface
@@ -327,6 +337,9 @@ pub const Bus = struct {
     // state: root.zig always advances it to the committed beam before a step
     // returns, and beginCpuInstruction establishes the next horizon.
     interrupt_horizon_master: u64 = 0,
+    irq_level_at_instruction_start: bool = false,
+    irq_transitions: [max_irq_transitions]IrqTransition = undefined,
+    irq_transition_count: u8 = 0,
 
     /// Start timing a CPU instruction. HDMA billed by the preceding scanline
     /// transition is still pending in dma_masters, and happens-before the CPU
@@ -336,6 +349,8 @@ pub const Bus = struct {
         self.ppu_write_timing_offset = self.ppu_cpu_timing_base;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
         self.interrupt_horizon_master = absolutePpuMaster(self.ppu);
+        self.irq_level_at_instruction_start = self.irq_flag;
+        self.irq_transition_count = 0;
     }
 
     /// Start HDMA at the PPU's current beam position, outside a CPU
@@ -350,30 +365,90 @@ pub const Bus = struct {
     pub fn setCpuAccessTiming(self: *Bus, instruction_masters: u32) void {
         self.ppu_write_timing_offset = self.ppu_cpu_timing_base + instruction_masters;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
-        self.syncNmiFlagTo(absolutePpuMaster(self.ppu) + self.ppu_write_timing_offset);
+        self.syncInterruptFlagsTo(absolutePpuMaster(self.ppu) + self.ppu_write_timing_offset);
     }
 
     /// Advance the CPU-visible RDNMI latch through hardware time without
     /// moving the PPU. CPU accesses are executed before root.zig commits the
     /// instruction's clocks, so projecting this tiny piece of hardware state
     /// is what lets a $4210 read observe an edge inside its own instruction.
-    pub fn syncNmiFlagTo(self: *Bus, target_master: u64) void {
+    pub fn syncInterruptFlagsTo(self: *Bus, target_master: u64) void {
         if (target_master <= self.interrupt_horizon_master) return;
         var cursor = self.interrupt_horizon_master;
         while (true) {
             const set_at = nextPeriodicAfter(cursor, nmi_set_master, frame_masters);
             const clear_at = nextPeriodicAfter(cursor, 0, frame_masters);
-            const event_at = @min(set_at, clear_at);
+            const irq_at = self.nextIrqEventAfter(cursor) orelse std.math.maxInt(u64);
+            const event_at = @min(@min(set_at, clear_at), irq_at);
             if (event_at > target_master) break;
-            if (set_at <= clear_at) {
+            if (set_at == event_at) {
                 self.nmi_flag = true;
                 if ((self.nmitimen & 0x01) != 0) self.autoJoypadRead();
-            } else {
+            }
+            if (clear_at == event_at) {
                 self.nmi_flag = false;
+            }
+            if (irq_at == event_at) {
+                self.irq_hold_until_master = event_at + 4;
+                self.setIrqFlagAt(true, event_at);
             }
             cursor = event_at;
         }
         self.interrupt_horizon_master = target_master;
+    }
+
+    /// Anomie's measured timer-output point. The counter comparison is
+    /// followed by the timer circuit's own delay: H/HV use 14+H*4 clocks
+    /// from line start (H+3.5 dots), while H=0/V-only emerge at clock 10.
+    fn nextIrqEventAfter(self: *const Bus, now: u64) ?u64 {
+        const mode = self.nmitimen & 0x30;
+        if (mode == 0) return null;
+        const h_delay: u64 = if (self.htime == 0) 10 else 14 + @as(u64, self.htime) * 4;
+        return switch (mode) {
+            0x10 => if (self.htime <= 339)
+                nextPeriodicAfter(now, h_delay, line_masters)
+            else
+                null,
+            0x20 => if (self.vtime < @import("ppu/ppu.zig").SCANLINES_PER_FRAME)
+                nextPeriodicAfter(now, @as(u64, self.vtime) * line_masters + 10, frame_masters)
+            else
+                null,
+            0x30 => if (self.htime <= 339 and self.vtime < @import("ppu/ppu.zig").SCANLINES_PER_FRAME)
+                nextPeriodicAfter(now, @as(u64, self.vtime) * line_masters + h_delay, frame_masters)
+            else
+                null,
+            else => null,
+        };
+    }
+
+    fn irqEventAt(self: *const Bus, master: u64) bool {
+        if (master == 0) return false;
+        return self.nextIrqEventAfter(master - 1) == master;
+    }
+
+    fn setIrqFlagAt(self: *Bus, level: bool, master: u64) void {
+        if (self.irq_flag == level) return;
+        self.irq_flag = level;
+        if (self.irq_transition_count < max_irq_transitions) {
+            self.irq_transitions[self.irq_transition_count] = .{ .master = master, .level = level };
+            self.irq_transition_count += 1;
+        } else {
+            // A normal 65816 instruction cannot approach this; fail loudly in
+            // tests instead of silently sampling a fabricated IRQ level.
+            std.debug.assert(false);
+        }
+    }
+
+    /// IRQ input level at the CPU's pre-final-cycle sample, reconstructed from
+    /// transitions which may include a later $4211 read already executed by
+    /// the instruction-granular core.
+    pub fn irqLineAt(self: *const Bus, master: u64) bool {
+        var level = self.irq_level_at_instruction_start;
+        for (self.irq_transitions[0..self.irq_transition_count]) |transition| {
+            if (transition.master > master) break;
+            level = transition.level;
+        }
+        return level;
     }
 
     /// Account DMA-controller bus time.  Besides transferred bytes, HDMA has
@@ -493,6 +568,7 @@ pub const Bus = struct {
             .joy2_shift = 0,
             .nmi_flag = false,
             .irq_flag = false,
+            .irq_hold_until_master = 0,
             // APU with SPC700 CPU - initialized with IPL ROM ready signal
             // The SPC700 starts executing at $FFC0 (IPL ROM) and will
             // write $AA/$BB to ports 0/1 to signal readiness
@@ -768,7 +844,8 @@ pub const Bus = struct {
                 // IRQ line (the emulator syncs cpu.irq_pending from
                 // irq_flag each step).
                 const flag: u8 = if (self.irq_flag) 0x80 else 0x00;
-                self.irq_flag = false;
+                const now = @max(self.interrupt_horizon_master, absolutePpuMaster(self.ppu));
+                if (now >= self.irq_hold_until_master) self.setIrqFlagAt(false, now);
                 return flag;
             },
             0x4212 => {
@@ -811,11 +888,16 @@ pub const Bus = struct {
     fn writeSystemRegister(self: *Bus, addr: u16, value: u8) void {
         switch (addr) {
             0x4200 => {
+                const old_irq_mode = self.nmitimen & 0x30;
                 self.nmitimen = value;
                 // Disabling both H/V IRQ sources (bits 4-5) acknowledges
                 // any pending timer IRQ - hardware drops the line.
                 if ((value & 0x30) == 0) {
-                    self.irq_flag = false;
+                    self.setIrqFlagAt(false, self.interrupt_horizon_master);
+                } else if (old_irq_mode == 0 and self.irqEventAt(self.interrupt_horizon_master)) {
+                    // Enabling on the exact output cycle still asserts IRQ.
+                    self.irq_hold_until_master = self.interrupt_horizon_master + 4;
+                    self.setIrqFlagAt(true, self.interrupt_horizon_master);
                 }
             },
 

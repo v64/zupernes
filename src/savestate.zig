@@ -56,7 +56,7 @@ const Apu = @import("apu/apu.zig").Apu;
 /// everything captured, and `read` refuses a mismatch. The version covers a
 /// deliberate REORDER at equal size; the length covers every accidental
 /// change, which is the one that actually happens.
-pub const magic = "ZNSAVE\x00\x04";
+pub const magic = "ZNSAVE\x00\x05";
 
 const fb_bytes = ppu_mod.SCREEN_WIDTH * ppu_mod.SCREEN_HEIGHT * 2;
 const render_state_bytes = blk: {
@@ -262,7 +262,7 @@ fn getRenderState(src: []const u8, at: *usize) Ppu.RenderState {
 pub const state_len: usize = blk: {
     var n: usize = magic.len + 4; // magic + the u32 layout length below
     // CPU
-    n += 2 * 5 + 3 + 2 + 1 + 1 + 1 + 4 + 1 + 4 + 8 + 8 + 4;
+    n += 2 * 5 + 3 + 2 + 1 + 1 + 1 + 4 + 1 + 4 + 8 + 8 + 4 + 1;
     // PPU arrays
     n += 64 * 1024 + 512 + 544 + fb_bytes;
     // PPU scalars
@@ -278,7 +278,7 @@ pub const state_len: usize = blk: {
     n += 8 * (1 + 1 + 4 + 2 + 1 + 2 + 1 + 1) + 2;
     // Bus scalars
     n += 4 + 1 + 2 + 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 + 2 + 1 +
-        2 + 2 + 1 + 2 + 2 + 1 + 4 + 4 + 1 + 1 + 1 + 4 + 4 + 4;
+        2 + 2 + 1 + 2 + 2 + 1 + 4 + 4 + 1 + 1 + 1 + 8 + 4 + 4 + 4;
     // APU
     n += Apu.state_len;
     // DSP-1 mutable state: ram, pc, stack, sp, a, b, flaga, flagb,
@@ -326,6 +326,7 @@ pub fn write(
     putBool(dst, &at, cpu.nmi_latched);
     putBool(dst, &at, cpu.irq_pending);
     putBool(dst, &at, cpu.waiting);
+    putU8(dst, &at, cpu.wai_resume_cycles);
 
     // ---- PPU memories ----
     @memcpy(dst[at..][0 .. 64 * 1024], &ppu.vram);
@@ -448,6 +449,7 @@ pub fn write(
     putU32(dst, &at, bus.joy2_shift);
     putBool(dst, &at, bus.nmi_flag);
     putBool(dst, &at, bus.irq_flag);
+    putU64(dst, &at, bus.irq_hold_until_master);
     putBool(dst, &at, bus.dsp1_present);
     putU32(dst, &at, bus.writer_pc);
     putU32(dst, &at, bus.dsp_accum);
@@ -522,6 +524,7 @@ pub fn read(
     cpu.nmi_latched = getBool(src, &at);
     cpu.irq_pending = getBool(src, &at);
     cpu.waiting = getBool(src, &at);
+    cpu.wai_resume_cycles = getU8(src, &at);
 
     // ---- PPU memories ----
     @memcpy(&ppu.vram, src[at..][0 .. 64 * 1024]);
@@ -642,6 +645,7 @@ pub fn read(
     bus.joy2_shift = getU32(src, &at);
     bus.nmi_flag = getBool(src, &at);
     bus.irq_flag = getBool(src, &at);
+    bus.irq_hold_until_master = getU64(src, &at);
     bus.dsp1_present = getBool(src, &at);
     bus.writer_pc = @truncate(getU32(src, &at));
     bus.dsp_accum = getU32(src, &at);
@@ -745,23 +749,29 @@ test "read preserves interior pointers and round-trips scalars" {
     cpu.a = 0x1234;
     cpu.pbr = 0x7E;
     cpu.nmi_latched = true;
+    cpu.wai_resume_cycles = 2;
     ppu.frame_count = 99;
     bus.wram[0x1234] = 0xAB;
+    bus.irq_hold_until_master = 0x123456789ABCDEF0;
     _ = try write(&cpu, &ppu, &bus, 7, buf);
 
     cpu.a = 0;
     cpu.pbr = 0;
     cpu.nmi_latched = false;
+    cpu.wai_resume_cycles = 0;
     ppu.frame_count = 0;
     bus.wram[0x1234] = 0;
+    bus.irq_hold_until_master = 0;
     var last: u16 = 0;
     _ = try read(&cpu, &ppu, &bus, &last, buf);
 
     try std.testing.expectEqual(@as(u16, 0x1234), cpu.a);
     try std.testing.expectEqual(@as(u8, 0x7E), cpu.pbr);
     try std.testing.expect(cpu.nmi_latched);
+    try std.testing.expectEqual(@as(u8, 2), cpu.wai_resume_cycles);
     try std.testing.expectEqual(@as(u64, 99), ppu.frame_count);
     try std.testing.expectEqual(@as(u8, 0xAB), bus.wram[0x1234]);
+    try std.testing.expectEqual(@as(u64, 0x123456789ABCDEF0), bus.irq_hold_until_master);
     try std.testing.expectEqual(@as(u16, 7), last);
     // The pointers restore() must never touch.
     try std.testing.expectEqual(&bus, cpu.bus);

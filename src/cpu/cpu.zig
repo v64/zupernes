@@ -108,9 +108,17 @@ pub const Cpu = struct {
     // the interrupt sample before the final CPU cycle, and Cpu.step() resets
     // it before executing the next instruction.
     last_access_masters: u8,
+    // I-flag value seen by the interrupt check before the final CPU cycle.
+    // CLI/SEI/PLP/REP/SEP change I during that final cycle, so this can differ
+    // from the architectural P value left at the instruction boundary.
+    irq_sample_i: bool,
 
     // WAI (wait for interrupt) state
     waiting: bool,
+    // After an interrupt input wakes WAI, hardware spends two internal CPU
+    // cycles (12 master clocks) ending the instruction before either taking
+    // the interrupt or resuming the next opcode.
+    wai_resume_cycles: u8,
 
     pub fn init(bus: *Bus) Cpu {
         return Cpu{
@@ -136,15 +144,24 @@ pub const Cpu = struct {
             .nmi_latched = false,
             .irq_pending = false,
             .last_access_masters = 6,
+            .irq_sample_i = true,
             .waiting = false,
+            .wai_resume_cycles = 0,
         };
+    }
+
+    fn wakeForInterrupt(self: *Cpu) void {
+        if (self.waiting) {
+            self.waiting = false;
+            self.wai_resume_cycles = 2;
+        }
     }
 
     /// Trigger NMI (called at start of VBlank if NMI is enabled)
     pub fn triggerNmi(self: *Cpu) void {
         self.nmi_pending = true;
         self.nmi_latched = false;
-        self.waiting = false; // Wake from WAI
+        self.wakeForInterrupt();
     }
 
     /// Remember an NMI edge that was too late for the current instruction's
@@ -152,13 +169,18 @@ pub const Cpu = struct {
     /// internal edge latch must still retain it.
     pub fn latchNmi(self: *Cpu) void {
         self.nmi_latched = true;
-        self.waiting = false;
+        self.wakeForInterrupt();
     }
 
     /// Trigger IRQ
     pub fn triggerIrq(self: *Cpu) void {
         self.irq_pending = true;
-        self.waiting = false; // Wake from WAI
+        self.wakeForInterrupt();
+    }
+
+    /// The IRQ input terminates WAI even while I masks IRQ service.
+    pub fn wakeFromIrqLine(self: *Cpu) void {
+        self.wakeForInterrupt();
     }
 
     pub fn reset(self: *Cpu) void {
@@ -172,6 +194,7 @@ pub const Cpu = struct {
         self.nmi_latched = false;
         self.irq_pending = false;
         self.waiting = false;
+        self.wai_resume_cycles = 0;
         self.instruction_count = 0;
         self.total_cycles = 0;
 
@@ -186,6 +209,14 @@ pub const Cpu = struct {
         self.mem_accesses = 0;
         self.internal_flushed = 0;
         self.last_access_masters = 6;
+        self.irq_sample_i = self.p.i;
+
+        if (self.wai_resume_cycles != 0) {
+            self.cycles = self.wai_resume_cycles;
+            self.wai_resume_cycles = 0;
+            self.total_cycles += self.cycles;
+            return self.cycles;
+        }
 
         // =====================================================================
         // INTERRUPT HANDLING
@@ -196,14 +227,17 @@ pub const Cpu = struct {
         // =====================================================================
         if (self.nmi_pending) {
             self.nmi_pending = false;
+            self.irq_pending = false; // NMI wins a simultaneous sample.
             self.handleNmi();
+            self.irq_sample_i = self.p.i;
             self.total_cycles += self.cycles;
             return self.cycles;
         }
 
-        if (self.irq_pending and !self.p.i) {
+        if (self.irq_pending) {
             self.irq_pending = false;
             self.handleIrq();
+            self.irq_sample_i = self.p.i;
             self.total_cycles += self.cycles;
             return self.cycles;
         }
@@ -211,6 +245,7 @@ pub const Cpu = struct {
         // WAI instruction puts CPU to sleep until next interrupt
         if (self.waiting) {
             self.cycles = 1;
+            self.irq_sample_i = self.p.i;
             self.total_cycles += self.cycles;
             return self.cycles;
         }
@@ -219,6 +254,7 @@ pub const Cpu = struct {
         // INSTRUCTION FETCH AND TRACE
         // =====================================================================
         const trace_pc = self.pc;
+        const i_before = self.p.i;
         const opcode = self.fetchByte();
 
         // CPU trace controlled by debug.zig configuration
@@ -254,6 +290,13 @@ pub const Cpu = struct {
             self.sp = 0x0100 | (self.sp & 0xFF);
         }
         self.executeOpcode(opcode);
+        self.irq_sample_i = switch (opcode) {
+            // These instructions update I in their final cycle, after the
+            // interrupt check. RTI/BRK/COP update it early enough and use the
+            // normal post-instruction value.
+            0x28, 0x58, 0x78, 0xC2, 0xE2 => i_before,
+            else => self.p.i,
+        };
         if (self.emulation_mode) {
             self.sp = 0x0100 | (self.sp & 0xFF);
         }

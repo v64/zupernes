@@ -127,12 +127,6 @@ pub const Emulator = struct {
 
     /// Run one CPU instruction
     pub fn step(self: *Emulator) void {
-        // Sync the level-triggered IRQ line: if the H/V timer flag was
-        // acknowledged (game read $4211) or disabled, drop the pending IRQ.
-        if (!self.bus.irq_flag) {
-            self.cpu.irq_pending = false;
-        }
-
         // Capture the instruction's PBR:PC for the VRAM- and WRAM-write source
         // traces (capture-only; no effect when the traces are disabled).
         self.ppu.writer_pc = (@as(u24, self.cpu.pbr) << 16) | self.cpu.pc;
@@ -180,11 +174,8 @@ pub const Emulator = struct {
         // only the instruction's trailing internal cycles remain here.
         self.bus.tickDsp((internal -| self.cpu.internal_flushed) * 6);
 
-        // Track current position before tick (for scanline-transition and
-        // IRQ-point crossing detection below). The absolute master time is
-        // also the origin for the NMI edge's within-instruction placement.
-        const prev_scanline = self.ppu.scanline;
-        const prev_dot = self.ppu.dot;
+        // Absolute hardware time is the origin for placing interrupt edges
+        // within this instruction.
         const instruction_start = absolutePpuMaster(&self.ppu);
 
         // Advance the PPU by the instruction's true master-cycle cost (one
@@ -202,7 +193,7 @@ pub const Emulator = struct {
         const final_cycle = @min(self.cpu.finalCycleMasters(), elapsed);
         self.advancePpuWithHdma(elapsed - final_cycle);
         const sample_master = absolutePpuMaster(&self.ppu);
-        self.bus.syncNmiFlagTo(sample_master);
+        self.bus.syncInterruptFlagsTo(sample_master);
 
         const nmi_before_sample = crossedPeriodic(
             instruction_start,
@@ -215,72 +206,24 @@ pub const Emulator = struct {
         {
             self.cpu.triggerNmi();
         }
+        const irq_at_sample = self.bus.irqLineAt(sample_master);
+        if (irq_at_sample) {
+            self.cpu.wakeFromIrqLine();
+            if (!self.cpu.irq_sample_i) self.cpu.triggerIrq();
+        }
 
         self.advancePpuWithHdma(final_cycle);
         const instruction_end = absolutePpuMaster(&self.ppu);
-        self.bus.syncNmiFlagTo(instruction_end);
+        self.bus.syncInterruptFlagsTo(instruction_end);
+        // An IRQ edge in the final CPU cycle misses this instruction's
+        // acceptance sample, but its level still terminates WAI immediately.
+        if (!irq_at_sample and self.bus.irqLineAt(instruction_end)) {
+            self.cpu.wakeFromIrqLine();
+        }
         if (crossedPeriodic(sample_master, instruction_end, nmi_set_master, masters_per_frame) and
             (self.bus.nmitimen & 0x80) != 0)
         {
             self.cpu.latchNmi();
-        }
-
-        // ======================================================================
-        // H/V TIMER IRQ ($4200 bits 4-5, $4207-$420A)
-        // ======================================================================
-        // The PPU's H/V counters trigger an IRQ when they pass the point
-        // configured in HTIME/VTIME:
-        //   H-IRQ only:  every scanline at H = HTIME
-        //   V-IRQ only:  once per frame at V = VTIME, H = ~2
-        //   H+V IRQ:     once per frame at V = VTIME, H = HTIME
-        // We detect whether the (scanline, dot) position crossed the trigger
-        // point during this instruction. Out-of-range HTIME (>340) or VTIME
-        // (>261) values simply never match - that's how games "disable" the
-        // timer without touching NMITIMEN.
-        // ======================================================================
-        const irq_mode = self.bus.nmitimen & 0x30;
-        if (irq_mode != 0) {
-            const dots_per_line: u32 = @intCast(zupernes_dots_per_line);
-            const total: u32 = dots_per_line * @as(u32, @intCast(zupernes_lines_per_frame));
-            const prev_pos: u32 = @as(u32, prev_scanline) * dots_per_line + prev_dot;
-            const cur_pos: u32 = @as(u32, self.ppu.scanline) * dots_per_line + self.ppu.dot;
-            // Unwrap across the frame boundary so cur is always >= prev
-            const cur_unwrapped = if (cur_pos >= prev_pos) cur_pos else cur_pos + total;
-
-            var crossed = false;
-            if (irq_mode == 0x10) {
-                // H-IRQ every line: find the first position after prev_pos
-                // whose dot component equals HTIME
-                const h: u32 = self.bus.htime;
-                if (h < dots_per_line) {
-                    const line_start = (prev_pos / dots_per_line) * dots_per_line;
-                    const candidate = line_start + h;
-                    const target = if (candidate > prev_pos) candidate else candidate + dots_per_line;
-                    crossed = target <= cur_unwrapped;
-                }
-            } else {
-                // V-IRQ (with or without H component): a single point per frame
-                const h: u32 = if (irq_mode == 0x20) 2 else self.bus.htime;
-                const v: u32 = self.bus.vtime;
-                if (h < dots_per_line and v < zupernes_lines_per_frame) {
-                    const point = v * dots_per_line + h;
-                    const target = if (point > prev_pos) point else point + total;
-                    crossed = target <= cur_unwrapped;
-                }
-            }
-
-            if (crossed) {
-                self.bus.irq_flag = true;
-                self.cpu.triggerIrq();
-            }
-        }
-
-        // Check for scanline transitions
-        if (self.ppu.scanline != prev_scanline) {
-            // New scanline started
-            // RDNMI and the CPU's NMI edge are synchronized above at their
-            // sub-dot hardware point rather than approximated by this line
-            // transition.
         }
     }
 
@@ -904,4 +847,123 @@ test "NMI service jitters by one instruction around the pre-final-cycle sample" 
     try std.testing.expect(!late.cpu.nmi_latched);
     late.step();
     try std.testing.expectEqual(@as(u16, 0x01FC), late.cpu.sp);
+}
+
+test "H and V timer flags include the measured compare-to-output delay" {
+    var hirq = Emulator.init();
+    hirq.setup();
+    hirq.ppu.scanline = 10;
+    hirq.ppu.dot = 102;
+    hirq.bus.nmitimen = 0x10;
+    hirq.bus.htime = 100;
+    hirq.bus.beginCpuInstruction();
+
+    // HTIME=100 compares at H=100; the timer output is 14+100*4 clocks
+    // from line start, H=103.5. Starting at H=102 puts that edge 6 clocks
+    // away, not at the already-passed programmed dot.
+    hirq.bus.setCpuAccessTiming(5);
+    try std.testing.expect(!hirq.bus.irq_flag);
+    hirq.bus.setCpuAccessTiming(6);
+    try std.testing.expect(hirq.bus.irq_flag);
+
+    // TIMEUP is forced set for four clocks around its edge, mirroring the
+    // RDNMI read-clear race.
+    try std.testing.expectEqual(@as(u8, 0x80), hirq.bus.read(0, 0x4211));
+    try std.testing.expect(hirq.bus.irq_flag);
+    hirq.bus.setCpuAccessTiming(9);
+    try std.testing.expectEqual(@as(u8, 0x80), hirq.bus.read(0, 0x4211));
+    try std.testing.expect(hirq.bus.irq_flag);
+    hirq.bus.setCpuAccessTiming(10);
+    try std.testing.expectEqual(@as(u8, 0x80), hirq.bus.read(0, 0x4211));
+    try std.testing.expect(!hirq.bus.irq_flag);
+
+    var virq = Emulator.init();
+    virq.setup();
+    virq.ppu.scanline = 9;
+    virq.ppu.dot = 340;
+    virq.bus.nmitimen = 0x20;
+    virq.bus.vtime = 10;
+    virq.bus.beginCpuInstruction();
+    // Four clocks finish V=9, then the V-only output appears at V=10/H=2.5.
+    virq.bus.setCpuAccessTiming(13);
+    try std.testing.expect(!virq.bus.irq_flag);
+    virq.bus.setCpuAccessTiming(14);
+    try std.testing.expect(virq.bus.irq_flag);
+}
+
+test "IRQ service has boundary jitter and samples I before final-cycle flag updates" {
+    var early = Emulator.init();
+    early.setup();
+    early.cpu.pc = 0;
+    early.cpu.p.i = false;
+    early.bus.wram[0] = 0xA9;
+    early.bus.wram[1] = 0;
+    early.bus.nmitimen = 0x10;
+    early.bus.htime = 100;
+    early.ppu.scanline = 10;
+    early.ppu.dot = 102; // IRQ output 6 clocks away, before sample at 8.
+    early.step();
+    try std.testing.expect(early.cpu.irq_pending);
+    early.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), early.cpu.sp);
+
+    var late = Emulator.init();
+    late.setup();
+    late.cpu.pc = 0;
+    late.cpu.p.i = false;
+    late.bus.wram[0] = 0xA9;
+    late.bus.wram[1] = 0;
+    late.bus.wram[2] = 0xA9;
+    late.bus.wram[3] = 0;
+    late.bus.nmitimen = 0x10;
+    late.bus.htime = 100;
+    late.ppu.scanline = 10;
+    late.ppu.dot = 101; // IRQ output 10 clocks away, in the final cycle.
+    late.step();
+    try std.testing.expect(!late.cpu.irq_pending);
+    late.step();
+    try std.testing.expectEqual(@as(u16, 4), late.cpu.pc);
+    try std.testing.expect(late.cpu.irq_pending);
+    late.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), late.cpu.sp);
+
+    var flags = Emulator.init();
+    flags.setup();
+    flags.cpu.pc = 0;
+    flags.cpu.p.i = true;
+    flags.bus.wram[0] = 0x58; // CLI: sample sees old I=1, so no IRQ yet.
+    flags.bus.wram[1] = 0x78; // SEI: sample sees old I=0, so IRQ is accepted.
+    flags.bus.irq_flag = true;
+    flags.step();
+    try std.testing.expect(!flags.cpu.irq_pending);
+    try std.testing.expect(!flags.cpu.p.i);
+    flags.step();
+    try std.testing.expect(flags.cpu.irq_pending);
+    try std.testing.expect(flags.cpu.p.i);
+    flags.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), flags.cpu.sp);
+}
+
+test "masked IRQ wakes WAI and pays the 12-master-clock resume delay" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.cpu.pc = 0;
+    emu.cpu.p.i = true;
+    emu.cpu.waiting = true;
+    emu.bus.wram[0] = 0xEA;
+    emu.bus.irq_flag = true;
+
+    emu.step();
+    try std.testing.expect(!emu.cpu.waiting);
+    try std.testing.expectEqual(@as(u8, 2), emu.cpu.wai_resume_cycles);
+    try std.testing.expect(!emu.cpu.irq_pending);
+    try std.testing.expectEqual(@as(u16, 0), emu.cpu.pc);
+
+    emu.step();
+    try std.testing.expectEqual(@as(u8, 0), emu.cpu.wai_resume_cycles);
+    try std.testing.expectEqual(@as(u16, 0), emu.cpu.pc);
+    try std.testing.expect(!emu.cpu.irq_pending);
+
+    emu.step();
+    try std.testing.expectEqual(@as(u16, 1), emu.cpu.pc);
 }
