@@ -1,0 +1,648 @@
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/back-door-ninji@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: back-door-ninji, 360 frames -> /private/tmp/zw-pincheck/.oracle/back-door-ninji@fast/zupernes
+engine bundle: back-door-ninji, 360 frames -> /private/tmp/zw-pincheck/.oracle/back-door-ninji@fast/zuperworld
+{
+  "scenario": "back-door-ninji",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 360,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/back-door-ninji@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/big-boo-color-math@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: big-boo-color-math, 1856 frames -> /private/tmp/zw-pincheck/.oracle/big-boo-color-math@fast/zupernes
+engine bundle: big-boo-color-math, 1856 frames -> /private/tmp/zw-pincheck/.oracle/big-boo-color-math@fast/zuperworld
+{
+  "scenario": "big-boo-color-math",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1856,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/big-boo-color-math@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/bonus-game-direct-entry@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: bonus-game-direct-entry, 120 frames -> /private/tmp/zw-pincheck/.oracle/bonus-game-direct-entry@fast/zupernes
+engine bundle: bonus-game-direct-entry, 120 frames -> /private/tmp/zw-pincheck/.oracle/bonus-game-direct-entry@fast/zuperworld
+{
+  "scenario": "bonus-game-direct-entry",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 120,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/bonus-game-direct-entry@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/bullet-bill-shooter@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: bullet-bill-shooter, 600 frames -> /private/tmp/zw-pincheck/.oracle/bullet-bill-shooter@fast/zupernes
+engine bundle: bullet-bill-shooter, 600 frames -> /private/tmp/zw-pincheck/.oracle/bullet-bill-shooter@fast/zuperworld
+{
+  "scenario": "bullet-bill-shooter",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 600,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/bullet-bill-shooter@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/castle-music-entry@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: castle-music-entry, 12 frames -> /private/tmp/zw-pincheck/.oracle/castle-music-entry@fast/zupernes
+engine bundle: castle-music-entry, 12 frames -> /private/tmp/zw-pincheck/.oracle/castle-music-entry@fast/zuperworld
+{
+  "scenario": "castle-music-entry",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 12,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/castle-music-entry@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/choco-ghost-house-boo-block@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: choco-ghost-house-boo-block, 120 frames -> /private/tmp/zw-pincheck/.oracle/choco-ghost-house-boo-block@fast/zupernes
+engine bundle: choco-ghost-house-boo-block, 120 frames -> /private/tmp/zw-pincheck/.oracle/choco-ghost-house-boo-block@fast/zuperworld
+{
+  "scenario": "choco-ghost-house-boo-block",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 120,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/choco-ghost-house-boo-block@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/choco-ghost-house-moving-ledge@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: choco-ghost-house-moving-ledge, 1800 frames -> /private/tmp/zw-pincheck/.oracle/choco-ghost-house-moving-ledge@fast/zupernes
+engine bundle: choco-ghost-house-moving-ledge, 1800 frames -> /private/tmp/zw-pincheck/.oracle/choco-ghost-house-moving-ledge@fast/zuperworld
+{
+  "scenario": "choco-ghost-house-moving-ledge",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1800,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/choco-ghost-house-moving-ledge@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/chocolate-fortress-wooden-spikes@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: chocolate-fortress-wooden-spikes, 225 frames -> /private/tmp/zw-pincheck/.oracle/chocolate-fortress-wooden-spikes@fast/zupernes
+engine bundle: chocolate-fortress-wooden-spikes, 225 frames -> /private/tmp/zw-pincheck/.oracle/chocolate-fortress-wooden-spikes@fast/zuperworld
+{
+  "scenario": "chocolate-fortress-wooden-spikes",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 225,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/chocolate-fortress-wooden-spikes@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/chocolate-island-1-dinos@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: chocolate-island-1-dinos, 360 frames -> /private/tmp/zw-pincheck/.oracle/chocolate-island-1-dinos@fast/zupernes
+engine bundle: chocolate-island-1-dinos, 360 frames -> /private/tmp/zw-pincheck/.oracle/chocolate-island-1-dinos@fast/zuperworld
+{
+  "scenario": "chocolate-island-1-dinos",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 360,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/chocolate-island-1-dinos@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/chocolate-island-4-carrot-top-lift@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: chocolate-island-4-carrot-top-lift, 224 frames -> /private/tmp/zw-pincheck/.oracle/chocolate-island-4-carrot-top-lift@fast/zupernes
+engine bundle: chocolate-island-4-carrot-top-lift, 224 frames -> /private/tmp/zw-pincheck/.oracle/chocolate-island-4-carrot-top-lift@fast/zuperworld
+{
+  "scenario": "chocolate-island-4-carrot-top-lift",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 224,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/chocolate-island-4-carrot-top-lift@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/cookie-mountain-sumo-brother-seeded@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: cookie-mountain-sumo-brother-seeded, 240 frames -> /private/tmp/zw-pincheck/.oracle/cookie-mountain-sumo-brother-seeded@fast/zupernes
+engine bundle: cookie-mountain-sumo-brother-seeded, 240 frames -> /private/tmp/zw-pincheck/.oracle/cookie-mountain-sumo-brother-seeded@fast/zuperworld
+{
+  "scenario": "cookie-mountain-sumo-brother-seeded",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 240,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/cookie-mountain-sumo-brother-seeded@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/dark-room-back-door-switch@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: dark-room-back-door-switch, 460 frames -> /private/tmp/zw-pincheck/.oracle/dark-room-back-door-switch@fast/zupernes
+engine bundle: dark-room-back-door-switch, 460 frames -> /private/tmp/zw-pincheck/.oracle/dark-room-back-door-switch@fast/zuperworld
+{
+  "scenario": "dark-room-back-door-switch",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 460,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/dark-room-back-door-switch@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/dark-room-back-door@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: dark-room-back-door, 180 frames -> /private/tmp/zw-pincheck/.oracle/dark-room-back-door@fast/zupernes
+engine bundle: dark-room-back-door, 180 frames -> /private/tmp/zw-pincheck/.oracle/dark-room-back-door@fast/zuperworld
+{
+  "scenario": "dark-room-back-door",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 180,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/dark-room-back-door@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/donut-secret-house-boo-ring-e2@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: donut-secret-house-boo-ring-e2, 1038 frames -> /private/tmp/zw-pincheck/.oracle/donut-secret-house-boo-ring-e2@fast/zupernes
+engine bundle: donut-secret-house-boo-ring-e2, 1038 frames -> /private/tmp/zw-pincheck/.oracle/donut-secret-house-boo-ring-e2@fast/zuperworld
+{
+  "scenario": "donut-secret-house-boo-ring-e2",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1038,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/donut-secret-house-boo-ring-e2@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/dp3-chain-platform-window@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: dp3-chain-platform-window, 320 frames -> /private/tmp/zw-pincheck/.oracle/dp3-chain-platform-window@fast/zupernes
+engine bundle: dp3-chain-platform-window, 320 frames -> /private/tmp/zw-pincheck/.oracle/dp3-chain-platform-window@fast/zuperworld
+{
+  "scenario": "dp3-chain-platform-window",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 320,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/dp3-chain-platform-window@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/foi1-exploding-block-seeded@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: foi1-exploding-block-seeded, 319 frames -> /private/tmp/zw-pincheck/.oracle/foi1-exploding-block-seeded@fast/zupernes
+engine bundle: foi1-exploding-block-seeded, 319 frames -> /private/tmp/zw-pincheck/.oracle/foi1-exploding-block-seeded@fast/zuperworld
+{
+  "scenario": "foi1-exploding-block-seeded",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 319,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/foi1-exploding-block-seeded@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/foi1-goomba-carry-pose@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: foi1-goomba-carry-pose, 760 frames -> /private/tmp/zw-pincheck/.oracle/foi1-goomba-carry-pose@fast/zupernes
+engine bundle: foi1-goomba-carry-pose, 760 frames -> /private/tmp/zw-pincheck/.oracle/foi1-goomba-carry-pose@fast/zuperworld
+{
+  "scenario": "foi1-goomba-carry-pose",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 760,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/foi1-goomba-carry-pose@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/front-door-bowser-statues@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: front-door-bowser-statues, 160 frames -> /private/tmp/zw-pincheck/.oracle/front-door-bowser-statues@fast/zupernes
+engine bundle: front-door-bowser-statues, 160 frames -> /private/tmp/zw-pincheck/.oracle/front-door-bowser-statues@fast/zuperworld
+{
+  "scenario": "front-door-bowser-statues",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 160,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/front-door-bowser-statues@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/front-door-mechakoopa@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: front-door-mechakoopa, 120 frames -> /private/tmp/zw-pincheck/.oracle/front-door-mechakoopa@fast/zupernes
+engine bundle: front-door-mechakoopa, 120 frames -> /private/tmp/zw-pincheck/.oracle/front-door-mechakoopa@fast/zuperworld
+{
+  "scenario": "front-door-mechakoopa",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 120,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/front-door-mechakoopa@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/front-door-reflecting-fireball@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: front-door-reflecting-fireball, 240 frames -> /private/tmp/zw-pincheck/.oracle/front-door-reflecting-fireball@fast/zupernes
+engine bundle: front-door-reflecting-fireball, 240 frames -> /private/tmp/zw-pincheck/.oracle/front-door-reflecting-fireball@fast/zuperworld
+{
+  "scenario": "front-door-reflecting-fireball",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 240,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/front-door-reflecting-fireball@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/funky-yellow-winged-koopa@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: funky-yellow-winged-koopa, 32 frames -> /private/tmp/zw-pincheck/.oracle/funky-yellow-winged-koopa@fast/zupernes
+engine bundle: funky-yellow-winged-koopa, 32 frames -> /private/tmp/zw-pincheck/.oracle/funky-yellow-winged-koopa@fast/zuperworld
+{
+  "scenario": "funky-yellow-winged-koopa",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 32,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/funky-yellow-winged-koopa@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-cape-drape-yoshi@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-cape-drape-yoshi, 83 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-drape-yoshi@fast/zupernes
+engine bundle: gameplay-cape-drape-yoshi, 83 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-drape-yoshi@fast/zuperworld
+{
+  "scenario": "gameplay-cape-drape-yoshi",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 83,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-cape-drape-yoshi@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-cape-flight@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-cape-flight, 325 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-flight@fast/zupernes
+engine bundle: gameplay-cape-flight, 325 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-flight@fast/zuperworld
+{
+  "scenario": "gameplay-cape-flight",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 325,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-cape-flight@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-cape-glide@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-cape-glide, 220 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-glide@fast/zupernes
+engine bundle: gameplay-cape-glide, 220 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-glide@fast/zuperworld
+{
+  "scenario": "gameplay-cape-glide",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 220,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-cape-glide@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-cape-interactions@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-cape-interactions, 126 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-interactions@fast/zupernes
+engine bundle: gameplay-cape-interactions, 126 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-interactions@fast/zuperworld
+{
+  "scenario": "gameplay-cape-interactions",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 126,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-cape-interactions@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-cape-spin-koopa@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-cape-spin-koopa, 180 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-spin-koopa@fast/zupernes
+engine bundle: gameplay-cape-spin-koopa, 180 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-spin-koopa@fast/zuperworld
+{
+  "scenario": "gameplay-cape-spin-koopa",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 180,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-cape-spin-koopa@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-cape-spin@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-cape-spin, 50 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-spin@fast/zupernes
+engine bundle: gameplay-cape-spin, 50 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-spin@fast/zuperworld
+{
+  "scenario": "gameplay-cape-spin",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 50,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-cape-spin@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-cape-visuals@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-cape-visuals, 60 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-visuals@fast/zupernes
+engine bundle: gameplay-cape-visuals, 60 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-cape-visuals@fast/zuperworld
+{
+  "scenario": "gameplay-cape-visuals",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 60,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-cape-visuals@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-dp1-air-route@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-dp1-air-route, 3080 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-dp1-air-route@fast/zupernes
+engine bundle: gameplay-dp1-air-route, 3080 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-dp1-air-route@fast/zuperworld
+{
+  "scenario": "gameplay-dp1-air-route",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 3080,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-dp1-air-route@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-foi1-wiggler@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-foi1-wiggler, 120 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-foi1-wiggler@fast/zupernes
+engine bundle: gameplay-foi1-wiggler, 120 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-foi1-wiggler@fast/zuperworld
+{
+  "scenario": "gameplay-foi1-wiggler",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 120,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-foi1-wiggler@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-iggy-clear-input@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-iggy-clear-input, 260 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-iggy-clear-input@fast/zupernes
+engine bundle: gameplay-iggy-clear-input, 260 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-iggy-clear-input@fast/zuperworld
+{
+  "scenario": "gameplay-iggy-clear-input",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 260,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-iggy-clear-input@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-iggy-defeat@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-iggy-defeat, 260 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-iggy-defeat@fast/zupernes
+engine bundle: gameplay-iggy-defeat, 260 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-iggy-defeat@fast/zuperworld
+{
+  "scenario": "gameplay-iggy-defeat",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 260,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-iggy-defeat@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-iggy-plank@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-iggy-plank, 128 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-iggy-plank@fast/zupernes
+engine bundle: gameplay-iggy-plank, 128 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-iggy-plank@fast/zuperworld
+{
+  "scenario": "gameplay-iggy-plank",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 128,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-iggy-plank@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-iggys-castle-climbing@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-iggys-castle-climbing, 120 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-iggys-castle-climbing@fast/zupernes
+engine bundle: gameplay-iggys-castle-climbing, 120 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-iggys-castle-climbing@fast/zuperworld
+{
+  "scenario": "gameplay-iggys-castle-climbing",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 120,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-iggys-castle-climbing@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-post-special-yi1-koopa@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-post-special-yi1-koopa, 118 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-post-special-yi1-koopa@fast/zupernes
+engine bundle: gameplay-post-special-yi1-koopa, 118 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-post-special-yi1-koopa@fast/zuperworld
+{
+  "scenario": "gameplay-post-special-yi1-koopa",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 118,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-post-special-yi1-koopa@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-turn-block-shatter@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-turn-block-shatter, 550 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-turn-block-shatter@fast/zupernes
+engine bundle: gameplay-turn-block-shatter, 550 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-turn-block-shatter@fast/zuperworld
+{
+  "scenario": "gameplay-turn-block-shatter",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 550,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-turn-block-shatter@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yellow-switch-palace-natural@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yellow-switch-palace-natural, 888 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yellow-switch-palace-natural@fast/zupernes
+engine bundle: gameplay-yellow-switch-palace-natural, 888 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yellow-switch-palace-natural@fast/zuperworld
+{
+  "scenario": "gameplay-yellow-switch-palace-natural",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 888,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yellow-switch-palace-natural@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-bonus-game@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-bonus-game, 3928 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-bonus-game@fast/zupernes
+engine bundle: gameplay-yi1-bonus-game, 3928 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-bonus-game@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-bonus-game",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 3928,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-bonus-game@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-entry@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-entry, 5 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-entry@fast/zupernes
+engine bundle: gameplay-yi1-entry, 5 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-entry@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-entry",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 5,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-entry@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-goal@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-goal, 580 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-goal@fast/zupernes
+engine bundle: gameplay-yi1-goal, 580 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-goal@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-goal",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 580,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-goal@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-koopa-stomp@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-koopa-stomp, 668 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-koopa-stomp@fast/zupernes
+engine bundle: gameplay-yi1-koopa-stomp, 668 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-koopa-stomp@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-koopa-stomp",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 668,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-koopa-stomp@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-rex-double@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-rex-double, 1276 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-rex-double@fast/zupernes
+engine bundle: gameplay-yi1-rex-double, 1276 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-rex-double@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-rex-double",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1276,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-rex-double@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-rex-stomp@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-rex-stomp, 848 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-rex-stomp@fast/zupernes
+engine bundle: gameplay-yi1-rex-stomp, 848 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-rex-stomp@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-rex-stomp",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 848,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-rex-stomp@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-run@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
