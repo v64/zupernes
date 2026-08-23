@@ -137,7 +137,7 @@ pub const Ppu = struct {
     /// reads/writes.  A copy captured at the start of the line plus the
     /// timestamped copies in RenderEvent let the deferred renderer reconstruct
     /// exactly which state was visible for each horizontal span.
-    const RenderState = struct {
+    pub const RenderState = struct {
         inidisp: u8,
         obsel: u8,
         bgmode: u8,
@@ -237,7 +237,7 @@ pub const Ppu = struct {
         }
     };
 
-    const RenderEvent = struct {
+    pub const RenderEvent = struct {
         /// Monotonic line number (frame * 262 + scanline), so writes projected
         /// across line 261 cannot be confused with an earlier line 0.
         line: u64,
@@ -249,7 +249,7 @@ pub const Ppu = struct {
     // beam.  2048 entries also covers several complete lines of a pathological
     // DMA-to-render-register transfer.  Same-dot writes are coalesced because
     // no output pixel can observe their intermediate states.
-    const render_event_capacity = 2048;
+    pub const render_event_capacity = 2048;
 
     // VRAM - 64KB
     vram: [64 * 1024]u8,
@@ -800,7 +800,11 @@ pub const Ppu = struct {
             const event = self.render_events[consumed];
             if (event.line == line) {
                 const boundary = dotToVisibleX(event.dot);
-                if (self.scanline < SCREEN_HEIGHT and boundary > x) {
+                // Preserve the emulator's established physical-line mapping:
+                // scanline 0 is the pre-render line and framebuffer row 0 is
+                // not populated from it.  Deferring the draw until line end
+                // must not turn that pre-render line into a newly visible row.
+                if (self.scanline > 0 and self.scanline < SCREEN_HEIGHT and boundary > x) {
                     self.renderScanlineRange(self.scanline, x, boundary);
                 }
                 event.state.apply(self);
@@ -813,7 +817,7 @@ pub const Ppu = struct {
             }
         }
 
-        if (self.scanline < SCREEN_HEIGHT and x < SCREEN_WIDTH) {
+        if (self.scanline > 0 and self.scanline < SCREEN_HEIGHT and x < SCREEN_WIDTH) {
             self.renderScanlineRange(self.scanline, x, SCREEN_WIDTH);
         }
         self.render_line_state = RenderState.capture(self);
@@ -2927,8 +2931,11 @@ test "mid-scanline INIDISP writes split force blank and brightness spans" {
     ppu.cgram[0] = 0xFF;
     ppu.cgram[1] = 0x7F; // white backdrop
 
-    // Turn the display on before active output, then force-blank it after 64
-    // visible pixels. The renderer runs only when line 0 completes.
+    // Line 0 is the pre-render line in this emulator's established mapping.
+    // Advance through it, then turn the display on before active output and
+    // force-blank it after 64 visible pixels of visible line 1.
+    ppu.writeRegister(0x2100, 0x0F);
+    ppu.tick(DOTS_PER_SCANLINE * MASTER_CYCLES_PER_DOT);
     ppu.writeRegister(0x2100, 0x0F);
     const blank_x: u16 = 64;
     const blank_dot = ACTIVE_DISPLAY_FIRST_DOT + blank_x;
@@ -2936,13 +2943,14 @@ test "mid-scanline INIDISP writes split force blank and brightness spans" {
     ppu.writeRegister(0x2100, 0x8F);
     ppu.tick(@as(u32, DOTS_PER_SCANLINE - blank_dot) * MASTER_CYCLES_PER_DOT);
 
-    for (0..blank_x) |x| try std.testing.expectEqual(@as(u16, 0x7FFF), ppu.framebuffer[x]);
-    for (blank_x..SCREEN_WIDTH) |x| try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[x]);
+    const line1 = SCREEN_WIDTH;
+    for (0..blank_x) |x| try std.testing.expectEqual(@as(u16, 0x7FFF), ppu.framebuffer[line1 + x]);
+    for (blank_x..SCREEN_WIDTH) |x| try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[line1 + x]);
 
-    // The state reached at the end of line 0 is the start state for line 1.
+    // The state reached at the end of line 1 is the start state for line 2.
     ppu.tick(DOTS_PER_SCANLINE * MASTER_CYCLES_PER_DOT);
     for (0..SCREEN_WIDTH) |x| {
-        try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[SCREEN_WIDTH + x]);
+        try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[2 * SCREEN_WIDTH + x]);
     }
 }
 
@@ -2959,6 +2967,7 @@ test "mid-scanline replay rebuilds layers when TM changes" {
     ppu.writeRegister(0x2107, 0x00);
     ppu.writeRegister(0x210B, 0x01);
     ppu.writeRegister(0x212C, 0x00);
+    ppu.tick(DOTS_PER_SCANLINE * MASTER_CYCLES_PER_DOT);
 
     const enable_x: u16 = 128;
     const enable_dot = ACTIVE_DISPLAY_FIRST_DOT + enable_x;
@@ -2966,8 +2975,9 @@ test "mid-scanline replay rebuilds layers when TM changes" {
     ppu.writeRegister(0x212C, 0x01);
     ppu.tick(@as(u32, DOTS_PER_SCANLINE - enable_dot) * MASTER_CYCLES_PER_DOT);
 
-    for (0..enable_x) |x| try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[x]);
-    for (enable_x..SCREEN_WIDTH) |x| try std.testing.expectEqual(@as(u16, 0x001F), ppu.framebuffer[x]);
+    const line1 = SCREEN_WIDTH;
+    for (0..enable_x) |x| try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[line1 + x]);
+    for (enable_x..SCREEN_WIDTH) |x| try std.testing.expectEqual(@as(u16, 0x001F), ppu.framebuffer[line1 + x]);
 }
 
 test "PPU write timing offset projects the access end onto the beam" {
@@ -2975,8 +2985,9 @@ test "PPU write timing offset projects the access end onto the beam" {
     ppu.cgram[0] = 0xFF;
     ppu.cgram[1] = 0x7F;
     ppu.writeRegister(0x2100, 0x0F);
+    ppu.tick(DOTS_PER_SCANLINE * MASTER_CYCLES_PER_DOT);
 
-    // The PPU has committed through dot 20, but the CPU store completes four
+    // On visible line 1 the PPU has committed through dot 20, but the CPU store completes four
     // dots later. Its INIDISP effect therefore begins at visible X=2, not at
     // the instruction-start position before active display.
     ppu.tick(20 * MASTER_CYCLES_PER_DOT);
@@ -2986,9 +2997,10 @@ test "PPU write timing offset projects the access end onto the beam" {
     ppu.setWriteTimingOffset(0);
     ppu.tick((DOTS_PER_SCANLINE - 24) * MASTER_CYCLES_PER_DOT);
 
-    try std.testing.expectEqual(@as(u16, 0x7FFF), ppu.framebuffer[0]);
-    try std.testing.expectEqual(@as(u16, 0x7FFF), ppu.framebuffer[1]);
-    try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[2]);
+    const line1 = SCREEN_WIDTH;
+    try std.testing.expectEqual(@as(u16, 0x7FFF), ppu.framebuffer[line1]);
+    try std.testing.expectEqual(@as(u16, 0x7FFF), ppu.framebuffer[line1 + 1]);
+    try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[line1 + 2]);
 }
 
 test "plane spread LUT interleaves bits" {

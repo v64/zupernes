@@ -183,10 +183,14 @@ granularity PPU rendering, dot-granularity PPU counters. The path:
    matters once a scheduler models the CPU pausing mid-instruction —
    today DMA executes synchronously inside the $420B write. Re-open only
    together with that scheduler work.
-3. **Mid-scanline register changes — GENUINELY OPEN**: `Ppu.tick()` advances
-   dot counters, but `renderScanline()` still samples registers once per line
-   (`src/ppu/ppu.zig:645`, `1214-1215`). No register change-log or dot-based
-   replay exists for the mid-line writes exercised by the inidisp/hdma ROMs.
+3. **Mid-scanline register changes — DONE (mid-scanline branch)**: render-
+   control writes are timestamped at the end of their CPU/DMA access and the
+   deferred scanline renderer replays decoded state across constant horizontal
+   spans. The replay journal is savestated and has unit, INIDISP/HDMA ROM,
+   29-ROM corpus, savestate-resume, and 2900-frame SMW neutrality evidence in
+   `docs/mid-scanline-register-replay.md`. Register-specific latch delays,
+   active-display OAM/VRAM/CGRAM port behavior, and moving HDMA to hardware
+   H-blank remain deliberately separate timing stages.
 4. **HDMA timing — PARTIALLY IMPLEMENTED**: HDMA setup, line-counter/repeat
    handling, and per-byte billing exist in `Dma.initHdma()`/`runHdma()`
    (`src/dma.zig:288-455`), and the emulator invokes it on scanline
