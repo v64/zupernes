@@ -32,6 +32,21 @@ const Apu = @import("apu/apu.zig").Apu;
 const Upd7725 = @import("coproc/upd7725.zig").Upd7725;
 const dbg = @import("debug.zig");
 
+const line_masters: u64 = @as(u64, @import("ppu/ppu.zig").DOTS_PER_SCANLINE) *
+    @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT;
+const frame_masters: u64 = line_masters * @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
+const nmi_set_master: u64 = 225 * line_masters + 2; // V=225, H=0.5
+
+fn absolutePpuMaster(ppu: *const Ppu) u64 {
+    return ppu.frame_count * frame_masters + @as(u64, ppu.scanline) * line_masters +
+        @as(u64, ppu.dot) * @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT + ppu.master_accum;
+}
+
+fn nextPeriodicAfter(now: u64, phase: u64, period: u64) u64 {
+    if (now < phase) return phase;
+    return phase + ((now - phase) / period + 1) * period;
+}
+
 pub const WramWrite = struct {
     addr: u24, // WRAM offset 0..$1FFFF (bank $7E = $00000, $7F = $10000)
     value: u8, // the byte written
@@ -307,6 +322,11 @@ pub const Bus = struct {
     // batched clocks with Ppu.tick().
     ppu_cpu_timing_base: u32 = 0,
     ppu_write_timing_offset: u32 = 0,
+    // Furthest projected/committed hardware time through which the CPU-side
+    // interrupt flags have been synchronized. This is transient scheduling
+    // state: root.zig always advances it to the committed beam before a step
+    // returns, and beginCpuInstruction establishes the next horizon.
+    interrupt_horizon_master: u64 = 0,
 
     /// Start timing a CPU instruction. HDMA billed by the preceding scanline
     /// transition is still pending in dma_masters, and happens-before the CPU
@@ -315,6 +335,7 @@ pub const Bus = struct {
         self.ppu_cpu_timing_base = self.dma_masters;
         self.ppu_write_timing_offset = self.ppu_cpu_timing_base;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
+        self.interrupt_horizon_master = absolutePpuMaster(self.ppu);
     }
 
     /// Start HDMA at the PPU's current beam position, outside a CPU
@@ -329,6 +350,30 @@ pub const Bus = struct {
     pub fn setCpuAccessTiming(self: *Bus, instruction_masters: u32) void {
         self.ppu_write_timing_offset = self.ppu_cpu_timing_base + instruction_masters;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
+        self.syncNmiFlagTo(absolutePpuMaster(self.ppu) + self.ppu_write_timing_offset);
+    }
+
+    /// Advance the CPU-visible RDNMI latch through hardware time without
+    /// moving the PPU. CPU accesses are executed before root.zig commits the
+    /// instruction's clocks, so projecting this tiny piece of hardware state
+    /// is what lets a $4210 read observe an edge inside its own instruction.
+    pub fn syncNmiFlagTo(self: *Bus, target_master: u64) void {
+        if (target_master <= self.interrupt_horizon_master) return;
+        var cursor = self.interrupt_horizon_master;
+        while (true) {
+            const set_at = nextPeriodicAfter(cursor, nmi_set_master, frame_masters);
+            const clear_at = nextPeriodicAfter(cursor, 0, frame_masters);
+            const event_at = @min(set_at, clear_at);
+            if (event_at > target_master) break;
+            if (set_at <= clear_at) {
+                self.nmi_flag = true;
+                if ((self.nmitimen & 0x01) != 0) self.autoJoypadRead();
+            } else {
+                self.nmi_flag = false;
+            }
+            cursor = event_at;
+        }
+        self.interrupt_horizon_master = target_master;
     }
 
     /// Account DMA-controller bus time.  Besides transferred bytes, HDMA has
@@ -708,7 +753,13 @@ pub const Bus = struct {
                 // for correctness (returning "in vblank" level instead of the
                 // latched edge can hang wait loops).
                 const flag: u8 = if (self.nmi_flag) 0x80 else 0x00;
-                self.nmi_flag = false;
+                // The timer forces RDNMI high for the first four master
+                // clocks after its V=225/H=0.5 set edge. A read at H=0.5
+                // therefore returns bit 7 set but cannot clear it until H=1.5.
+                const now = @max(self.interrupt_horizon_master, absolutePpuMaster(self.ppu));
+                const in_set_hold = now >= nmi_set_master and
+                    (now - nmi_set_master) % frame_masters < 4;
+                if (!in_set_hold) self.nmi_flag = false;
                 return flag | 0x02; // Version bits: CPU version 2
             },
             0x4211 => {

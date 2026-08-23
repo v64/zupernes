@@ -96,7 +96,18 @@ pub const Cpu = struct {
 
     // Interrupt flags
     nmi_pending: bool,
+    // An NMI edge which arrived after this instruction's interrupt-sampling
+    // point. It is remembered until the next instruction boundary rather
+    // than being taken immediately at the end of the instruction whose last
+    // cycle contained the edge.
+    nmi_latched: bool,
     irq_pending: bool,
+
+    // Duration of the most recent bus-access cycle. This is transient
+    // instruction bookkeeping: Emulator.step() uses it immediately to place
+    // the interrupt sample before the final CPU cycle, and Cpu.step() resets
+    // it before executing the next instruction.
+    last_access_masters: u8,
 
     // WAI (wait for interrupt) state
     waiting: bool,
@@ -122,7 +133,9 @@ pub const Cpu = struct {
             .total_cycles = 0,
             .instruction_count = 0,
             .nmi_pending = false,
+            .nmi_latched = false,
             .irq_pending = false,
+            .last_access_masters = 6,
             .waiting = false,
         };
     }
@@ -130,7 +143,16 @@ pub const Cpu = struct {
     /// Trigger NMI (called at start of VBlank if NMI is enabled)
     pub fn triggerNmi(self: *Cpu) void {
         self.nmi_pending = true;
+        self.nmi_latched = false;
         self.waiting = false; // Wake from WAI
+    }
+
+    /// Remember an NMI edge that was too late for the current instruction's
+    /// sample. The line may return high before the next boundary; the 65816's
+    /// internal edge latch must still retain it.
+    pub fn latchNmi(self: *Cpu) void {
+        self.nmi_latched = true;
+        self.waiting = false;
     }
 
     /// Trigger IRQ
@@ -147,6 +169,7 @@ pub const Cpu = struct {
         self.pbr = 0;
         self.dp = 0;
         self.nmi_pending = false;
+        self.nmi_latched = false;
         self.irq_pending = false;
         self.waiting = false;
         self.instruction_count = 0;
@@ -162,6 +185,7 @@ pub const Cpu = struct {
         self.mem_masters = 0;
         self.mem_accesses = 0;
         self.internal_flushed = 0;
+        self.last_access_masters = 6;
 
         // =====================================================================
         // INTERRUPT HANDLING
@@ -235,6 +259,15 @@ pub const Cpu = struct {
         }
         self.total_cycles += self.cycles;
         return self.cycles;
+    }
+
+    /// Master clocks in the final CPU cycle of the just-completed step.
+    /// Interrupt inputs are sampled immediately before this cycle. Trailing
+    /// internal cycles are always 6 clocks; otherwise the last cycle was the
+    /// most recently priced 6/8/12-clock bus access.
+    pub fn finalCycleMasters(self: *const Cpu) u32 {
+        const internal = @as(u32, self.cycles) -| self.mem_accesses;
+        return if (internal > self.internal_flushed) 6 else self.last_access_masters;
     }
 
     fn handleNmi(self: *Cpu) void {
@@ -315,6 +348,7 @@ pub const Cpu = struct {
         self.internal_flushed += internal;
         self.mem_masters += speed;
         self.mem_accesses +%= 1;
+        self.last_access_masters = @intCast(speed);
         self.bus.setCpuAccessTiming(self.mem_masters + self.internal_flushed * 6);
     }
 

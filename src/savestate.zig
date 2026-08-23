@@ -56,7 +56,7 @@ const Apu = @import("apu/apu.zig").Apu;
 /// everything captured, and `read` refuses a mismatch. The version covers a
 /// deliberate REORDER at equal size; the length covers every accidental
 /// change, which is the one that actually happens.
-pub const magic = "ZNSAVE\x00\x03";
+pub const magic = "ZNSAVE\x00\x04";
 
 const fb_bytes = ppu_mod.SCREEN_WIDTH * ppu_mod.SCREEN_HEIGHT * 2;
 const render_state_bytes = blk: {
@@ -262,7 +262,7 @@ fn getRenderState(src: []const u8, at: *usize) Ppu.RenderState {
 pub const state_len: usize = blk: {
     var n: usize = magic.len + 4; // magic + the u32 layout length below
     // CPU
-    n += 2 * 5 + 3 + 2 + 1 + 1 + 1 + 4 + 1 + 4 + 8 + 8 + 3;
+    n += 2 * 5 + 3 + 2 + 1 + 1 + 1 + 4 + 1 + 4 + 8 + 8 + 4;
     // PPU arrays
     n += 64 * 1024 + 512 + 544 + fb_bytes;
     // PPU scalars
@@ -323,6 +323,7 @@ pub fn write(
     putU64(dst, &at, cpu.total_cycles);
     putU64(dst, &at, cpu.instruction_count);
     putBool(dst, &at, cpu.nmi_pending);
+    putBool(dst, &at, cpu.nmi_latched);
     putBool(dst, &at, cpu.irq_pending);
     putBool(dst, &at, cpu.waiting);
 
@@ -518,6 +519,7 @@ pub fn read(
     cpu.total_cycles = getU64(src, &at);
     cpu.instruction_count = getU64(src, &at);
     cpu.nmi_pending = getBool(src, &at);
+    cpu.nmi_latched = getBool(src, &at);
     cpu.irq_pending = getBool(src, &at);
     cpu.waiting = getBool(src, &at);
 
@@ -742,12 +744,14 @@ test "read preserves interior pointers and round-trips scalars" {
     var cpu = Cpu.init(&bus);
     cpu.a = 0x1234;
     cpu.pbr = 0x7E;
+    cpu.nmi_latched = true;
     ppu.frame_count = 99;
     bus.wram[0x1234] = 0xAB;
     _ = try write(&cpu, &ppu, &bus, 7, buf);
 
     cpu.a = 0;
     cpu.pbr = 0;
+    cpu.nmi_latched = false;
     ppu.frame_count = 0;
     bus.wram[0x1234] = 0;
     var last: u16 = 0;
@@ -755,6 +759,7 @@ test "read preserves interior pointers and round-trips scalars" {
 
     try std.testing.expectEqual(@as(u16, 0x1234), cpu.a);
     try std.testing.expectEqual(@as(u8, 0x7E), cpu.pbr);
+    try std.testing.expect(cpu.nmi_latched);
     try std.testing.expectEqual(@as(u64, 99), ppu.frame_count);
     try std.testing.expectEqual(@as(u8, 0xAB), bus.wram[0x1234]);
     try std.testing.expectEqual(@as(u16, 7), last);
