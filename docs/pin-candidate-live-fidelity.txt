@@ -646,3 +646,1546 @@ evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-rex-stomp@fast (passed; re
 ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
 bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-run@fast if this scenario passes (pass --keep to retain it)
 ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-run, 252 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-run@fast/zupernes
+engine bundle: gameplay-yi1-run, 252 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-run@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-run",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 252,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-run@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-slope@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-slope, 392 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-slope@fast/zupernes
+engine bundle: gameplay-yi1-slope, 392 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-slope@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-slope",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 392,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-slope@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-spin-kill@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-spin-kill, 530 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-spin-kill@fast/zupernes
+engine bundle: gameplay-yi1-spin-kill, 530 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-spin-kill@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-spin-kill",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 530,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-spin-kill@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi1-walk@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi1-walk, 268 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-walk@fast/zupernes
+engine bundle: gameplay-yi1-walk, 268 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi1-walk@fast/zuperworld
+{
+  "scenario": "gameplay-yi1-walk",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 268,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi1-walk@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi2-entry@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi2-entry, 281 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi2-entry@fast/zupernes
+engine bundle: gameplay-yi2-entry, 281 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi2-entry@fast/zuperworld
+{
+  "scenario": "gameplay-yi2-entry",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 281,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi2-entry@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi3-bonus@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi3-bonus, 1880 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi3-bonus@fast/zupernes
+engine bundle: gameplay-yi3-bonus, 1880 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi3-bonus@fast/zuperworld
+{
+  "scenario": "gameplay-yi3-bonus",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1880,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi3-bonus@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi3-entry@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi3-entry, 280 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi3-entry@fast/zupernes
+engine bundle: gameplay-yi3-entry, 280 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi3-entry@fast/zuperworld
+{
+  "scenario": "gameplay-yi3-entry",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 280,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi3-entry@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi3-traversal@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi3-traversal, 3919 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi3-traversal@fast/zupernes
+engine bundle: gameplay-yi3-traversal, 3919 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi3-traversal@fast/zuperworld
+{
+  "scenario": "gameplay-yi3-traversal",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 3919,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi3-traversal@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi4-bonus@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi4-bonus, 2100 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi4-bonus@fast/zupernes
+engine bundle: gameplay-yi4-bonus, 2100 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi4-bonus@fast/zuperworld
+{
+  "scenario": "gameplay-yi4-bonus",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 2100,
+  "diagnostics_captured": [
+    "layers",
+    "vram",
+    "cgram",
+    "ppu"
+  ],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi4-bonus@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi4-entry@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi4-entry, 280 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi4-entry@fast/zupernes
+engine bundle: gameplay-yi4-entry, 280 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi4-entry@fast/zuperworld
+{
+  "scenario": "gameplay-yi4-entry",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 280,
+  "diagnostics_captured": [
+    "layers",
+    "vram",
+    "cgram",
+    "ppu"
+  ],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi4-entry@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yi4-traversal@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yi4-traversal, 4000 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi4-traversal@fast/zupernes
+engine bundle: gameplay-yi4-traversal, 4000 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yi4-traversal@fast/zuperworld
+{
+  "scenario": "gameplay-yi4-traversal",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 4000,
+  "diagnostics_captured": [
+    "layers",
+    "vram",
+    "cgram",
+    "ppu"
+  ],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yi4-traversal@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-berry-chew@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-berry-chew, 125 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-berry-chew@fast/zupernes
+engine bundle: gameplay-yoshi-berry-chew, 125 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-berry-chew@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-berry-chew",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 125,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-berry-chew@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-down-red-spit@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-down-red-spit, 47 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-down-red-spit@fast/zupernes
+engine bundle: gameplay-yoshi-down-red-spit, 47 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-down-red-spit@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-down-red-spit",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 47,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-down-red-spit@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-fire-edge@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-fire-edge, 115 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-fire-edge@fast/zupernes
+engine bundle: gameplay-yoshi-fire-edge, 115 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-fire-edge@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-fire-edge",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 115,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-fire-edge@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-hurt-flee-remount@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-hurt-flee-remount, 105 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-hurt-flee-remount@fast/zupernes
+engine bundle: gameplay-yoshi-hurt-flee-remount, 105 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-hurt-flee-remount@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-hurt-flee-remount",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 105,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-hurt-flee-remount@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-mount@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-mount, 83 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-mount@fast/zupernes
+engine bundle: gameplay-yoshi-mount, 83 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-mount@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-mount",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 83,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-mount@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-mounted-goal@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-mounted-goal, 614 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-mounted-goal@fast/zupernes
+engine bundle: gameplay-yoshi-mounted-goal, 614 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-mounted-goal@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-mounted-goal",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 614,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-mounted-goal@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-red-shell-cycle@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-red-shell-cycle, 86 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-red-shell-cycle@fast/zupernes
+engine bundle: gameplay-yoshi-red-shell-cycle, 86 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-red-shell-cycle@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-red-shell-cycle",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 86,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-red-shell-cycle@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-shell-gating@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-shell-gating, 50 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-shell-gating@fast/zupernes
+engine bundle: gameplay-yoshi-shell-gating, 50 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-shell-gating@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-shell-gating",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 50,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-shell-gating@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-spin-dismount@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-spin-dismount, 38 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-spin-dismount@fast/zupernes
+engine bundle: gameplay-yoshi-spin-dismount, 38 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-spin-dismount@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-spin-dismount",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 38,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-spin-dismount@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-spit@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-spit, 46 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-spit@fast/zupernes
+engine bundle: gameplay-yoshi-spit, 46 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-spit@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-spit",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 46,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-spit@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-swallow@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-swallow, 28 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-swallow@fast/zupernes
+engine bundle: gameplay-yoshi-swallow, 28 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-swallow@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-swallow",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 28,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-swallow@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-tongue-catch@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshi-tongue-catch, 25 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-tongue-catch@fast/zupernes
+engine bundle: gameplay-yoshi-tongue-catch, 25 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-tongue-catch@fast/zuperworld
+{
+  "scenario": "gameplay-yoshi-tongue-catch",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 25,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshi-tongue-catch@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/gameplay-yoshis-house@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: gameplay-yoshis-house, 640 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshis-house@fast/zupernes
+engine bundle: gameplay-yoshis-house, 640 frames -> /private/tmp/zw-pincheck/.oracle/gameplay-yoshis-house@fast/zuperworld
+{
+  "scenario": "gameplay-yoshis-house",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 640,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/gameplay-yoshis-house@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/green-switch-palace-pow-countdown@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: green-switch-palace-pow-countdown, 400 frames -> /private/tmp/zw-pincheck/.oracle/green-switch-palace-pow-countdown@fast/zupernes
+engine bundle: green-switch-palace-pow-countdown, 400 frames -> /private/tmp/zw-pincheck/.oracle/green-switch-palace-pow-countdown@fast/zuperworld
+{
+  "scenario": "green-switch-palace-pow-countdown",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 400,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/green-switch-palace-pow-countdown@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/grey-castle-block@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: grey-castle-block, 240 frames -> /private/tmp/zw-pincheck/.oracle/grey-castle-block@fast/zupernes
+engine bundle: grey-castle-block, 240 frames -> /private/tmp/zw-pincheck/.oracle/grey-castle-block@fast/zuperworld
+{
+  "scenario": "grey-castle-block",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 240,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/grey-castle-block@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/ground-guided-fuzzball-seeded@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: ground-guided-fuzzball-seeded, 120 frames -> /private/tmp/zw-pincheck/.oracle/ground-guided-fuzzball-seeded@fast/zupernes
+engine bundle: ground-guided-fuzzball-seeded, 120 frames -> /private/tmp/zw-pincheck/.oracle/ground-guided-fuzzball-seeded@fast/zuperworld
+{
+  "scenario": "ground-guided-fuzzball-seeded",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 120,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/ground-guided-fuzzball-seeded@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/ground-guided-hothead-seeded@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: ground-guided-hothead-seeded, 120 frames -> /private/tmp/zw-pincheck/.oracle/ground-guided-hothead-seeded@fast/zupernes
+engine bundle: ground-guided-hothead-seeded, 120 frames -> /private/tmp/zw-pincheck/.oracle/ground-guided-hothead-seeded@fast/zuperworld
+{
+  "scenario": "ground-guided-hothead-seeded",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 120,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/ground-guided-hothead-seeded@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/loader-equivalent-ci4-entry@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: loader-equivalent-ci4-entry, 1 frames -> /private/tmp/zw-pincheck/.oracle/loader-equivalent-ci4-entry@fast/zupernes
+engine bundle: loader-equivalent-ci4-entry, 1 frames -> /private/tmp/zw-pincheck/.oracle/loader-equivalent-ci4-entry@fast/zuperworld
+{
+  "scenario": "loader-equivalent-ci4-entry",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/loader-equivalent-ci4-entry@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/loader-equivalent-sprite-lock-entry@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: loader-equivalent-sprite-lock-entry, 1 frames -> /private/tmp/zw-pincheck/.oracle/loader-equivalent-sprite-lock-entry@fast/zupernes
+engine bundle: loader-equivalent-sprite-lock-entry, 1 frames -> /private/tmp/zw-pincheck/.oracle/loader-equivalent-sprite-lock-entry@fast/zuperworld
+{
+  "scenario": "loader-equivalent-sprite-lock-entry",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/loader-equivalent-sprite-lock-entry@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/mortons-ball-chain-swing@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: mortons-ball-chain-swing, 256 frames -> /private/tmp/zw-pincheck/.oracle/mortons-ball-chain-swing@fast/zupernes
+engine bundle: mortons-ball-chain-swing, 256 frames -> /private/tmp/zw-pincheck/.oracle/mortons-ball-chain-swing@fast/zuperworld
+{
+  "scenario": "mortons-ball-chain-swing",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 256,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/mortons-ball-chain-swing@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/mortons-castle-thwimp@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: mortons-castle-thwimp, 240 frames -> /private/tmp/zw-pincheck/.oracle/mortons-castle-thwimp@fast/zupernes
+engine bundle: mortons-castle-thwimp, 240 frames -> /private/tmp/zw-pincheck/.oracle/mortons-castle-thwimp@fast/zuperworld
+{
+  "scenario": "mortons-castle-thwimp",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 240,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/mortons-castle-thwimp@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-arrival-forest-of-illusion@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-arrival-forest-of-illusion, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-forest-of-illusion@fast/zupernes
+engine bundle: overworld-arrival-forest-of-illusion, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-forest-of-illusion@fast/zuperworld
+{
+  "scenario": "overworld-arrival-forest-of-illusion",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 0,
+    "source": {
+      "oracle": 2168,
+      "engine": 2168
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "30c056af5e53619059b358dd42f0074e8356a120e38f200c025d56d80177e81a",
+        "engine": "66a387d6b02ed73fee03093f15a4ed6145fc0439a0472e0fd12882b1bc9b2323"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-arrival-main-map@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-arrival-main-map, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-main-map@fast/zupernes
+engine bundle: overworld-arrival-main-map, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-main-map@fast/zuperworld
+{
+  "scenario": "overworld-arrival-main-map",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 0,
+    "source": {
+      "oracle": 2168,
+      "engine": 2168
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "cd6cfdcafe88b792b4e1724eccf92c31d50c736d4dfe722e12892585c17f95dd",
+        "engine": "8f8ca70e764577f8d78934119b818d84b3579ae317e0884f10054994ad7b5eb1"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-arrival-special-zone@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-arrival-special-zone, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-special-zone@fast/zupernes
+engine bundle: overworld-arrival-special-zone, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-special-zone@fast/zuperworld
+{
+  "scenario": "overworld-arrival-special-zone",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 0,
+    "source": {
+      "oracle": 2168,
+      "engine": 2168
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "62289d4bdeb5c121eddcad66ee839fd74da01a02dd0f7aab7fc0b9d487bb8822",
+        "engine": "004fd7a49ee330e5485cb2ddad52a987e2befb911741b94d48d397159fe45cc4"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-arrival-star-world@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-arrival-star-world, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-star-world@fast/zupernes
+engine bundle: overworld-arrival-star-world, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-star-world@fast/zuperworld
+{
+  "scenario": "overworld-arrival-star-world",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 0,
+    "source": {
+      "oracle": 2168,
+      "engine": 2168
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "f7c7f9808ec8c8f3822d16c9c4d861c17d6a47119dc13d70643739233a8a27da",
+        "engine": "8dd0bb2534901fcb8ff20ebc38c55ecc8690bc0ae2543dc4ab9b67ca4f56ff32"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-arrival-valley-of-bowser@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-arrival-valley-of-bowser, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-valley-of-bowser@fast/zupernes
+engine bundle: overworld-arrival-valley-of-bowser, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-valley-of-bowser@fast/zuperworld
+{
+  "scenario": "overworld-arrival-valley-of-bowser",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 0,
+    "source": {
+      "oracle": 2168,
+      "engine": 2168
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "b309ec66f9c6542050a375d58bcadb4c7e6cb435e40040c2a6e53fb3602b666c",
+        "engine": "f3b5beae57aac34237492fbface0a1de8093bc062131761957780886f25e460c"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-arrival-vanilla-dome@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-arrival-vanilla-dome, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-vanilla-dome@fast/zupernes
+engine bundle: overworld-arrival-vanilla-dome, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-vanilla-dome@fast/zuperworld
+{
+  "scenario": "overworld-arrival-vanilla-dome",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 0,
+    "source": {
+      "oracle": 2168,
+      "engine": 2168
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "740f7f21821c32e468f160143b3a5938c8c60ee9540ad9abee2835aeb148a743",
+        "engine": "5fdf19dd80a004e7c6baabf42eee670a8a881dc2ec9083475055bb6210947967"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-arrival-yoshis-island@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-arrival-yoshis-island, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-yoshis-island@fast/zupernes
+engine bundle: overworld-arrival-yoshis-island, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-arrival-yoshis-island@fast/zuperworld
+{
+  "scenario": "overworld-arrival-yoshis-island",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 0,
+    "source": {
+      "oracle": 2168,
+      "engine": 2168
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "e1d2f0d971f49cb2eda127476d2d178c485386ba76e237042608ab1af319e0a9",
+        "engine": "e90f188afb4a047a49a4f0607c9696b1452647a85830420ec8ef641f1997c50e"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-border-player@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-border-player, 25 frames -> /private/tmp/zw-pincheck/.oracle/overworld-border-player@fast/zupernes
+engine bundle: overworld-border-player, 25 frames -> /private/tmp/zw-pincheck/.oracle/overworld-border-player@fast/zuperworld
+{
+  "scenario": "overworld-border-player",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 25,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-border-player@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-clear-reveal@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-clear-reveal, 143 frames -> /private/tmp/zw-pincheck/.oracle/overworld-clear-reveal@fast/zupernes
+engine bundle: overworld-clear-reveal, 143 frames -> /private/tmp/zw-pincheck/.oracle/overworld-clear-reveal@fast/zuperworld
+{
+  "scenario": "overworld-clear-reveal",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 143,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-clear-reveal@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-first-left-input@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-first-left-input, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-first-left-input@fast/zupernes
+engine bundle: overworld-first-left-input, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-first-left-input@fast/zuperworld
+{
+  "scenario": "overworld-first-left-input",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-first-left-input@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-house-to-yi1@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-house-to-yi1, 80 frames -> /private/tmp/zw-pincheck/.oracle/overworld-house-to-yi1@fast/zupernes
+engine bundle: overworld-house-to-yi1, 80 frames -> /private/tmp/zw-pincheck/.oracle/overworld-house-to-yi1@fast/zuperworld
+{
+  "scenario": "overworld-house-to-yi1",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 80,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-house-to-yi1@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-house-to-yi2@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-house-to-yi2, 80 frames -> /private/tmp/zw-pincheck/.oracle/overworld-house-to-yi2@fast/zupernes
+engine bundle: overworld-house-to-yi2, 80 frames -> /private/tmp/zw-pincheck/.oracle/overworld-house-to-yi2@fast/zuperworld
+{
+  "scenario": "overworld-house-to-yi2",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 80,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-house-to-yi2@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-idle-animation@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-idle-animation, 128 frames -> /private/tmp/zw-pincheck/.oracle/overworld-idle-animation@fast/zupernes
+engine bundle: overworld-idle-animation, 128 frames -> /private/tmp/zw-pincheck/.oracle/overworld-idle-animation@fast/zuperworld
+{
+  "scenario": "overworld-idle-animation",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 128,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 0,
+    "source": {
+      "oracle": 2181,
+      "engine": 2181
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "a62d4eef24df6c359207eea48b9e38fd4dfac97bb49275474eae48be538e204d",
+        "engine": "f3e1a08832459ad65eaf253bb694252c474b95b72f42087e01921821bec7def4"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-idle-state@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-idle-state, 60 frames -> /private/tmp/zw-pincheck/.oracle/overworld-idle-state@fast/zupernes
+engine bundle: overworld-idle-state, 60 frames -> /private/tmp/zw-pincheck/.oracle/overworld-idle-state@fast/zuperworld
+{
+  "scenario": "overworld-idle-state",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 60,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-idle-state@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-presentation@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-presentation, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-presentation@fast/zupernes
+engine bundle: overworld-presentation, 1 frames -> /private/tmp/zw-pincheck/.oracle/overworld-presentation@fast/zuperworld
+{
+  "scenario": "overworld-presentation",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-presentation@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-switch-palace-beat@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-switch-palace-beat, 178 frames -> /private/tmp/zw-pincheck/.oracle/overworld-switch-palace-beat@fast/zupernes
+engine bundle: overworld-switch-palace-beat, 178 frames -> /private/tmp/zw-pincheck/.oracle/overworld-switch-palace-beat@fast/zuperworld
+{
+  "scenario": "overworld-switch-palace-beat",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 178,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-switch-palace-beat@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+zwmod: building the widescreen engine (zig build mod-wasm -Dmod=widescreen)
+zwmod: packed 4 files (7025124 archive bytes) -> zig-out/mods/widescreen.zwmod
+zwmod: packed 6 files (8357 archive bytes) -> zig-out/mods/yi1-route-demo.zwmod
+theater provenance recorded
+ROM EXTRACT: 1187 files -> classic
+ROM EXTRACT: 1190 files -> widescreen
+ARTIFACT BOOT: starting classic
+ARTIFACT BOOT: starting widescreen
+ARTIFACT BOOT: classic and widescreen ready
+MAP yoshis-island: center exact outside 5990 moved-frame pixels; margin colors 2/2
+MAP main-map-free: center exact outside 5963 moved-frame pixels; margin colors 11/15
+MAP vanilla-dome: center exact outside 5982 moved-frame pixels; margin colors 15/7
+MAP forest-of-illusion: center exact outside 5867 moved-frame pixels; margin colors 12/14
+MAP valley-of-bowser: center exact outside 5950 moved-frame pixels; margin colors 13/12
+MAP special-zone: center exact outside 5658 moved-frame pixels; margin colors 4/9
+MAP star-world: center exact outside 5918 moved-frame pixels; margin colors 15/12
+AMBIENT WATER: Yoshi's Island margin animates in phase with the centred sea
+ROM EXTRACT: 1190 files -> marker witness
+MARKER WRAP: YI3->YI4 continuous 233..265 across x=255
+file:///private/tmp/zw-pincheck/src/theater/test/overworld-widescreen-check.mjs:72
+    throw new Error(`${name}: preserved center=${bad} bbox=${minX},${minY}..${maxX},${maxY} rows=${rows} row216=${sample.join("/")}; relocated-frame pixels=${relocated}`);
+          ^
+
+Error: main-map-mid-travel: preserved center=148 bbox=119,84..133,99 rows=84:7,85:9,86:10,87:12,88:10,89:3,90:9,91:7,92:11,93:10,94:13,95:12,96:9,97:9,98:11,99:6 row216=; relocated-frame pixels=5641
+    at comparePreservedCenter (file:///private/tmp/zw-pincheck/src/theater/test/overworld-widescreen-check.mjs:72:11)
+    at file:///private/tmp/zw-pincheck/src/theater/test/overworld-widescreen-check.mjs:351:1
+
+Node.js v26.4.0
+\n!! CANNOT COMPARE overworld-widescreen-center: theater runner exited 1.
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-yi1-to-ysp-pan@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-yi1-to-ysp-pan, 120 frames -> /private/tmp/zw-pincheck/.oracle/overworld-yi1-to-ysp-pan@fast/zupernes
+engine bundle: overworld-yi1-to-ysp-pan, 120 frames -> /private/tmp/zw-pincheck/.oracle/overworld-yi1-to-ysp-pan@fast/zuperworld
+{
+  "scenario": "overworld-yi1-to-ysp-pan",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 120,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-yi1-to-ysp-pan@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/overworld-yoshi-marker@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: overworld-yoshi-marker, 16 frames -> /private/tmp/zw-pincheck/.oracle/overworld-yoshi-marker@fast/zupernes
+engine bundle: overworld-yoshi-marker, 16 frames -> /private/tmp/zw-pincheck/.oracle/overworld-yoshi-marker@fast/zuperworld
+{
+  "scenario": "overworld-yoshi-marker",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 16,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/overworld-yoshi-marker@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/p-balloon-block-site@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: p-balloon-block-site, 200 frames -> /private/tmp/zw-pincheck/.oracle/p-balloon-block-site@fast/zupernes
+engine bundle: p-balloon-block-site, 200 frames -> /private/tmp/zw-pincheck/.oracle/p-balloon-block-site@fast/zuperworld
+{
+  "scenario": "p-balloon-block-site",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 200,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/p-balloon-block-site@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-animated-vram-load-boundary@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-animated-vram-load-boundary, 60 frames -> /private/tmp/zw-pincheck/.oracle/regression-animated-vram-load-boundary@fast/zupernes
+engine bundle: regression-animated-vram-load-boundary, 60 frames -> /private/tmp/zw-pincheck/.oracle/regression-animated-vram-load-boundary@fast/zuperworld
+{
+  "scenario": "regression-animated-vram-load-boundary",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 60,
+  "diagnostics_captured": [
+    "layers",
+    "vram",
+    "cgram",
+    "ppu"
+  ],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-animated-vram-load-boundary@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-chuck-head-flip@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-chuck-head-flip, 48 frames -> /private/tmp/zw-pincheck/.oracle/regression-chuck-head-flip@fast/zupernes
+engine bundle: regression-chuck-head-flip, 48 frames -> /private/tmp/zw-pincheck/.oracle/regression-chuck-head-flip@fast/zuperworld
+{
+  "scenario": "regression-chuck-head-flip",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 48,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-chuck-head-flip@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-death-restart-boundary@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-death-restart-boundary, 2131 frames -> /private/tmp/zw-pincheck/.oracle/regression-death-restart-boundary@fast/zupernes
+engine bundle: regression-death-restart-boundary, 2131 frames -> /private/tmp/zw-pincheck/.oracle/regression-death-restart-boundary@fast/zuperworld
+{
+  "scenario": "regression-death-restart-boundary",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 2131,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-death-restart-boundary@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-dp4-disco-shell@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-dp4-disco-shell, 281 frames -> /private/tmp/zw-pincheck/.oracle/regression-dp4-disco-shell@fast/zupernes
+engine bundle: regression-dp4-disco-shell, 281 frames -> /private/tmp/zw-pincheck/.oracle/regression-dp4-disco-shell@fast/zuperworld
+{
+  "scenario": "regression-dp4-disco-shell",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 281,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-dp4-disco-shell@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-dp4-growing-pipe@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-dp4-growing-pipe, 620 frames -> /private/tmp/zw-pincheck/.oracle/regression-dp4-growing-pipe@fast/zupernes
+engine bundle: regression-dp4-growing-pipe, 620 frames -> /private/tmp/zw-pincheck/.oracle/regression-dp4-growing-pipe@fast/zuperworld
+{
+  "scenario": "regression-dp4-growing-pipe",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 620,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-dp4-growing-pipe@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-flying-question-box@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-flying-question-box, 668 frames -> /private/tmp/zw-pincheck/.oracle/regression-flying-question-box@fast/zupernes
+engine bundle: regression-flying-question-box, 668 frames -> /private/tmp/zw-pincheck/.oracle/regression-flying-question-box@fast/zuperworld
+{
+  "scenario": "regression-flying-question-box",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 668,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-flying-question-box@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-entrance-mounted@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-iggy-castle-entrance-mounted, 400 frames -> /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-entrance-mounted@fast/zupernes
+engine bundle: regression-iggy-castle-entrance-mounted, 400 frames -> /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-entrance-mounted@fast/zuperworld
+{
+  "scenario": "regression-iggy-castle-entrance-mounted",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 400,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 2,
+    "source": {
+      "oracle": 18360,
+      "engine": 18360
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "e21d0cfcb50545c8173bfb024f92abcc45cc88b1a839a6550081539fd329a3ed",
+        "engine": "89d663e74b07b039a186ae0acc873d40fed6ff47b108f6482634f3eaaeaa20e7"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-entrance-on-foot@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-iggy-castle-entrance-on-foot, 400 frames -> /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-entrance-on-foot@fast/zupernes
+engine bundle: regression-iggy-castle-entrance-on-foot, 400 frames -> /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-entrance-on-foot@fast/zuperworld
+{
+  "scenario": "regression-iggy-castle-entrance-on-foot",
+  "mode": "fast-oam",
+  "pass": false,
+  "incomplete": null,
+  "frames": 400,
+  "diagnostics_captured": [],
+  "first_divergence": {
+    "frame": 2,
+    "source": {
+      "oracle": 18360,
+      "engine": 18360
+    },
+    "differences": [
+      {
+        "surface": "frame",
+        "projection": null,
+        "oracle": "e21d0cfcb50545c8173bfb024f92abcc45cc88b1a839a6550081539fd329a3ed",
+        "engine": "7d760c16822b2fb40aa35ad58a73ae3f793fe3ba6c91596d610904c717b003f9"
+      }
+    ]
+  }
+}
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-smash-cycle@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-iggy-castle-smash-cycle, 360 frames -> /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-smash-cycle@fast/zupernes
+engine bundle: regression-iggy-castle-smash-cycle, 360 frames -> /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-smash-cycle@fast/zuperworld
+{
+  "scenario": "regression-iggy-castle-smash-cycle",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 360,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-iggy-castle-smash-cycle@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-shell-entry@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-shell-entry, 700 frames -> /private/tmp/zw-pincheck/.oracle/regression-shell-entry@fast/zupernes
+engine bundle: regression-shell-entry, 700 frames -> /private/tmp/zw-pincheck/.oracle/regression-shell-entry@fast/zuperworld
+{
+  "scenario": "regression-shell-entry",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 700,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-shell-entry@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-vanilla-ghost-house-boo-motion@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-vanilla-ghost-house-boo-motion, 4666 frames -> /private/tmp/zw-pincheck/.oracle/regression-vanilla-ghost-house-boo-motion@fast/zupernes
+engine bundle: regression-vanilla-ghost-house-boo-motion, 4666 frames -> /private/tmp/zw-pincheck/.oracle/regression-vanilla-ghost-house-boo-motion@fast/zuperworld
+{
+  "scenario": "regression-vanilla-ghost-house-boo-motion",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 4666,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-vanilla-ghost-house-boo-motion@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-vanilla-ghost-house-corner-bonk@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-vanilla-ghost-house-corner-bonk, 1580 frames -> /private/tmp/zw-pincheck/.oracle/regression-vanilla-ghost-house-corner-bonk@fast/zupernes
+engine bundle: regression-vanilla-ghost-house-corner-bonk, 1580 frames -> /private/tmp/zw-pincheck/.oracle/regression-vanilla-ghost-house-corner-bonk@fast/zuperworld
+{
+  "scenario": "regression-vanilla-ghost-house-corner-bonk",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 1580,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-vanilla-ghost-house-corner-bonk@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-yi3-bridges@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-yi3-bridges, 3919 frames -> /private/tmp/zw-pincheck/.oracle/regression-yi3-bridges@fast/zupernes
+engine bundle: regression-yi3-bridges, 3919 frames -> /private/tmp/zw-pincheck/.oracle/regression-yi3-bridges@fast/zuperworld
+{
+  "scenario": "regression-yi3-bridges",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 3919,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-yi3-bridges@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-yi4-iggy@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-yi4-iggy, 4000 frames -> /private/tmp/zw-pincheck/.oracle/regression-yi4-iggy@fast/zupernes
+engine bundle: regression-yi4-iggy, 4000 frames -> /private/tmp/zw-pincheck/.oracle/regression-yi4-iggy@fast/zuperworld
+{
+  "scenario": "regression-yi4-iggy",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 4000,
+  "diagnostics_captured": [
+    "layers",
+    "vram",
+    "cgram",
+    "ppu"
+  ],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-yi4-iggy@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-yoshi-mounted-shell-gate@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-yoshi-mounted-shell-gate, 50 frames -> /private/tmp/zw-pincheck/.oracle/regression-yoshi-mounted-shell-gate@fast/zupernes
+engine bundle: regression-yoshi-mounted-shell-gate, 50 frames -> /private/tmp/zw-pincheck/.oracle/regression-yoshi-mounted-shell-gate@fast/zuperworld
+{
+  "scenario": "regression-yoshi-mounted-shell-gate",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 50,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-yoshi-mounted-shell-gate@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/regression-yoshi@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: regression-yoshi, 540 frames -> /private/tmp/zw-pincheck/.oracle/regression-yoshi@fast/zupernes
+engine bundle: regression-yoshi, 540 frames -> /private/tmp/zw-pincheck/.oracle/regression-yoshi@fast/zuperworld
+{
+  "scenario": "regression-yoshi",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 540,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/regression-yoshi@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/round58-dp3-e0-pack@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: round58-dp3-e0-pack, 120 frames -> /private/tmp/zw-pincheck/.oracle/round58-dp3-e0-pack@fast/zupernes
+engine bundle: round58-dp3-e0-pack, 120 frames -> /private/tmp/zw-pincheck/.oracle/round58-dp3-e0-pack@fast/zuperworld
+{
+  "scenario": "round58-dp3-e0-pack",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 120,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/round58-dp3-e0-pack@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/roys-castle-creating-eating-block@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: roys-castle-creating-eating-block, 64 frames -> /private/tmp/zw-pincheck/.oracle/roys-castle-creating-eating-block@fast/zupernes
+engine bundle: roys-castle-creating-eating-block, 64 frames -> /private/tmp/zw-pincheck/.oracle/roys-castle-creating-eating-block@fast/zuperworld
+{
+  "scenario": "roys-castle-creating-eating-block",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 64,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/roys-castle-creating-eating-block@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/star-world-2-baby-yoshi@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: star-world-2-baby-yoshi, 500 frames -> /private/tmp/zw-pincheck/.oracle/star-world-2-baby-yoshi@fast/zupernes
+engine bundle: star-world-2-baby-yoshi, 500 frames -> /private/tmp/zw-pincheck/.oracle/star-world-2-baby-yoshi@fast/zuperworld
+{
+  "scenario": "star-world-2-baby-yoshi",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 500,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/star-world-2-baby-yoshi@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/sunken-ghost-ship-e5-swarm@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: sunken-ghost-ship-e5-swarm, 800 frames -> /private/tmp/zw-pincheck/.oracle/sunken-ghost-ship-e5-swarm@fast/zupernes
+engine bundle: sunken-ghost-ship-e5-swarm, 800 frames -> /private/tmp/zw-pincheck/.oracle/sunken-ghost-ship-e5-swarm@fast/zuperworld
+{
+  "scenario": "sunken-ghost-ship-e5-swarm",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 800,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/sunken-ghost-ship-e5-swarm@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/swim-jump-fish-seeded@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: swim-jump-fish-seeded, 224 frames -> /private/tmp/zw-pincheck/.oracle/swim-jump-fish-seeded@fast/zupernes
+engine bundle: swim-jump-fish-seeded, 224 frames -> /private/tmp/zw-pincheck/.oracle/swim-jump-fish-seeded@fast/zuperworld
+{
+  "scenario": "swim-jump-fish-seeded",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 224,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/swim-jump-fish-seeded@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/torpedo-shooter@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: torpedo-shooter, 329 frames -> /private/tmp/zw-pincheck/.oracle/torpedo-shooter@fast/zupernes
+engine bundle: torpedo-shooter, 329 frames -> /private/tmp/zw-pincheck/.oracle/torpedo-shooter@fast/zuperworld
+{
+  "scenario": "torpedo-shooter",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 329,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/torpedo-shooter@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/urchin-seeded@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: urchin-seeded, 384 frames -> /private/tmp/zw-pincheck/.oracle/urchin-seeded@fast/zupernes
+engine bundle: urchin-seeded, 384 frames -> /private/tmp/zw-pincheck/.oracle/urchin-seeded@fast/zuperworld
+{
+  "scenario": "urchin-seeded",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 384,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/urchin-seeded@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/valley-1-mega-mole@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: valley-1-mega-mole, 90 frames -> /private/tmp/zw-pincheck/.oracle/valley-1-mega-mole@fast/zupernes
+engine bundle: valley-1-mega-mole, 90 frames -> /private/tmp/zw-pincheck/.oracle/valley-1-mega-mole@fast/zuperworld
+{
+  "scenario": "valley-1-mega-mole",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 90,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/valley-1-mega-mole@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/valley-3-timed-lift@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: valley-3-timed-lift, 112 frames -> /private/tmp/zw-pincheck/.oracle/valley-3-timed-lift@fast/zupernes
+engine bundle: valley-3-timed-lift, 112 frames -> /private/tmp/zw-pincheck/.oracle/valley-3-timed-lift@fast/zuperworld
+{
+  "scenario": "valley-3-timed-lift",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 112,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/valley-3-timed-lift@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-diggin-chuck-rock@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: valley-of-bowser-4-diggin-chuck-rock, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-diggin-chuck-rock@fast/zupernes
+engine bundle: valley-of-bowser-4-diggin-chuck-rock, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-diggin-chuck-rock@fast/zuperworld
+{
+  "scenario": "valley-of-bowser-4-diggin-chuck-rock",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 96,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-diggin-chuck-rock@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-diggin-chuck@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: valley-of-bowser-4-diggin-chuck, 160 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-diggin-chuck@fast/zupernes
+engine bundle: valley-of-bowser-4-diggin-chuck, 160 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-diggin-chuck@fast/zuperworld
+{
+  "scenario": "valley-of-bowser-4-diggin-chuck",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 160,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-diggin-chuck@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-falling-checkerboard@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: valley-of-bowser-4-falling-checkerboard, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-falling-checkerboard@fast/zupernes
+engine bundle: valley-of-bowser-4-falling-checkerboard, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-falling-checkerboard@fast/zuperworld
+{
+  "scenario": "valley-of-bowser-4-falling-checkerboard",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 96,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-falling-checkerboard@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-flying-rock-horizontal@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: valley-of-bowser-4-flying-rock-horizontal, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-flying-rock-horizontal@fast/zupernes
+engine bundle: valley-of-bowser-4-flying-rock-horizontal, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-flying-rock-horizontal@fast/zuperworld
+{
+  "scenario": "valley-of-bowser-4-flying-rock-horizontal",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 96,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-flying-rock-horizontal@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-flying-rock-vertical@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: valley-of-bowser-4-flying-rock-vertical, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-flying-rock-vertical@fast/zupernes
+engine bundle: valley-of-bowser-4-flying-rock-vertical, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-flying-rock-vertical@fast/zuperworld
+{
+  "scenario": "valley-of-bowser-4-flying-rock-vertical",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 96,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-flying-rock-vertical@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-grey-lava-platform@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: valley-of-bowser-4-grey-lava-platform, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-grey-lava-platform@fast/zupernes
+engine bundle: valley-of-bowser-4-grey-lava-platform, 96 frames -> /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-grey-lava-platform@fast/zuperworld
+{
+  "scenario": "valley-of-bowser-4-grey-lava-platform",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 96,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/valley-of-bowser-4-grey-lava-platform@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/vanilla-dome-2-floppy-fish-contact@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: vanilla-dome-2-floppy-fish-contact, 200 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-dome-2-floppy-fish-contact@fast/zupernes
+engine bundle: vanilla-dome-2-floppy-fish-contact, 200 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-dome-2-floppy-fish-contact@fast/zuperworld
+{
+  "scenario": "vanilla-dome-2-floppy-fish-contact",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 200,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/vanilla-dome-2-floppy-fish-contact@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/vanilla-dome-2-floppy-fish@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: vanilla-dome-2-floppy-fish, 16 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-dome-2-floppy-fish@fast/zupernes
+engine bundle: vanilla-dome-2-floppy-fish, 16 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-dome-2-floppy-fish@fast/zuperworld
+{
+  "scenario": "vanilla-dome-2-floppy-fish",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 16,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/vanilla-dome-2-floppy-fish@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/vanilla-fortress-ball-chain-swing@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: vanilla-fortress-ball-chain-swing, 256 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-fortress-ball-chain-swing@fast/zupernes
+engine bundle: vanilla-fortress-ball-chain-swing, 256 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-fortress-ball-chain-swing@fast/zuperworld
+{
+  "scenario": "vanilla-fortress-ball-chain-swing",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 256,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/vanilla-fortress-ball-chain-swing@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/vanilla-fortress-roster@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: vanilla-fortress-roster, 64 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-fortress-roster@fast/zupernes
+engine bundle: vanilla-fortress-roster, 64 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-fortress-roster@fast/zuperworld
+{
+  "scenario": "vanilla-fortress-roster",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 64,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/vanilla-fortress-roster@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/vanilla-ghost-boo-rings@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: vanilla-ghost-boo-rings, 360 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-ghost-boo-rings@fast/zupernes
+engine bundle: vanilla-ghost-boo-rings, 360 frames -> /private/tmp/zw-pincheck/.oracle/vanilla-ghost-boo-rings@fast/zuperworld
+{
+  "scenario": "vanilla-ghost-boo-rings",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 360,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/vanilla-ghost-boo-rings@fast (passed; re-run with --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+bundle will be EVICTED at /private/tmp/zw-pincheck/.oracle/wall-follow-urchin-seeded@fast if this scenario passes (pass --keep to retain it)
+ORACLE REPO CLEAN: 9b5270ca3498a92ac082ed820510f87e91ecc42b (/Users/v64/Repos/zupernes)
+oracle bundle: wall-follow-urchin-seeded, 384 frames -> /private/tmp/zw-pincheck/.oracle/wall-follow-urchin-seeded@fast/zupernes
+engine bundle: wall-follow-urchin-seeded, 384 frames -> /private/tmp/zw-pincheck/.oracle/wall-follow-urchin-seeded@fast/zuperworld
+{
+  "scenario": "wall-follow-urchin-seeded",
+  "mode": "fast-oam",
+  "pass": true,
+  "incomplete": null,
+  "frames": 384,
+  "diagnostics_captured": [],
+  "first_divergence": null
+}
+evicted /private/tmp/zw-pincheck/.oracle/wall-follow-urchin-seeded@fast (passed; re-run with --keep to retain it)
+INCOMPLETE fidelity matrix: 131/132 active scenarios compared (121 matched, 10 diverged, 1 not compared); 0 skip(s) unpriced
+
+!! 1 scenario(s) COULD NOT BE COMPARED - infrastructure, not fidelity:
+!!   overworld-widescreen-center (exit 3)
+!! These are NOT counted as failures and NOT counted in the total above.
+!! The matrix is INCOMPLETE: 131 of 132 scenarios were actually compared.
+
+-- 33 scenario(s) OUTSIDE the active matrix: 14 blocked, 18 pending by charter, 1 retired, 0 UNPRICED
+--   [BLOCKED] cheese-bridge-chainsaw (PENDING: Blocker (1), the entry calibration, is MEASURED: with oracle.level_override 15 the room $00F arrival over yi1-walk.zmov is source frame 1026 (mode $14, Mario at 128,352, in_air 0, logic_frame 184 / effective_frame 24). The stale 400 sat at mode 7. Those measured values are in oracle/engine below. Blocker (1b), the engine-side arrival, is FIXED: standard object $32 is the log bridge for the rope tileset group (CODE_0DD24E via PtrsLong0DA436) and was unbuilt, so the engine had no floor under the spawn and Mario fell to player.state 9. What remains: (a) a one-pixel vertical residual on entry - the engine carries player.speed_y 6 on the first gameplay frame where the ROM has 0, adding 96 sub-units of sub_y on the next frame; (b) oracle pin and .verified hold per director. A scrolling room-graph pass additionally needs the rest of the roster ($64 rope, $D7 generator); the left-edge arrival window is capturable first since those and $66 sit off-screen. The oam-normalized-v1 common projection is wired (oam-projection.mjs). The $65/$66/$67 GFX are meanwhile verified exact by the copyright-free contract tests in line_guided.zig.)
+--   [BLOCKED] cheese-bridge-completion (PENDING: FOUR BLOCKERS CLOSED, ONE OPEN, all measured at oracle pin e2e2ef2. (1) CLOSED, not an engine defect: source 1002 is the ROM's LAST GM04Load row, not its first gameplay pass - scene.mode reads $14 there but $14 stays pinned at 24 until 1003, so no player routine has run under it and $7D is still the RAM-cleared 0. The engine presents no load rows, so anchoring its first stepped frame there put it a whole pass ahead ($13/$14 185/25 against 184/24 on all of the first 200 frames). The window starts at 1003 and compares both counters, player.sub_y and player.speed_y so the anchor proves itself. (2) CLOSED, engine defect: CODE_01D6E0 runs the sprite's own main TWICE before INC $1626, so a $63/$64 is attached and following before the freeze parks it; ours started two frames late. See prewalkGuide in line_guided.zig. (3) CLOSED, engine defect: CODE_01D8E7's `LDA $1540,X / BNE CODE_01D933` makes a WAITING attach skip both the entry-side direction test and the validation step, which is why the ROM's pre-walk leaves the sprite at its spawn position; ours took the step and sat one pixel along. (4) CLOSED, builder defect, convicted with tools/levelbuild against the ROM's own $7E:C800: the $96/$97 line-guide end cap runs DOWN (CODE_0DCEC0 steps with CODE_0DA97D, `$57 += $10`) and $98/$99 runs RIGHT (CODE_0DCEDA steps with CODE_0DA95B, `INY`); ours had them swapped. 60 differing cells, every one a (x,y)/(x-1,y+1) transposition of $097 against $025, now 9504/9504 diff=0. NOTE: this did NOT move the behavioural divergence - the room diverged at the same frame with the map byte-identical, which is how blocker 5 below was isolated to the sprite side. (5) CLOSED, engine defect: CODE_01D8B6..01D8C5 moves the sprite to the PROBE POINT (`$00`/`$02`, corner offset included), not to the candidate cell with its old sub-tile offset. That nibble feeds CODE_01D901's direction test, so ours flipped direction leaving a cell rightward, stepped from the wrong end of the table, failed the 16-pixel jump check and took the CODE_01D867 launch - dropping the rider where the ROM re-scans the same guide ($160E stays 28) and carries him on. First divergence 5 -> 230 -> 301 -> 302 -> 771. (6) CLOSED, engine defect: CODE_01D74D opens with `JSR SubOffscreen1Bnk1` - entry ONE, whose SpriteOffScreen3/4 pair despawns at camera+$1A0 on even frames where the common entry 0 uses camera+$130. Ours erased a railed sprite past the narrow bound and the next scan re-spawned it, resetting the follower (slot 3's $65 went status 8 -> 1 at x=494 with the camera at 182). That was the source-1774 death: 771 -> 2403. (7) CLOSED, engine defect: the $187B 1.5x rule SKIPS a table entry rather than applying a second step (CODE_01D771 applies once; CODE_01D77A..01D784 adds only a second INC $1534,X), the end test comes AFTER the apply (CMP $1570,X forward, DEC/BEQ backward), CODE_01D75C's ExecutePtr dispatches ONE handler per frame so an exhausted tile re-scans NEXT frame, CODE_01D933 publishes state 1 unconditionally after the validation, and CODE_01D938's rollback restores only the position. Double-applying had drifted a chainsaw into launching (CODE_01D867) and falling through the level as a live hazard that killed Mario at source 3406. (8) CLOSED, engine defect: the validation step at CODE_01D918 is a plain JSR CODE_01D768, so it reads the LIVE $13 and a re-scan on an odd frame advances the index by two like any other $187B fast frame; passing 0 made every re-attach slow (slot 3's $1570 15 against 14 at frame 253). (9) CLOSED, engine defect: the END-CAP path runs that step too - CODE_01D89F/01D8A2 reload $160E and BRA to CODE_01D8C8, skipping only the position save and stores, so the table load, the direction test and the validation all run and CODE_01D933 publishes state 1. Returning without it left $1534 at 0 for a frame and the follower re-applied step[0], standing still where the ROM advanced: slot 1's $65 turned at frame 501 and read x=416 against 417, which later put it on guide tile $160E 28 against the ROM's 17 and into Mario at source 2007. NOT MODELLED, named: the +-8 jump check cannot fail on the cap path (the sprite re-enters its own cell) and CODE_01D938's rollback would restore the STALE $08..$0B if it ever did, since that path never saved them. (10) CLOSED, engine defect: ballistic motion is SubUpdateSprPos ($019032) WHOLE - Y move, gravity +3 clamped to terminal $40, X move, then BLOCK INTERACTION. Ours open-coded X-then-Y, added +3 whenever the speed was below $40 (reaching $42 where the ROM clamps at $40) and never touched the level, so a launched chainsaw sailed through terrain the ROM's lands on and despawns off (slot 0 speed_y 66 against 64 from frame 2376). 1004 -> 2404. OPEN, and a FRESH SHAPE - do not read it as the closed guide-chain-end defect, it is its opposite: at frame 2385 the ROM's slot 0 LAUNCHES off the rail (sprite.state 2, y=383, direction 0) where ours RE-ATTACHES (state 1, y=368, direction 1). Fifteen pixels of y and a flipped direction. The stray ballistic $65 that results is what reaches Mario at source 3407 (player.state 9). Instrument the four corners at that cell against the ROM's $7E:C800 - the map is proven byte-identical, so the difference is in which candidate the scan accepts, not in what is there. Carry no inference from the ten closed mechanisms. The compared window stops at the level-end handoff because a direct oracle.level_override entry has no overworld to return to; persistent.current_node would fix that, but oracle_bundle.zig scrubCourseProgress panics for any node past iggys_castle by design, and the Twin Bridges submap projection is unmeasured and must not be guessed.)
+--   [BLOCKED] cheese-bridge-rope-ride (PENDING: Un-promoted 2026-08-23: the 420/420 pass held only under the pending-era declaration that omitted the frame counters. With logic_frame/effective_frame compared (now declared, per the active-coverage contract), first divergence is frame 0: logic_frame oracle 254 vs engine 1, effective_frame oracle 94 vs engine 1 — the scenario's seeding never establishes the counter epoch (the direct-entry seeding class; compare the c5c6f950/134e2c0a seeder-authority work). Promote only when the seeded counters match and 420/420 holds under the full declaration.)
+--   [BLOCKED] choco-ghost-house-fishin-boo (PENDING: Measured under --fast-oam --force after installing the frame-zero loader/window epoch: the RNG, Mario subpixels, pose timer, and lives tuple all match, but frame 0/source 400 remains red in the moving-ledge hole OAM ($1EB): oracle x239 versus engine x240. The corresponding measured actor state is oracle sprite 3 anim_counter $7D and x399 versus engine anim_counter $00 and x400. SMWDisC CODE_02E5D4 -> CODE_02E5D7 proves this OAM is post-move, so the remaining defect is the loader-equivalent actor continuation, not a Fishin' Boo seed or an OAM exclusion.)
+--   [BLOCKED] donut-ghost-house-boo-ceiling (PENDING: ONE BLOCKER WITH TWO FACES, MEASURED, and NEITHER is in the cluster pool: the engine's loader-equivalent room entry does not run the ROM's load-time passes. (a) CLUSTER PASSES. --wram-trace 1E02:1E16 over source 308-372 at oracle pin bfbad8d shows CODE_02FD3B and CODE_02FFC6 firing on source 310 (the room-load frame, $13 = 33, so phase-1 slots 1/5/9/13/17 bob and the odd $13 skips the X sweep) and again on source 337 (the mode-$13 arrival, $13 = 34, so phase-2 slots 2/6/10/14/18 bob AND the even $13 runs the sweep, which is what moves slot 0's $1E16 from $CF to $CE) - then nothing until source 368, where gameplay begins. _debug_BeginLoaderEquivalentRoom ticks the pool zero times, so the arrival state is one sweep pass behind and stays there: every slot's X is still the load value while the ROM's odd-$0F4A slots have already stepped -1. (b) ONE GetRand. The same transition leaves $148B/$148C/$148D/$148E at 6/3/5/0 - one call from cleared, confirmed by the ceiling loader's first traced write taking $1F = 6*5+1 - and the engine arrives at 0/0/0/0. That call cannot be supplied by anchor_state.rng_state, which lands after the room's sprite load, and it must NOT be supplied by moving the engine's cleared default: gameplay-cape-interactions and gameplay-yi3-bonus both compare RNG-placed output in a direct-level start and both REGRESS when that default moves, which is how the boundary was localised to the transition rather than to level load. WHAT IS ALREADY PROVEN HERE: the load is exact - all twenty (x, y) pairs reproduce the ROM's $7E:1E02/$1E16 dump byte for byte once the $148B/$148C boundary is supplied - and the per-frame model is exact in phase, with the Y bob matching frame for frame and only X carrying the constant one-pass offset. The dive path (CODE_02D2FB's vector, CODE_02FC6E's decay, CODE_02FC78's disarm) is ported and cited but NOT witnessed here, because the offset desynchronises the scheduler that arms it; its arithmetic is held by contract tests in clusters.zig instead. Both faces belong to the loader epoch, shared with every loader-equivalent scenario, so they are reported rather than absorbed.)
+--   [BLOCKED] dp2-keyhole-swallow (PENDING: Source frame 37480 is room $103 (Yoshi's Island 3), so this replay deliberately selects picker index 3 and forces $103; the former $0E9/DP2 pairing was a room-identity error that produced 32 header-selected CGRAM differences. The corrected GM04Load preparation mirrors the carried status fields before CODE_008E1A's $0EF9 patch, making frame 0 exact. Frame 1 now isolates an unmasked 155-pixel lower-Mario presentation mismatch (bbox 25,140..38,159), independent of room identity and LoadPalette; the key/keyhole, 84-row iris, and handoff remain pending behind that first divergence. The 18 never-written live-CGRAM entries and the $64 flash phase are retained diagnostics, not palette-asset substitutions. No surface is excluded.)
+--   [CHARTER] gameplay-chocolate-island-2-window (PENDING: Measured --fast-oam divergence at frame 0/source 400 after the window seed: direct entry remains in the wrong mode/epoch, with ROM player (18,332), logic/effective 131/32 and four visible OAM cells versus the engine's fresh-start state.)
+--   [CHARTER] gameplay-chocolate-island-3-window (PENDING: Measured --fast-oam divergence at frame 0/source 400 after the window seed: direct entry remains in the wrong mode/epoch, with ROM player (18,332), logic/effective 131/32 and four visible OAM cells versus the engine's fresh-start state.)
+--   [CHARTER] gameplay-chocolate-island-5-window (PENDING: The direct-entry mode/counter blocker is closed at source 486: both sides are mode $14 with logic/effective 195/9 and Mario (16,224). The remaining frame-0 divergence is presentation/projection state outside this counter seam: the loader-arrival OAM latch is ROM 0 versus engine 3 visible cells, and wildcard aliases such as inactive bonus/mode-7 fields still expose raw WRAM on the oracle side.)
+--   [CHARTER] gameplay-chocolate-secret-window (PENDING: Measured --fast-oam divergence at frame 0/source 400 after the window seed: direct entry remains in the wrong mode/epoch, with ROM player (18,332), logic/effective 130/31 and four visible OAM cells versus the engine's fresh-start state.)
+--   [CHARTER] gameplay-donut-ghost-house-window (PENDING: Measured --fast-oam divergence at frame 0/source 400 after the window epoch: ROM remains in mode 15 at logic/effective 131/32 with player (18,332), subpixels (128,224), four visible OAM cells; the engine is fresh-start mode 20 at logic/effective 1/1. Direct-entry mode/epoch remains unresolved.)
+--   [CHARTER] gameplay-donut-plains-1-natural (PENDING: Measured fast-OAM red at frame 0/source 29158 after the validated window epoch and corrected 73/202 pre-step counter seeds: the seeded RNG, subpixels, pose timer, lives, and resulting 74/203 counters now agree. The real remaining entry gap is route position/presentation: ROM player.x 181/camera.x 49 versus engine 8/0, plus two visible ROM OAM descriptors versus none.)
+--   [CHARTER] gameplay-donut-plains-2-natural (PENDING: Measured fast-OAM red at frame 0/source 600 after selecting the committed loader epoch and validating the window tuple: counters, player position, RNG, subpixels, pose timer, lives, and all three OAM descriptors now reach parity. The real remaining frame divergence is 3472 pixels at bbox 23,48..222,191; state comparison begins at frame 1 by the named typed-boundary rule.)
+--   [CHARTER] gameplay-donut-plains-3-natural (PENDING: Measured fast-OAM now advances to frame 1/source 401 after the validated window epoch makes frame-0 frame/OAM exact and removes the RNG, subpixel, pose-timer, and lives differences. The real remaining state gap begins with absent-keyhole 65535 versus ROM 0, cape timer 2 versus 7, dark-mask residue, and unused shooter level indices 255 versus 0.)
+--   [CHARTER] gameplay-donut-plains-4-natural (PENDING: Measured fast-OAM now advances to frame 1/source 401 after the 120-frame room prefix makes frame-0 frame/OAM exact and the validated window epoch removes every RNG, subpixel, pose-timer, and lives difference. The real remaining state gap begins with absent-keyhole 65535 versus ROM 0, cape timer 2 versus 3, dark-mask residue, and unused shooter level indices 255 versus 0.)
+--   [CHARTER] gameplay-donut-secret-1-window (PENDING: Measured --fast-oam divergence at frame 0/source 400 after the window epoch: ROM remains in mode 15 at logic/effective 131/32 with player (18,332), subpixels (128,224), four visible OAM cells; the engine is fresh-start mode 20 at logic/effective 1/1. Direct-entry mode/epoch remains unresolved.)
+--   [CHARTER] gameplay-donut-secret-2-window (PENDING: Measured --fast-oam divergence at frame 0/source 400 after the window epoch: ROM remains in mode 15 at logic/effective 130/31 with player (18,332), subpixels (96,176), four visible OAM cells; the engine is fresh-start mode 20 at logic/effective 1/1. Direct-entry mode/epoch remains unresolved.)
+--   [CHARTER] gameplay-donut-secret-house-window (PENDING: Measured --fast-oam divergence at frame 0/source 400 after the window epoch: ROM remains in mode 15 at logic/effective 131/32 with player (18,332), subpixels (128,224), four visible OAM cells; the engine is fresh-start mode 20 at logic/effective 1/1. Direct-entry mode/epoch remains unresolved.)
+--   [CHARTER] gameplay-iggys-castle-natural (PENDING: The old entrance-landing prose is stale: it claimed frame 0 was exact and named an intermediate logic-frame seed 183. Current oracle re-derivation at source 2820's post-warmup frame-zero boundary (ZuperNES 223399012d9ad8a8c2f66e709879b6c94b3fd3eb) measures the declared pre-warmup seeds unchanged at logic_frame=118 and effective_frame=126. The initial EnterCastleAni landing had moved the earlier 160 -> 183 seed because the engine now runs the 400-frame walk-in and reload before the comparison window; the later recorder measurement superseded that intermediate value. Frame 0 is not exact on current main (ROM logic frame 1 versus engine 63, with player/camera divergence), so the remaining issue is the engine's natural-overworld entry consumption of the measured epoch, not an invented replacement anchor. The recorded frame-3137 $A7 contact remains unvalidated, though Iggy's Ball CODE_01FA58..01FAB3 reaches generic MarioSprInteractRt at CODE_01FAA3 and $167A=$00 / $1662=$00 select normal clipping index 0; the Yoshi ($88=$0F) entrance script path is decoded but unmeasured.)
+--   [BLOCKED] gameplay-mondo-hammer-bro (PENDING: PENDING-ON-ARRIVAL/POPULATION, no longer blocked on the round-69 owning-level harness defect. Current-pin forced capture proves enterRoom derives Mondo's $13BF=$4B, the ROM executes CODE_05D928..05D931 and writes $1BE3=1, extraction resolves Mondo's own DATA_009F88 tide setting to 1, and both sides now agree player.in_water=1. The stale claim that Mondo has no tide and the engine holds 0 is retracted. The first remaining compared divergence is player.speed_x ROM $FC / engine $FD at frame 0; by frame 2 blocked is 6/4. Separately, the engine has not populated the $9B/$9C pair at this direct-room arrival while the ROM has it in slots 7/8, and this scenario still declares only player/clock state, so it cannot yet earn pair lockstep. The ownership harness is cleared; loader-equivalent arrival/population and the pair's own state/OAM witness belong to their existing lanes.)
+--   [BLOCKED] gameplay-vanilla-dome-1-natural (PENDING: The ANCHOR is now fully derived and the run reaches frame 480 with all eleven compared state fields exact; it is held pending by ONE measured engine gap, not by unmeasured constants. Established (ZuperNES af1f04e, ROM Super Mario World (USA)): the movie reaches the goal - the level-end timer ($1493, trace goal blob byte 1) goes non-zero at source frame 6523 with Mario at $19D9,$0160, counts down through the goal march, and the level leaves mode $14 at source 7101; two independent oracle replays of the committed movie produced BYTE-IDENTICAL traces (sha256 acfe0601d4b67005...). Entry is proved: level_override is a semantic 9-bit ROOM number, so 282 ($11A) - oracle_bundle.zig derives $0109 = (room & $FF) + $24 and $1F11 = room >= $100 itself; source 1018 is the first mode-$14 row and runs no gameplay ($14 frozen at $18 while $13 advances), so the anchor is 1019 with logic_frame 183 and effective_frame 16, each one behind the observed 184/17 per the label-reads-one-ahead rule. engine.level 41 is vanilla_dome_1's course_order (level 0x11A). THE FRAME-480 AND FRAME-487 BLOCKERS ARE CLOSED (see docs/round-8-vanilla-dome-notes.md): the below pass no longer gates the CODE_00F160 head bonk on a rising $7D (that gate is CODE_00EC94's, guarding only the non-physical $21-$24 entry; the bounce's invisible solid $52 is the ROM's re-trigger guard), and SprBlkInteract $0286ED type 1 is ported so a bumped block launches the sprites resting on it. THE BLOCKER NOW: at frame 1381 (source 2400) the $1EF sublevel transition runs a frame early - scene.mode oracle $11 engine $12, with the engine already AT the $1EF spawn (player.x 16, camera.x 0) while the oracle is still in $11A at x 2160, camera.x 2054. A level-load-chain timing gap, not a one-field rounding difference, and a different subsystem from anything else in this round. Not yet diagnosed. ALSO still required before promotion: widen compare.surfaces to wram and the frame/OBJ crops - only state is listed here because nothing else has been measured, not because the rest is excluded on purpose; confirm the $0A red vertical Parakoopa (RedVertParaKoopa $018CC3, ported in 1e272dc) frame-matches, since this movie is its first and only verification site; and note that room $11A has 30 cells the builder never writes with NO skip reported (levelview and levelbuild both say objects=243 built=243), which belongs to round 77's inventory. Promotion also requires the same for VD2-4 before vanilla_dome_1 can be .verified.)
+--   [BLOCKED] gameplay-yi2-traverse (PENDING: Round 100 remeasured the complete route on current main at ZuperNES 2233990. The frame-154 kicked-shell animation 6/7 red was a stale anchor pair, not a gameplay clock defect: this pending scenario retained effective_frame 9 after 844c54aa re-derived the same natural YI2 entry to 8, and it omitted the post-init animated-VRAM continuation already measured for active regression-shell-entry over this exact movie/start. The old pairing kept engine $14 one ahead on every row; changing only the seed made the known 89-pixel BG1 $80/$81/$90/$91 resident-VRAM box appear at frame 2. With effective_frame 8 and that measured continuation anchor together, frame 2 is exact and every frame through 1399 agrees, including shell frame 154 (ROM/engine effective_frame 163 and animation 6). The new first divergence is frame 1400/source 3819: 104 frame pixels at (165..180,114..127), the on-screen $4E Monty Mole box; its declared slot-9 state agrees (status 8, number 78, x 3088, y 304, animation 3). That later presentation family remains the promotion blocker and is independent of $14. Diagnose it against the ROM's frame-N-1 build plus VRAM/CGRAM and the engine's presented OAM at frame N; no surface is excluded.)
+--   [BLOCKED] lemmys-castle-magikoopa (PENDING: The direct room is the named witness for the shared lifecycle. A separate recorded route is still required to place Mario and the aimed $20 projectile on a transmutable block so the ROM-backed Map16 write and replacement-sprite spawn can be compared through impact; neutral entry alone does not guarantee that contact.)
+--   [CHARTER] overworld-death-save-reload (PENDING: The scenario schema intentionally has no unverified state-poke start; record a deterministic death-and-save movie and add a real SRAM/save boundary before promotion.)
+--   [BLOCKED] regression-dp2-channel-a-camera-y (PENDING: Diagnostic witness for a distinct shared update-order bug: World.tick currently runs the scroll sprite before the CODE_00F6DB camera phase, while InLevelGameMode runs CODE_00F6DB at $00A299 and the scroll sprite at $00A29D. The channel phase is therefore one pixel early before the repaired header-3 camera behavior becomes visible. Route frame-loop repair to Sol1; do not mask the exact camera-Y comparison.)
+--   [RETIRED] regression-goal-death-sublevel (RETIRED: Coverage MOVED; this file is kept only so the record says where. Do not implement it; do not record a movie for it. It asked for one natural route covering a pipe sublevel round trip, a death with the stock animation, the approved host restart, then a goal. Round 43 measured that yi4-bonus.zmov already contained the lifecycle, so the charter was never a recording problem, and round 73 then made the boundary reachable by moving the death-restart decision out of the browser page and into the session (World raises death_finished when MarioDeathAni's $1496 countdown reaches zero, CODE_00D0C6; the session owns only the destination). Where its content lives now: (1) the pipe sublevel round trips and the death animation - ACTIVE gameplay-yi4-bonus, whose 2100-frame window over the same movie contains both round trips (frames 1065..1151 and 1713..1802) and the death at 1939 with 161 frames of animation; (2) the death sequence and the frame it ends on - ACTIVE regression-death-restart-boundary, 2131 frames over the same movie with NO state exclusion, pinning both round trips, the death, and every frame of the 192-frame $1496 countdown up to the last frame before the host routing boundary. That is strictly stronger than this charter would have produced: (2) has no exclusions, whereas a scenario spanning the boundary would need to exclude nearly the whole state surface, because on that one frame the engine is already standing at the level start while the ROM is still 280 frames from re-entry (measured: a 2132-frame cut diverged on logic_frame, player.state, player.direction, player.in_air and the rest). The stock life decrement, which is the behavior the approved death-flow rule requires be preserved, is verified in round 73's landing commit where it changed: the engine now goes 4 -> 3 on the same frame as the oracle, leaving only scene.mode differing. The ONE thing genuinely dropped: a post-restart run continuing to a goal. It would be an ordinary aligned level-entry window (both sides at the same source frame with the same seeded state - no special mechanism), needing only a moviegen extension from source 4827, the oracle's re-entry, with the death already in the prefix so the search never generates through one. It was judged not worth the search because it duplicates goal coverage gameplay-yi4-traversal already has. Reopen a fresh scenario if that judgement changes; do not revive this one.)
+--   [BLOCKED] regression-monty-mole (PENDING: The committed natural yi2-monty-mole movie now reaches three ledge moles: slot 9 spawns at scenario frame 1470/source 3889, starts rumbling at 1508, and emerges at 1612; slot 8 emerges at 1648 and Mario stomps it by 1702 for 200 points. Promotion is blocked earlier: the shared replay first diverges at scenario frame 268/source 2687 (slot 8 status 2 oracle vs 8 engine, x 405 vs 404, y 317 vs 320; slot 9 status 2 vs 11), and by the mole anchor the engine has fallen to x=$0188,y=$0305 while the oracle is at x=$0B5E,y=$0160. Fix that upstream sprite interaction, then compare the mole OAM and expose the changed Map16 $0C6 cell in the bundle projection. The opt-in oam_slots surface is already elected here so sol2's corpse allocation fix must match the ROM's physical OBJ slots before promotion.)
+--   [BLOCKED] regression-switch-palace (PENDING: The natural yellow-switch-palace-completion movie supplies a deterministic palace window at source 7155..9494: bonus-room entry, room $0CA pipe handoff, giant-switch contact/message, and stock level exit. The initial frame-zero status-bar mismatch was the direct persisted-replay bootstrap: gameplay $0DBE/$0DBF/$0F34/$0F48 received lives/coins/score/bonus-stars but its Hud text mirror stayed zero until the next status pass. The source values (4, 2, 1450, 22) now seed both products and the frame-zero RGB15 witness is exact. Promotion still requires an end-to-end run proving message suppression, switch persistence, and fanfare; no exclusion is added.)
+--   [CHARTER] round58-forest-eerie-pack (PENDING: The direct room-$1E8 capture reaches the event but is not an admissible lockstep site. At source/scenario frame 400/0 the ROM has four live $39 Eeries in slots 1..4 while the engine has only slot 4. This is not evidence that Load5Eeries itself is wrong: the engine direct-room header resolves a one-slot $1692 profile while the ROM capture admits the pack, the same high-subroom seeding class already documented for direct overrides. A natural Forest Ghost House recording is required; do not record around the header mismatch.)
+--   [CHARTER] round58-smash-shutoff (PENDING: The direct room-$0F8 capture proves the postcondition but misses the transition: after the oracle's 120-frame room arrival both sides already have no $89 and retain only two $38 Eeries in slots 5/6 for all 120 compared frames. The only declared mismatch is player.y at frame 0 (ROM 259, engine 225). A natural recording or an anchor before CallGenerator is required to observe $D2 set $18BF and $89 erase in sequence; absence-after-warmup alone is not promoted as proof.)
+--   [CHARTER] round58-static-flame-flicker (PENDING: The projection and real scan path now agree that room $01F contains four live kind-5 flames, but this direct-room capture cannot prove their exact stochastic clocks. At source/scenario frame 400/0 the ROM clocks are 1/7/11/16 and the zero-warmup engine clocks are 1/5/9/13; the room override preserves different GetRand histories before CODE_02FA16 samples a fresh mask for each flame. A natural Forest Fortress recording, or an exact shared RNG-state anchor, is required. Do not mask the four animation bytes or treat kind-only agreement as flicker evidence.)
+--   [BLOCKED] vanilla-dome-3-blargg-audio (PENDING: The natural ROM half is captured and decisive: source 1310 (scenario frame 15) presents `[0x25,0,0x80,0]` at the CPU-to-SPC mirrors while the first Blargg has `$C2=4,$1540=1`; source 1295..1309 has no `$1DF9/$1DFC` Blargg cue. The current direct-room engine replay reaches a different pre-window APU service count, so the strict audio-clock injector refuses at frame 15 before comparison (`audio clock field 15 disagrees with engine port-write count`). This is a harness-entry/audio-anchor issue, not an exclusion or a passing result. The ROM-fed WASM gate `vanilla-dome-blargg-check.mjs` is the shipped behavior gate: it breaks on the old `$1DFC=$25`, proves the surface is silent, sees `$1DF9=$25` only at timer 1, and witnesses nonzero PCM. Promote this scenario only after a loader-equivalent VD3 natural audio anchor reproduces the oracle's three NMI writes per field.)
+--   [CHARTER] vanilla-secret-3-dolphins-seeded (PENDING: CHARTER GAP — the frame-zero ROM 57 / engine 53 effective_frame and ROM 1536 / engine 1531 camera.x residue compares two direct-room loader approximations; no shared natural Vanilla Secret 3 arrival recording exists. No field is masked. $14's loader rule is measured and closed: CODE_00A5F9..00A60C performs only the GM04 +8 re-prime; CODE_009F37..009F6E TmpFade never writes $14; CODE_00A1C1 and CODE_00C504 are separate map/gameplay increments. Natural VD1 $11A->$1EF control confirms GM04 $10->$18 via eight 00:A604 writes, a $14 hold through all 30 mode-$13 rows and inherited $9D pipe emergence, then first 00:C504 only after $9D clears. The dolphins ROM/engine phase profiles are 21/30 mode-$0F presentations, 9/7 blocking mode-$11 presentations, and matching 18/18 mode-$12 and 30/30 mode-$13 presentations; $14 holds in every discrepant phase. Thus frame_b += 4, a seed-transform change, and a loader pass-count change are all refuted. Closure requires a natural Vanilla Secret 3 arrival recording that both ROM and engine can replay.)
