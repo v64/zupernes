@@ -191,11 +191,15 @@ granularity PPU rendering, dot-granularity PPU counters. The path:
    `docs/mid-scanline-register-replay.md`. Register-specific latch delays,
    active-display OAM/VRAM/CGRAM port behavior, and moving HDMA to hardware
    H-blank remain deliberately separate timing stages.
-4. **HDMA timing — PARTIALLY IMPLEMENTED**: HDMA setup, line-counter/repeat
-   handling, and per-byte billing exist in `Dma.initHdma()`/`runHdma()`
-   (`src/dma.zig:288-455`), and the emulator invokes it on scanline
-   transitions (`src/root.zig:252-253`). It still runs at scanline start,
-   not hardware H≈278, and lacks the hardware per-channel/start-end timing.
+4. **HDMA timing — DONE (`f0d49a4` + overhead stage)**: the PPU/APU timeline now
+   stops for initialization near V=0/H=6 and for visible-line HDMA at H=278.
+   The controller bills the nominal ~18-clock global overhead, 8 clocks per
+   active channel, 16 clocks for an indirect-pointer reload, and the existing
+   8 clocks per byte without double-charging. Register writes use the render
+   journal on the correct absolute line. Unit, 29-ROM, savestate-resume, and
+   2,900-frame SMW evidence is in `docs/hdma-transfer-timing.md`. Exact
+   within-instruction CPU-cycle pause alignment and mid-general-DMA HDMA
+   priority remain future scheduler refinements.
 5. **NMI/IRQ jitter — PARTIALLY IMPLEMENTED**: the emulator detects timer
    crossings and raises IRQ/NMI pending state (`src/root.zig:171-216`,
    `220-245`), then polls interrupts between instructions

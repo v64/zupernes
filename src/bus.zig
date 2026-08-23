@@ -331,15 +331,21 @@ pub const Bus = struct {
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
     }
 
-    /// Account one DMA'd byte: 8 master cycles of bus time, during which
-    /// the cartridge coprocessor keeps running (see the comment at the
-    /// dma.zig call site - Super Mario Kart DMA-reads DSP-1 results at
+    /// Account DMA-controller bus time.  Besides transferred bytes, HDMA has
+    /// global, per-channel, and indirect-pointer overhead during which the CPU
+    /// is paused but the PPU, APU, and cartridge coprocessor keep running.
+    pub fn tickDmaMasters(self: *Bus, masters: u32) void {
+        self.dma_masters += masters;
+        self.ppu_write_timing_offset += masters;
+        self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
+        self.tickDsp(masters);
+    }
+
+    /// Account one DMA'd byte: 8 master cycles of bus time (see the comment at
+    /// the dma.zig call site - Super Mario Kart DMA-reads DSP-1 results at
     /// exactly the pace the microcode streams them).
     pub fn tickDmaByte(self: *Bus) void {
-        self.dma_masters += 8;
-        self.ppu_write_timing_offset += 8;
-        self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
-        self.tickDsp(8);
+        self.tickDmaMasters(8);
     }
 
     // ==========================================================================

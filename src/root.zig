@@ -724,7 +724,9 @@ test "HDMA initialization occurs at line zero H=6" {
     try std.testing.expectEqual(@as(u8, 0), emu.bus.dma.channels[0].line_counter);
 
     emu.advancePpuWithHdma(1);
-    try std.testing.expectEqual(hdma_init_dot, emu.ppu.dot);
+    // H=6 plus 18 global and 8 direct-channel initialization clocks.
+    try std.testing.expectEqual(@as(u16, 12), emu.ppu.dot);
+    try std.testing.expectEqual(@as(u32, 2), emu.ppu.master_accum);
     try std.testing.expectEqual(@as(u16, 1), emu.bus.dma.channels[0].hdma_addr);
     try std.testing.expectEqual(@as(u8, 0x81), emu.bus.dma.channels[0].line_counter);
     try std.testing.expect(emu.bus.dma.channels[0].hdma_do_transfer);
@@ -755,7 +757,55 @@ test "visible-line HDMA write is journaled from H=278, not line start" {
     emu.advancePpuWithHdma(1);
     try std.testing.expectEqual(@as(u8, 0x0F), emu.ppu.inidisp);
     try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
-    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 2), emu.ppu.render_events[0].dot);
-    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 2), emu.ppu.dot);
+    // 18 global + 8 channel + 8 byte clocks put the end-of-byte register
+    // write at H=286 with two master clocks left within that dot.
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 8), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 8), emu.ppu.dot);
+    try std.testing.expectEqual(@as(u32, 2), emu.ppu.master_accum);
     try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
+}
+
+test "active HDMA channel bills overhead on a no-transfer line" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.tick(277 * master_cycles_per_dot);
+
+    emu.bus.hdmaen = 0x01;
+    emu.bus.dma.hdma_enable = 0x01;
+    emu.bus.dma.channels[0].a_addr = 0x7E0000;
+    emu.bus.dma.channels[0].line_counter = 2;
+    emu.bus.dma.channels[0].hdma_do_transfer = false;
+
+    emu.advancePpuWithHdma(master_cycles_per_dot);
+    // 18 global + 8 channel clocks, despite writing no PPU byte.
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 6), emu.ppu.dot);
+    try std.testing.expectEqual(@as(u32, 2), emu.ppu.master_accum);
+    try std.testing.expectEqual(@as(u8, 1), emu.bus.dma.channels[0].line_counter);
+    try std.testing.expectEqual(@as(usize, 0), emu.ppu.render_event_count);
+}
+
+test "HDMA indirect descriptor reload bills its extra 16 clocks" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.tick(277 * master_cycles_per_dot);
+
+    emu.bus.hdmaen = 0x01;
+    emu.bus.dma.hdma_enable = 0x01;
+    emu.bus.dma.channels[0].control.indirect = true;
+    emu.bus.dma.channels[0].a_addr = 0x7E0000;
+    emu.bus.dma.channels[0].hdma_addr = 0;
+    emu.bus.dma.channels[0].line_counter = 1;
+    emu.bus.dma.channels[0].hdma_do_transfer = false;
+    emu.bus.wram[0] = 0x82;
+    emu.bus.wram[1] = 0x34;
+    emu.bus.wram[2] = 0x12;
+
+    emu.advancePpuWithHdma(master_cycles_per_dot);
+    // 18 global + 8 channel + 16 indirect-pointer clocks.
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 10), emu.ppu.dot);
+    try std.testing.expectEqual(@as(u32, 2), emu.ppu.master_accum);
+    try std.testing.expectEqual(@as(u8, 0x82), emu.bus.dma.channels[0].line_counter);
+    try std.testing.expectEqual(@as(u16, 0x1234), emu.bus.dma.channels[0].byte_count);
+    try std.testing.expectEqual(@as(u16, 3), emu.bus.dma.channels[0].hdma_addr);
+    try std.testing.expect(emu.bus.dma.channels[0].hdma_do_transfer);
 }
