@@ -115,6 +115,7 @@ pub const Emulator = struct {
         // Capture-only; see `traceExec`. One never-taken branch when disabled.
         self.exec_trace.record(self.ppu.writer_pc);
 
+        self.bus.beginCpuInstruction();
         const cycles = self.cpu.step();
 
         // ======================================================================
@@ -251,6 +252,7 @@ pub const Emulator = struct {
 
             // Run HDMA at H-blank (start of each scanline during visible area)
             if (self.bus.hdmaen != 0 and self.ppu.scanline <= 224) {
+                self.bus.beginStandaloneDma();
                 self.bus.dma.runHdma(&self.bus);
             }
         }

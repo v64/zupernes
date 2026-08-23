@@ -300,12 +300,45 @@ pub const Bus = struct {
     // comparison.
     dma_masters: u32 = 0,
 
+    // End-of-access timestamp projected from the PPU's last committed beam
+    // position. CPU.accountAccess supplies the cumulative instruction time;
+    // tickDmaByte advances it for each synchronous DMA byte. The PPU uses it
+    // only to timestamp render-register changes before root.zig commits the
+    // batched clocks with Ppu.tick().
+    ppu_cpu_timing_base: u32 = 0,
+    ppu_write_timing_offset: u32 = 0,
+
+    /// Start timing a CPU instruction. HDMA billed by the preceding scanline
+    /// transition is still pending in dma_masters, and happens-before the CPU
+    /// access even though both are committed to Ppu.tick() together.
+    pub fn beginCpuInstruction(self: *Bus) void {
+        self.ppu_cpu_timing_base = self.dma_masters;
+        self.ppu_write_timing_offset = self.ppu_cpu_timing_base;
+        self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
+    }
+
+    /// Start HDMA at the PPU's current beam position, outside a CPU
+    /// instruction. root.zig has already drained earlier DMA clocks here.
+    pub fn beginStandaloneDma(self: *Bus) void {
+        self.ppu_cpu_timing_base = 0;
+        self.ppu_write_timing_offset = 0;
+        self.ppu.setWriteTimingOffset(0);
+    }
+
+    /// Timestamp the end of the current CPU bus access.
+    pub fn setCpuAccessTiming(self: *Bus, instruction_masters: u32) void {
+        self.ppu_write_timing_offset = self.ppu_cpu_timing_base + instruction_masters;
+        self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
+    }
+
     /// Account one DMA'd byte: 8 master cycles of bus time, during which
     /// the cartridge coprocessor keeps running (see the comment at the
     /// dma.zig call site - Super Mario Kart DMA-reads DSP-1 results at
     /// exactly the pace the microcode streams them).
     pub fn tickDmaByte(self: *Bus) void {
         self.dma_masters += 8;
+        self.ppu_write_timing_offset += 8;
+        self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
         self.tickDsp(8);
     }
 

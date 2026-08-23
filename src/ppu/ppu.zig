@@ -19,6 +19,16 @@ pub const SCANLINES_PER_FRAME: usize = 262; // NTSC
 pub const DOTS_PER_SCANLINE: usize = 341;
 pub const MASTER_CYCLES_PER_DOT: u32 = 4;
 
+// The 256 active low-resolution pixels occupy PPU dots 22 through 277.
+// Register writes before that interval affect the whole visible line; writes
+// after it affect only the state carried into the next line.  Keeping this
+// conversion in one place makes the deliberately approximate parts obvious:
+// individual PPU registers have their own one/few-dot latch delays on real
+// revisions, but a common beam-position boundary is already strictly better
+// than sampling every register once after the line has finished.
+const ACTIVE_DISPLAY_FIRST_DOT: u16 = 22;
+const ACTIVE_DISPLAY_END_DOT: u16 = ACTIVE_DISPLAY_FIRST_DOT + SCREEN_WIDTH;
+
 // =============================================================================
 // COMPTIME-GENERATED LOOKUP TABLES
 // =============================================================================
@@ -122,6 +132,125 @@ pub const VramTrace = struct {
 };
 
 pub const Ppu = struct {
+    /// Rendering-only PPU state that can change while the beam crosses a
+    /// scanline.  The live register fields below remain authoritative for CPU
+    /// reads/writes.  A copy captured at the start of the line plus the
+    /// timestamped copies in RenderEvent let the deferred renderer reconstruct
+    /// exactly which state was visible for each horizontal span.
+    const RenderState = struct {
+        inidisp: u8,
+        obsel: u8,
+        bgmode: u8,
+        mosaic: u8,
+        bg1sc: u8,
+        bg2sc: u8,
+        bg3sc: u8,
+        bg4sc: u8,
+        bg12nba: u8,
+        bg34nba: u8,
+        bg1hofs: u16,
+        bg1vofs: u16,
+        bg2hofs: u16,
+        bg2vofs: u16,
+        bg3hofs: u16,
+        bg3vofs: u16,
+        bg4hofs: u16,
+        bg4vofs: u16,
+        m7sel: u8,
+        m7a: i16,
+        m7b: i16,
+        m7c: i16,
+        m7d: i16,
+        m7x: i16,
+        m7y: i16,
+        m7hofs: i16,
+        m7vofs: i16,
+        w12sel: u8,
+        w34sel: u8,
+        wobjsel: u8,
+        wh0: u8,
+        wh1: u8,
+        wh2: u8,
+        wh3: u8,
+        wbglog: u8,
+        wobjlog: u8,
+        tm: u8,
+        ts: u8,
+        tmw: u8,
+        tsw: u8,
+        cgwsel: u8,
+        cgadsub: u8,
+        coldata: u16,
+
+        fn capture(ppu: *const Ppu) RenderState {
+            return .{
+                .inidisp = ppu.inidisp,
+                .obsel = ppu.obsel,
+                .bgmode = ppu.bgmode,
+                .mosaic = ppu.mosaic,
+                .bg1sc = ppu.bg1sc,
+                .bg2sc = ppu.bg2sc,
+                .bg3sc = ppu.bg3sc,
+                .bg4sc = ppu.bg4sc,
+                .bg12nba = ppu.bg12nba,
+                .bg34nba = ppu.bg34nba,
+                .bg1hofs = ppu.bg1hofs,
+                .bg1vofs = ppu.bg1vofs,
+                .bg2hofs = ppu.bg2hofs,
+                .bg2vofs = ppu.bg2vofs,
+                .bg3hofs = ppu.bg3hofs,
+                .bg3vofs = ppu.bg3vofs,
+                .bg4hofs = ppu.bg4hofs,
+                .bg4vofs = ppu.bg4vofs,
+                .m7sel = ppu.m7sel,
+                .m7a = ppu.m7a,
+                .m7b = ppu.m7b,
+                .m7c = ppu.m7c,
+                .m7d = ppu.m7d,
+                .m7x = ppu.m7x,
+                .m7y = ppu.m7y,
+                .m7hofs = ppu.m7hofs,
+                .m7vofs = ppu.m7vofs,
+                .w12sel = ppu.w12sel,
+                .w34sel = ppu.w34sel,
+                .wobjsel = ppu.wobjsel,
+                .wh0 = ppu.wh0,
+                .wh1 = ppu.wh1,
+                .wh2 = ppu.wh2,
+                .wh3 = ppu.wh3,
+                .wbglog = ppu.wbglog,
+                .wobjlog = ppu.wobjlog,
+                .tm = ppu.tm,
+                .ts = ppu.ts,
+                .tmw = ppu.tmw,
+                .tsw = ppu.tsw,
+                .cgwsel = ppu.cgwsel,
+                .cgadsub = ppu.cgadsub,
+                .coldata = ppu.coldata,
+            };
+        }
+
+        fn apply(state: RenderState, ppu: *Ppu) void {
+            inline for (@typeInfo(RenderState).@"struct".fields) |field| {
+                @field(ppu, field.name) = @field(state, field.name);
+            }
+        }
+    };
+
+    const RenderEvent = struct {
+        /// Monotonic line number (frame * 262 + scanline), so writes projected
+        /// across line 261 cannot be confused with an earlier line 0.
+        line: u64,
+        dot: u16,
+        state: RenderState,
+    };
+
+    // A normal CPU instruction can only put a handful of events ahead of the
+    // beam.  2048 entries also covers several complete lines of a pathological
+    // DMA-to-render-register transfer.  Same-dot writes are coalesced because
+    // no output pixel can observe their intermediate states.
+    const render_event_capacity = 2048;
+
     // VRAM - 64KB
     vram: [64 * 1024]u8,
 
@@ -254,6 +383,16 @@ pub const Ppu = struct {
     // rarely a multiple of 4.
     master_accum: u32,
 
+    // Mid-scanline register replay. `write_timing_offset` is transient timing
+    // metadata supplied by the CPU/DMA bus: the number of master clocks from
+    // the PPU's presently committed beam position to the end of this write's
+    // bus access. It is not itself emulated register state.
+    render_line_state: RenderState,
+    render_events: [render_event_capacity]RenderEvent,
+    render_event_count: usize,
+    render_events_dropped: usize,
+    write_timing_offset: u32,
+
     // Latch for VRAM reads
     vram_read_buffer: u8,
 
@@ -264,7 +403,7 @@ pub const Ppu = struct {
     dma_src: u24 = 0, // A-bus source of an in-flight VRAM DMA (0 = direct store)
 
     pub fn init() Ppu {
-        return Ppu{
+        var ppu = Ppu{
             .vram = [_]u8{0} ** (64 * 1024),
             .cgram = [_]u8{0} ** 512,
             .oam = [_]u8{0} ** 544,
@@ -334,9 +473,16 @@ pub const Ppu = struct {
             .scanline = 0,
             .dot = 0,
             .master_accum = 0,
+            .render_line_state = undefined,
+            .render_events = undefined,
+            .render_event_count = 0,
+            .render_events_dropped = 0,
+            .write_timing_offset = 0,
             .frame_count = 0,
             .vram_read_buffer = 0,
         };
+        ppu.render_line_state = RenderState.capture(&ppu);
+        return ppu;
     }
 
     pub fn reset(self: *Ppu) void {
@@ -358,6 +504,18 @@ pub const Ppu = struct {
         self.tm = 0;
         self.ts = 0;
         self.scroll_latch_set = false;
+        self.render_event_count = 0;
+        self.render_events_dropped = 0;
+        self.write_timing_offset = 0;
+        self.render_line_state = RenderState.capture(self);
+    }
+
+    /// Supply the end-of-access timestamp used by the next PPU register write.
+    /// CPU and DMA code update this before entering writeRegister(); keeping the
+    /// projection in PPU means the journal remains correct when an access crosses
+    /// a scanline or frame boundary before tick() commits that elapsed time.
+    pub fn setWriteTimingOffset(self: *Ppu, master_cycles: u32) void {
+        self.write_timing_offset = master_cycles;
     }
 
     /// Capture-only beam position for timestamping external debug events.
@@ -378,13 +536,15 @@ pub const Ppu = struct {
             self.dot += 1;
 
             if (self.dot >= DOTS_PER_SCANLINE) {
+                // Rendering is intentionally deferred until the line is
+                // complete.  That gives finishScanline() the complete ordered
+                // list of register changes made while the beam crossed it.
+                // The old start-of-line call sampled the pre-HDMA state and
+                // could never observe a CPU write later in the same line.
+                self.finishScanline();
+
                 self.dot = 0;
                 self.scanline += 1;
-
-                // Render the scanline if we're in visible area
-                if (self.scanline < SCREEN_HEIGHT) {
-                    self.renderScanline();
-                }
 
                 if (self.scanline >= SCANLINES_PER_FRAME) {
                     self.scanline = 0;
@@ -555,6 +715,121 @@ pub const Ppu = struct {
         }
     }
 
+    fn absoluteLine(self: *const Ppu) u64 {
+        return self.frame_count * SCANLINES_PER_FRAME + self.scanline;
+    }
+
+    fn projectedWritePosition(self: *const Ppu) struct { line: u64, dot: u16 } {
+        const elapsed_dots: u64 = (@as(u64, self.master_accum) + self.write_timing_offset) /
+            MASTER_CYCLES_PER_DOT;
+        const beam_dots = @as(u64, self.dot) + elapsed_dots;
+        return .{
+            .line = self.absoluteLine() + beam_dots / DOTS_PER_SCANLINE,
+            .dot = @intCast(beam_dots % DOTS_PER_SCANLINE),
+        };
+    }
+
+    fn isRenderControlRegister(addr: u16) bool {
+        return switch (addr) {
+            // INIDISP/OBJ, BG mode/map/scroll, Mode 7, windows, screen
+            // designation, and color math all feed the pixel compositor.
+            // The address/data ports for OAM, VRAM and CGRAM are deliberately
+            // excluded: active-display memory access has separate contention,
+            // redirection and corruption rules and is not a register-latch
+            // replay problem.
+            0x2100,
+            0x2101,
+            0x2105...0x2114,
+            0x211A...0x2120,
+            0x2123...0x2132,
+            => true,
+            else => false,
+        };
+    }
+
+    fn recordRenderChange(self: *Ppu) void {
+        const pos = self.projectedWritePosition();
+        const state = RenderState.capture(self);
+
+        // Several DMA transfer modes write adjacent registers within one PPU
+        // dot.  Only the last resulting state can reach the video DAC, so fold
+        // those writes into one event and save journal capacity.
+        if (self.render_event_count != 0) {
+            const last = &self.render_events[self.render_event_count - 1];
+            if (last.line == pos.line and last.dot == pos.dot) {
+                last.state = state;
+                return;
+            }
+        }
+
+        if (self.render_event_count == render_event_capacity) {
+            // This requires thousands of distinct-dot render-register writes
+            // to be queued before tick() gets a chance to drain even one line.
+            // Preserve the diagnostic rather than silently pretending the
+            // journal was complete. Normal CPU/IRQ/HDMA paths never approach
+            // this bound.
+            self.render_events_dropped += 1;
+            return;
+        }
+
+        self.render_events[self.render_event_count] = .{
+            .line = pos.line,
+            .dot = pos.dot,
+            .state = state,
+        };
+        self.render_event_count += 1;
+    }
+
+    fn dotToVisibleX(dot: u16) u16 {
+        if (dot <= ACTIVE_DISPLAY_FIRST_DOT) return 0;
+        if (dot >= ACTIVE_DISPLAY_END_DOT) return SCREEN_WIDTH;
+        return dot - ACTIVE_DISPLAY_FIRST_DOT;
+    }
+
+    /// Render the line that has just completed by replaying its state changes
+    /// from left to right, then carry the final reconstructed state into the
+    /// next line. Live CPU-visible registers are restored before returning.
+    fn finishScanline(self: *Ppu) void {
+        const line = self.absoluteLine();
+        const live_state = RenderState.capture(self);
+        self.render_line_state.apply(self);
+
+        var x: u16 = 0;
+        var consumed: usize = 0;
+        while (consumed < self.render_event_count and self.render_events[consumed].line <= line) : (consumed += 1) {
+            const event = self.render_events[consumed];
+            if (event.line == line) {
+                const boundary = dotToVisibleX(event.dot);
+                if (self.scanline < SCREEN_HEIGHT and boundary > x) {
+                    self.renderScanlineRange(self.scanline, x, boundary);
+                }
+                event.state.apply(self);
+                x = @max(x, boundary);
+            } else {
+                // A stale event is only possible after journal overflow or a
+                // legacy savestate. Applying it keeps line-start state moving
+                // monotonically instead of losing the write entirely.
+                event.state.apply(self);
+            }
+        }
+
+        if (self.scanline < SCREEN_HEIGHT and x < SCREEN_WIDTH) {
+            self.renderScanlineRange(self.scanline, x, SCREEN_WIDTH);
+        }
+        self.render_line_state = RenderState.capture(self);
+        live_state.apply(self);
+
+        if (consumed != 0) {
+            const remaining = self.render_event_count - consumed;
+            std.mem.copyForwards(
+                RenderEvent,
+                self.render_events[0..remaining],
+                self.render_events[consumed..self.render_event_count],
+            );
+            self.render_event_count = remaining;
+        }
+    }
+
     // ==========================================================================
     // SPRITE-TO-BACKGROUND PRIORITY
     // ==========================================================================
@@ -640,14 +915,18 @@ pub const Ppu = struct {
         }
     }
 
-    fn renderScanline(self: *Ppu) void {
-        const y = self.scanline;
+    /// Render one horizontal span using the register state active for that
+    /// span. Background/sprite line buffers are rebuilt per span: this is less
+    /// expensive than dot rendering in the overwhelmingly common no-change
+    /// case (one span), while still making scroll/mode/window changes correct
+    /// instead of limiting replay to INIDISP alone.
+    fn renderScanlineRange(self: *Ppu, y: u16, x_begin: u16, x_end: u16) void {
         const start = y * SCREEN_WIDTH;
 
         // Check if display is enabled
         if ((self.inidisp & 0x80) != 0) {
             // Force blank - fill with black
-            for (0..SCREEN_WIDTH) |x| {
+            for (x_begin..x_end) |x| {
                 self.framebuffer[start + x] = 0;
             }
             return;
@@ -656,11 +935,9 @@ pub const Ppu = struct {
         // Get background color from CGRAM[0]
         const backdrop = self.getColor(0);
 
-        // Select the master-brightness row once per scanline (INIDISP can't
-        // change mid-line in our scanline-granularity model; when mid-line
-        // register changes land - see NEXTSTEPS.md - this moves into the
-        // change-replay logic). &-of-array-row so the pixel loop indexes
-        // through a pointer instead of recomputing the row address.
+        // Select the master-brightness row once per constant-state span.
+        // &-of-array-row lets the pixel loop index through a pointer instead
+        // of recomputing the row address.
         const bright: *const [32]u16 = &BRIGHTNESS_LUT[self.inidisp & 0x0F];
 
         // Trace window state during spotlight animation (after frame 240 when display begins)
@@ -726,8 +1003,8 @@ pub const Ppu = struct {
             }
         }
 
-        // Render each pixel
-        for (0..SCREEN_WIDTH) |x| {
+        // Render each pixel in this constant-register span.
+        for (x_begin..x_end) |x| {
             var color: u16 = backdrop;
             var bg_priority: u8 = 0;
             var bg_layer: u8 = 0; // Track which BG layer produced this pixel (0 = backdrop)
@@ -1490,7 +1767,6 @@ pub const Ppu = struct {
         // Parse tilemap entry
         const tile_num: u16 = tilemap_entry & 0x3FF;
 
-
         // Debug: trace BG3 tile reading on frame 600
         // Trace first few positions to verify tile reading
         if (comptime dbg.trace_bg_render) {
@@ -2101,7 +2377,6 @@ pub const Ppu = struct {
                     .priority = priority,
                     .palette = palette,
                 };
-
             }
             if (tiles_on_line == 34) break;
         }
@@ -2455,6 +2730,13 @@ pub const Ppu = struct {
             },
             else => {},
         }
+
+        // Capture the resulting decoded register state, not merely the raw
+        // byte. This matters for shared/write-twice latches (BG scroll and
+        // Mode 7) and for COLDATA's component-select writes: replay sees the
+        // exact state the real write produced without mutating those latches a
+        // second time during rendering.
+        if (isRenderControlRegister(addr)) self.recordRenderChange();
     }
 
     fn prefetchVram(self: *Ppu) void {
@@ -2638,6 +2920,75 @@ test "brightness LUT matches hardware formula" {
     }
     try std.testing.expectEqual(@as(u16, 0), BRIGHTNESS_LUT[0][31]);
     try std.testing.expectEqual(@as(u16, 31), BRIGHTNESS_LUT[15][31]);
+}
+
+test "mid-scanline INIDISP writes split force blank and brightness spans" {
+    var ppu = Ppu.init();
+    ppu.cgram[0] = 0xFF;
+    ppu.cgram[1] = 0x7F; // white backdrop
+
+    // Turn the display on before active output, then force-blank it after 64
+    // visible pixels. The renderer runs only when line 0 completes.
+    ppu.writeRegister(0x2100, 0x0F);
+    const blank_x: u16 = 64;
+    const blank_dot = ACTIVE_DISPLAY_FIRST_DOT + blank_x;
+    ppu.tick(@as(u32, blank_dot) * MASTER_CYCLES_PER_DOT);
+    ppu.writeRegister(0x2100, 0x8F);
+    ppu.tick(@as(u32, DOTS_PER_SCANLINE - blank_dot) * MASTER_CYCLES_PER_DOT);
+
+    for (0..blank_x) |x| try std.testing.expectEqual(@as(u16, 0x7FFF), ppu.framebuffer[x]);
+    for (blank_x..SCREEN_WIDTH) |x| try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[x]);
+
+    // The state reached at the end of line 0 is the start state for line 1.
+    ppu.tick(DOTS_PER_SCANLINE * MASTER_CYCLES_PER_DOT);
+    for (0..SCREEN_WIDTH) |x| {
+        try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[SCREEN_WIDTH + x]);
+    }
+}
+
+test "mid-scanline replay rebuilds layers when TM changes" {
+    var ppu = Ppu.init();
+    ppu.cgram[0] = 0;
+    ppu.cgram[1 * 2] = 0x1F; // BG color 1 = red
+
+    // Mode 0 BG1: tilemap at byte $0000, 2bpp tile 0 at byte $2000.
+    // Plane 0 set on every row makes the whole tile color index 1.
+    for (0..8) |row| ppu.vram[0x2000 + row * 2] = 0xFF;
+    ppu.writeRegister(0x2100, 0x0F);
+    ppu.writeRegister(0x2105, 0x00);
+    ppu.writeRegister(0x2107, 0x00);
+    ppu.writeRegister(0x210B, 0x01);
+    ppu.writeRegister(0x212C, 0x00);
+
+    const enable_x: u16 = 128;
+    const enable_dot = ACTIVE_DISPLAY_FIRST_DOT + enable_x;
+    ppu.tick(@as(u32, enable_dot) * MASTER_CYCLES_PER_DOT);
+    ppu.writeRegister(0x212C, 0x01);
+    ppu.tick(@as(u32, DOTS_PER_SCANLINE - enable_dot) * MASTER_CYCLES_PER_DOT);
+
+    for (0..enable_x) |x| try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[x]);
+    for (enable_x..SCREEN_WIDTH) |x| try std.testing.expectEqual(@as(u16, 0x001F), ppu.framebuffer[x]);
+}
+
+test "PPU write timing offset projects the access end onto the beam" {
+    var ppu = Ppu.init();
+    ppu.cgram[0] = 0xFF;
+    ppu.cgram[1] = 0x7F;
+    ppu.writeRegister(0x2100, 0x0F);
+
+    // The PPU has committed through dot 20, but the CPU store completes four
+    // dots later. Its INIDISP effect therefore begins at visible X=2, not at
+    // the instruction-start position before active display.
+    ppu.tick(20 * MASTER_CYCLES_PER_DOT);
+    ppu.setWriteTimingOffset(4 * MASTER_CYCLES_PER_DOT);
+    ppu.writeRegister(0x2100, 0x8F);
+    ppu.tick(4 * MASTER_CYCLES_PER_DOT);
+    ppu.setWriteTimingOffset(0);
+    ppu.tick((DOTS_PER_SCANLINE - 24) * MASTER_CYCLES_PER_DOT);
+
+    try std.testing.expectEqual(@as(u16, 0x7FFF), ppu.framebuffer[0]);
+    try std.testing.expectEqual(@as(u16, 0x7FFF), ppu.framebuffer[1]);
+    try std.testing.expectEqual(@as(u16, 0), ppu.framebuffer[2]);
 }
 
 test "plane spread LUT interleaves bits" {

@@ -315,6 +315,7 @@ pub const Cpu = struct {
         self.internal_flushed += internal;
         self.mem_masters += speed;
         self.mem_accesses +%= 1;
+        self.bus.setCpuAccessTiming(self.mem_masters + self.internal_flushed * 6);
     }
 
     fn fetchByte(self: *Cpu) u8 {
