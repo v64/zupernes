@@ -56,6 +56,10 @@ pub const Apu = struct {
     // hardware field, including the loader upload burst, with headroom.
     pub const frame_clock_port_write_capacity = 16 * 1024;
 
+    // A field carries at most one game logic tick; capacity 4 keeps unusual
+    // captures (resets, loader bursts) from silently truncating.
+    pub const frame_clock_logic_write_capacity = 4;
+
     pub const FrameClock = struct {
         /// Actual master clocks billed to the APU during one presented field.
         master_cycles: u32,
@@ -65,6 +69,13 @@ pub const Apu = struct {
         port_write_cycles: [frame_clock_port_write_capacity]u32,
         port_write_count: u16,
         port_write_overflow: bool,
+        /// Offsets of CPU writes to WRAM `$7E0013` (the game's logic-frame
+        /// counter) on the same clock as the port writes.  Pass bucketing
+        /// splits a field's port writes at the first of these so each write's
+        /// pass is defined by the `$13` value live when it happened,
+        /// independent of where NMI jitter lands relative to field edges.
+        logic_write_cycles: [frame_clock_logic_write_capacity]u32,
+        logic_write_count: u16,
     };
 
     const FrameClockCapture = struct {
@@ -72,6 +83,8 @@ pub const Apu = struct {
         port_write_cycles: [frame_clock_port_write_capacity]u64 = undefined,
         port_write_count: u16 = 0,
         port_write_overflow: bool = false,
+        logic_write_cycles: [frame_clock_logic_write_capacity]u64 = undefined,
+        logic_write_count: u16 = 0,
     };
 
     /// Capture-only master-clock cursor.  This is deliberately outside the
@@ -142,6 +155,19 @@ pub const Apu = struct {
         }
     }
 
+    /// Capture-only: the bus reports each CPU write to WRAM `$7E0013` here so
+    /// the frame clock can pin the logic-tick instant onto the port-write
+    /// timeline.  No emulation state changes; outside a capture this is a
+    /// no-op.
+    pub fn noteLogicWrite(self: *Apu) void {
+        if (self.frame_clock_capture) |*capture| {
+            if (capture.logic_write_count < frame_clock_logic_write_capacity) {
+                capture.logic_write_cycles[capture.logic_write_count] = self.master_cycles;
+                capture.logic_write_count += 1;
+            }
+        }
+    }
+
     // =========================================================================
     // SYNCHRONIZATION
     // =========================================================================
@@ -193,11 +219,16 @@ pub const Apu = struct {
         var port_write_cycles: [frame_clock_port_write_capacity]u32 = @splat(0);
         for (port_write_cycles[0..capture.port_write_count], 0..) |*out, index|
             out.* = @intCast(capture.port_write_cycles[index] - capture.start_master_cycles);
+        var logic_write_cycles: [frame_clock_logic_write_capacity]u32 = @splat(0);
+        for (logic_write_cycles[0..capture.logic_write_count], 0..) |*out, index|
+            out.* = @intCast(capture.logic_write_cycles[index] - capture.start_master_cycles);
         return .{
             .master_cycles = @intCast(self.master_cycles - capture.start_master_cycles),
             .port_write_cycles = port_write_cycles,
             .port_write_count = capture.port_write_count,
             .port_write_overflow = capture.port_write_overflow,
+            .logic_write_cycles = logic_write_cycles,
+            .logic_write_count = capture.logic_write_count,
         };
     }
 

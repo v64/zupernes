@@ -725,6 +725,10 @@ pub const Bus = struct {
         if (effective_bank <= 0x3F) {
             if (addr < 0x2000) {
                 self.wram[addr] = value;
+                // Capture-only: SMW's logic tick is INC $13 through this
+                // low-RAM mirror. $2180-port writes are not hooked; the game
+                // never routes $13 through it.
+                if (addr == 0x0013) self.apu.noteLogicWrite();
                 if (self.wram_trace.enabled) {
                     const beam = self.ppu.beamPosition();
                     self.wram_trace.record(.{ .addr = addr, .value = value, .pc = self.writer_pc, .via = .mirror, .scanline = beam.scanline, .dot = beam.dot });
@@ -770,6 +774,7 @@ pub const Bus = struct {
             const wram_addr = (@as(u24, effective_bank - 0x7E) << 16) | addr;
             if (wram_addr < self.wram.len) {
                 self.wram[wram_addr] = value;
+                if (wram_addr == 0x0013) self.apu.noteLogicWrite();
                 if (self.wram_trace.enabled) {
                     const beam = self.ppu.beamPosition();
                     self.wram_trace.record(.{ .addr = wram_addr, .value = value, .pc = self.writer_pc, .via = .direct, .scanline = beam.scanline, .dot = beam.dot });
