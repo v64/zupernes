@@ -37,6 +37,7 @@ const line_masters: u64 = @as(u64, @import("ppu/ppu.zig").DOTS_PER_SCANLINE) *
 const frame_masters: u64 = line_masters * @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
 const nmi_set_master: u64 = 225 * line_masters + 2; // V=225, H=0.5
 const max_irq_transitions = 8;
+const max_nmi_edges = 4;
 
 const IrqTransition = struct {
     master: u64,
@@ -340,6 +341,8 @@ pub const Bus = struct {
     irq_level_at_instruction_start: bool = false,
     irq_transitions: [max_irq_transitions]IrqTransition = undefined,
     irq_transition_count: u8 = 0,
+    nmi_edges: [max_nmi_edges]u64 = undefined,
+    nmi_edge_count: u8 = 0,
 
     /// Start timing a CPU instruction. HDMA billed by the preceding scanline
     /// transition is still pending in dma_masters, and happens-before the CPU
@@ -351,6 +354,7 @@ pub const Bus = struct {
         self.interrupt_horizon_master = absolutePpuMaster(self.ppu);
         self.irq_level_at_instruction_start = self.irq_flag;
         self.irq_transition_count = 0;
+        self.nmi_edge_count = 0;
     }
 
     /// Start HDMA at the PPU's current beam position, outside a CPU
@@ -382,7 +386,11 @@ pub const Bus = struct {
             const event_at = @min(@min(set_at, clear_at), irq_at);
             if (event_at > target_master) break;
             if (set_at == event_at) {
+                const nmi_line_was_active = self.nmi_flag and (self.nmitimen & 0x80) != 0;
                 self.nmi_flag = true;
+                if (!nmi_line_was_active and (self.nmitimen & 0x80) != 0) {
+                    self.recordNmiEdge(event_at);
+                }
                 if ((self.nmitimen & 0x01) != 0) self.autoJoypadRead();
             }
             if (clear_at == event_at) {
@@ -449,6 +457,25 @@ pub const Bus = struct {
             level = transition.level;
         }
         return level;
+    }
+
+    fn recordNmiEdge(self: *Bus, master: u64) void {
+        if (self.nmi_edge_count < max_nmi_edges) {
+            self.nmi_edges[self.nmi_edge_count] = master;
+            self.nmi_edge_count += 1;
+        } else {
+            std.debug.assert(false);
+        }
+    }
+
+    /// Whether the internal CPU NMI input had a rising AND edge in the given
+    /// span. Edges come both from VBlank setting RDNMI and from $4200 bit 7
+    /// being enabled while RDNMI is already set.
+    pub fn nmiEdgeInRange(self: *const Bus, after: u64, through: u64) bool {
+        for (self.nmi_edges[0..self.nmi_edge_count]) |master| {
+            if (master > after and master <= through) return true;
+        }
+        return false;
     }
 
     /// Account DMA-controller bus time.  Besides transferred bytes, HDMA has
@@ -888,8 +915,16 @@ pub const Bus = struct {
     fn writeSystemRegister(self: *Bus, addr: u16, value: u8) void {
         switch (addr) {
             0x4200 => {
+                const nmi_line_was_active = self.nmi_flag and (self.nmitimen & 0x80) != 0;
                 const old_irq_mode = self.nmitimen & 0x30;
                 self.nmitimen = value;
+                const nmi_line_is_active = self.nmi_flag and (value & 0x80) != 0;
+                if (!nmi_line_was_active and nmi_line_is_active) {
+                    // RDNMI is a latch, not merely the VBlank level. Enabling
+                    // bit 7 while it remains set creates a fresh internal NMI
+                    // edge immediately at the end of this $4200 access.
+                    self.recordNmiEdge(self.interrupt_horizon_master);
+                }
                 // Disabling both H/V IRQ sources (bits 4-5) acknowledges
                 // any pending timer IRQ - hardware drops the line.
                 if ((value & 0x30) == 0) {

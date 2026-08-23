@@ -18,20 +18,10 @@ const zupernes_lines_per_frame = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
 const master_cycles_per_dot = @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT;
 const masters_per_line: u64 = @as(u64, zupernes_dots_per_line) * master_cycles_per_dot;
 const masters_per_frame: u64 = masters_per_line * zupernes_lines_per_frame;
-const nmi_set_master: u64 = 225 * masters_per_line + 2;
 
 fn absolutePpuMaster(ppu: *const Ppu) u64 {
     return ppu.frame_count * masters_per_frame + @as(u64, ppu.scanline) * masters_per_line +
         @as(u64, ppu.dot) * master_cycles_per_dot + ppu.master_accum;
-}
-
-fn crossedPeriodic(from: u64, to: u64, phase: u64, period: u64) bool {
-    if (to <= from) return false;
-    const first = if (from < phase)
-        phase
-    else
-        phase + ((from - phase) / period + 1) * period;
-    return first <= to;
 }
 
 // Anomie's timing measurements place the frame-start HDMA initialization at
@@ -195,15 +185,7 @@ pub const Emulator = struct {
         const sample_master = absolutePpuMaster(&self.ppu);
         self.bus.syncInterruptFlagsTo(sample_master);
 
-        const nmi_before_sample = crossedPeriodic(
-            instruction_start,
-            sample_master,
-            nmi_set_master,
-            masters_per_frame,
-        );
-        if (self.cpu.nmi_latched or
-            (nmi_before_sample and (self.bus.nmitimen & 0x80) != 0))
-        {
+        if (self.cpu.nmi_latched or self.bus.nmiEdgeInRange(instruction_start, sample_master)) {
             self.cpu.triggerNmi();
         }
         const irq_at_sample = self.bus.irqLineAt(sample_master);
@@ -220,9 +202,7 @@ pub const Emulator = struct {
         if (!irq_at_sample and self.bus.irqLineAt(instruction_end)) {
             self.cpu.wakeFromIrqLine();
         }
-        if (crossedPeriodic(sample_master, instruction_end, nmi_set_master, masters_per_frame) and
-            (self.bus.nmitimen & 0x80) != 0)
-        {
+        if (self.bus.nmiEdgeInRange(sample_master, instruction_end)) {
             self.cpu.latchNmi();
         }
     }
@@ -966,4 +946,70 @@ test "masked IRQ wakes WAI and pays the 12-master-clock resume delay" {
 
     emu.step();
     try std.testing.expectEqual(@as(u16, 1), emu.cpu.pc);
+}
+
+test "$4200 enable during VBlank creates an immediate NMI edge only while RDNMI is set" {
+    var edges = Emulator.init();
+    edges.setup();
+    edges.ppu.scanline = 225;
+    edges.ppu.dot = 100;
+    edges.bus.nmi_flag = true;
+    edges.bus.nmitimen = 0x80;
+    edges.bus.beginCpuInstruction();
+    const start = absolutePpuMaster(&edges.ppu);
+
+    edges.bus.setCpuAccessTiming(6);
+    edges.bus.write(0, 0x4200, 0x80); // Already enabled: no new edge.
+    try std.testing.expect(!edges.bus.nmiEdgeInRange(start, start + 6));
+    edges.bus.setCpuAccessTiming(12);
+    edges.bus.write(0, 0x4200, 0x00); // Disable does not acknowledge RDNMI.
+    try std.testing.expect(edges.bus.nmi_flag);
+    edges.bus.setCpuAccessTiming(18);
+    edges.bus.write(0, 0x4200, 0x80); // 0->1 while RDNMI=1: immediate edge.
+    try std.testing.expect(edges.bus.nmiEdgeInRange(start + 12, start + 18));
+
+    var acknowledged = Emulator.init();
+    acknowledged.setup();
+    acknowledged.ppu.scanline = 225;
+    acknowledged.ppu.dot = 100;
+    acknowledged.bus.nmi_flag = true;
+    acknowledged.bus.nmitimen = 0x80;
+    acknowledged.bus.beginCpuInstruction();
+    const acknowledged_start = absolutePpuMaster(&acknowledged.ppu);
+    acknowledged.bus.setCpuAccessTiming(6);
+    acknowledged.bus.write(0, 0x4200, 0x00);
+    acknowledged.bus.setCpuAccessTiming(12);
+    try std.testing.expectEqual(@as(u8, 0x82), acknowledged.bus.read(0, 0x4210));
+    try std.testing.expect(!acknowledged.bus.nmi_flag);
+    acknowledged.bus.setCpuAccessTiming(18);
+    acknowledged.bus.write(0, 0x4200, 0x80);
+    try std.testing.expect(!acknowledged.bus.nmiEdgeInRange(acknowledged_start, acknowledged_start + 18));
+}
+
+test "$4200 immediate NMI still waits for the next instruction sample" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.scanline = 225;
+    emu.ppu.dot = 100;
+    emu.bus.nmi_flag = true;
+    emu.bus.nmitimen = 0;
+    emu.cpu.pc = 0;
+    emu.cpu.a = 0x80;
+    emu.bus.wram[0] = 0x8D; // STA $4200: write is its final 6-clock cycle.
+    emu.bus.wram[1] = 0x00;
+    emu.bus.wram[2] = 0x42;
+    emu.bus.wram[3] = 0xA9; // The late edge lets this LDA #imm execute.
+    emu.bus.wram[4] = 0;
+
+    emu.step();
+    try std.testing.expectEqual(@as(u8, 0x80), emu.bus.nmitimen);
+    try std.testing.expectEqual(@as(u16, 3), emu.cpu.pc);
+    try std.testing.expect(!emu.cpu.nmi_pending);
+    try std.testing.expect(emu.cpu.nmi_latched);
+
+    emu.step();
+    try std.testing.expectEqual(@as(u16, 5), emu.cpu.pc);
+    try std.testing.expect(emu.cpu.nmi_pending);
+    emu.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), emu.cpu.sp);
 }
