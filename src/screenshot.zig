@@ -12,7 +12,7 @@
 //
 // Input injection:
 //   --input 120:S       press Start at frame 120 (held for 30 frames)
-//   --input-when 100=07:S[:HOLD]
+//   --input-when 100=07:S[:HOLD[:SETTLE]]
 //                         press when a WRAM predicate becomes true
 //   Buttons: S=Start, s=Select, A/B/X/Y, U/D/L/R (dpad), l/r (shoulders)
 //
@@ -47,6 +47,7 @@ const InputWhenEvent = struct {
     predicates: []WramPredicate,
     buttons: u16,
     hold: u32 = 2,
+    settle: u32 = 4,
 
     fn deinit(self: InputWhenEvent, allocator: std.mem.Allocator) void {
         allocator.free(self.predicates);
@@ -96,6 +97,7 @@ fn parseInputWhenEvent(allocator: std.mem.Allocator, spec: []const u8) !InputWhe
     const pred_s = it.next() orelse return error.BadInputSpec;
     const btns_s = it.next() orelse return error.BadInputSpec;
     const hold_s = it.next();
+    const settle_s = it.next();
     if (it.next() != null) return error.BadInputSpec;
 
     var list: std.ArrayListUnmanaged(WramPredicate) = .empty;
@@ -115,7 +117,8 @@ fn parseInputWhenEvent(allocator: std.mem.Allocator, spec: []const u8) !InputWhe
     var buttons: u16 = 0;
     for (btns_s) |c| buttons |= buttonBit(c) orelse return error.BadButton;
     return .{ .predicates = try list.toOwnedSlice(allocator), .buttons = buttons,
-        .hold = if (hold_s) |h| try std.fmt.parseInt(u32, h, 10) else 2 };
+        .hold = if (hold_s) |h| try std.fmt.parseInt(u32, h, 10) else 2,
+        .settle = if (settle_s) |s| try std.fmt.parseInt(u32, s, 10) else 4 };
 }
 
 fn parseWramNumber(text: []const u8) !u32 {
@@ -250,9 +253,9 @@ pub fn main() !void {
             \\Usage: screenshot <rom.sfc> <frames> <out.ppm> [options]
             \\Options:
             \\  --input F:BTNS   press buttons at frame F (e.g. 120:S for Start)
-            \\  --input-when PRED[,PRED...]:BTNS[:HOLD]
+            \\  --input-when PRED[,PRED...]:BTNS[:HOLD[:SETTLE]]
             \\                   press once WRAM predicates hold, in declaration order
-            \\                   (default HOLD is 2 frames; each trigger fires once)
+            \\                   (default HOLD is 2, SETTLE is 4; each trigger fires once)
             \\  --every N DIR    also dump a frame every N frames into DIR
             \\
         , .{});
@@ -435,6 +438,8 @@ pub fn main() !void {
     var frame: u32 = 0;
     var when_index: usize = 0;
     var when_requires_false = false;
+    var when_settled: u32 = 0;
+    var when_release_at: ?u32 = null;
     var when_active_until = try allocator.alloc(u32, when_inputs.items.len);
     defer allocator.free(when_active_until);
     @memset(when_active_until, 0);
@@ -450,19 +455,40 @@ pub fn main() !void {
                     pad |= ev.buttons;
                 }
             }
-            for (when_inputs.items, 0..) |event, event_index| {
-                if (frame < when_active_until[event_index]) pad |= event.buttons;
+            // A trigger's hold is followed by one unconditional neutral
+            // frame.  SMW's ControllerUpdate turns that edge into the
+            // released/just-pressed distinction used by menu code; without
+            // it, back-to-back event presses can be observed as one press.
+            const when_is_release_frame = if (when_release_at) |release_at| frame == release_at else false;
+            if (!when_is_release_frame) {
+                for (when_inputs.items, 0..) |event, event_index| {
+                    if (frame < when_active_until[event_index]) pad |= event.buttons;
+                }
             }
             if (when_index < when_inputs.items.len) {
                 const event = when_inputs.items[when_index];
                 const matches = predicatesMatch(event, emulator.bus.wram[0..]);
-                if (when_requires_false) {
-                    if (!matches) when_requires_false = false;
+                if (when_is_release_frame) {
+                    // Do not even arm the next event during the neutral edge.
+                    when_settled = 0;
+                } else if (when_requires_false) {
+                    if (!matches) {
+                        when_requires_false = false;
+                        when_settled = 0;
+                    }
+                } else if (!matches) {
+                    when_settled = 0;
+                } else if (event.settle != 0 and when_settled + 1 < event.settle) {
+                    when_settled += 1;
                 } else if (matches) {
                     pad |= event.buttons;
                     when_active_until[when_index] = frame +| event.hold;
+                    // The neutral edge follows the held interval. A zero
+                    // hold still gets a released frame on the next frame.
+                    when_release_at = frame +| @max(event.hold, 1);
                     std.debug.print("input-when trigger {d} at frame {d}\n", .{ when_index, frame });
                     when_index += 1;
+                    when_settled = 0;
                     // If the next predicate is already true, require it
                     // to go false before firing: a generic leave-and-
                     // return wait, without game-specific knowledge.
@@ -471,6 +497,7 @@ pub fn main() !void {
                     }
                 }
             }
+            if (when_is_release_frame) when_release_at = null;
         }
         if (save_state) |spec| if (frame == spec.frame) {
             // At the START of the frame, before it runs: resuming here and

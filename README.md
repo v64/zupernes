@@ -119,12 +119,15 @@ zig build test
 The screenshot harness supports both absolute-frame input and generic WRAM
 predicates. `--input F:BTNS[:HOLD]` keeps its existing behavior (30-frame
 hold). For timing-independent navigation, use
-`--input-when 'PRED[,PRED...]:BTNS[:HOLD]'`: predicates are byte comparisons
-against physical WRAM addresses, triggers fire once in declaration order,
-and the default hold is 2 frames. The next trigger is considered only after
-the previous one fires; if its predicate is already true, it must leave that
-state and return before firing. Predicate addresses and values use hexadecimal
-notation (bare fields or `0x`/`$`-prefixed fields, matching SNES addresses).
+`--input-when 'PRED[,PRED...]:BTNS[:HOLD[:SETTLE]]'`: predicates are byte
+comparisons against physical WRAM addresses, triggers fire once in declaration
+order, and the default hold is 2 frames. `SETTLE` defaults to 4 and requires
+the predicate to remain true for that many consecutive frame polls before the
+press. Every press is followed by a guaranteed neutral frame before the next
+trigger can arm. The next trigger is also considered only after the previous
+one fires; if its predicate is already true, it must leave that state and
+return before firing. Predicate addresses and values use hexadecimal notation
+(bare fields or `0x`/`$`-prefixed fields, matching SNES addresses).
 Buttons are `S` (Start), `s` (Select), `A/B/X/Y`, `U/D/L/R`, and
 `l/r` (shoulders). For example:
 

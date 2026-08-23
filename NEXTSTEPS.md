@@ -86,10 +86,12 @@ Everything below builds on a correct emulator.
 - `zig build screenshot -- <rom> <frames> <out.ppm> [options]` runs any ROM
   headless and dumps the framebuffer. Options:
   - `--input F:BTNS` presses buttons at frame F, held 30 frames
-  - `--input-when 'PRED[,PRED...]:BTNS[:HOLD]'` fires one trigger when the
-    generic physical-WRAM byte predicates hold (declaration order, once each;
-    default hold 2 frames; a predicate already true after the prior trigger
-    must leave and return before it fires)
+  - `--input-when 'PRED[,PRED...]:BTNS[:HOLD[:SETTLE]]'` fires one trigger
+    when the generic physical-WRAM byte predicates hold (declaration order,
+    once each; default hold 2 frames and settle 4 consecutive polls). Each
+    press is followed by a mandatory neutral released frame before the next
+    trigger can arm; a predicate already true after the prior trigger must
+    still leave and return before it fires.
     (S=Start, s=Select, A/B/X/Y, U/D/L/R dpad, l/r shoulders) - chain
     several to script a path into gameplay
   - `--every N DIR` dumps a screenshot every N frames
