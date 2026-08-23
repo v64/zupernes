@@ -15,6 +15,14 @@ pub const movie = @import("movie.zig");
 
 const zupernes_dots_per_line = @import("ppu/ppu.zig").DOTS_PER_SCANLINE;
 const zupernes_lines_per_frame = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
+const master_cycles_per_dot = @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT;
+
+// Anomie's timing measurements place the frame-start HDMA initialization at
+// about V=0/H=6 and each visible-line transfer at H=278.  H-blank itself
+// begins at H=274; the later point is the DMA controller's bus-arbitration
+// event, not merely the PPU blanking edge.
+const hdma_init_dot: u16 = 6;
+const hdma_transfer_dot: u16 = 278;
 
 pub const Emulator = struct {
     cpu: Cpu,
@@ -166,7 +174,7 @@ pub const Emulator = struct {
         // speeds here is what fixes the CPU-vs-frame pacing: at flat 6 the
         // CPU got ~30% more instructions per frame than hardware in
         // SlowROM code.
-        self.ppu.tick(master + dma_extra);
+        self.advancePpuWithHdma(master + dma_extra);
 
         // ======================================================================
         // H/V TIMER IRQ ($4200 bits 4-5, $4207-$420A)
@@ -221,11 +229,6 @@ pub const Emulator = struct {
         // Check for scanline transitions
         if (self.ppu.scanline != prev_scanline) {
             // New scanline started
-            if (self.ppu.scanline == 0) {
-                // Start of new frame - initialize HDMA
-                self.bus.dma.initHdma(&self.bus);
-            }
-
             // Start of VBlank (scanline 225):
             if (self.ppu.scanline == 225) {
                 // Set the RDNMI ($4210) flag - it latches regardless of
@@ -249,11 +252,85 @@ pub const Emulator = struct {
             if (self.ppu.scanline == 0) {
                 self.bus.nmi_flag = false;
             }
+        }
+    }
 
-            // Run HDMA at H-blank (start of each scanline during visible area)
-            if (self.bus.hdmaen != 0 and self.ppu.scanline <= 224) {
-                self.bus.beginStandaloneDma();
-                self.bus.dma.runHdma(&self.bus);
+    const HdmaEvent = struct {
+        kind: enum { init, transfer },
+        masters_until: u32,
+    };
+
+    /// Return the next hardware HDMA point strictly after the PPU's committed
+    /// beam position.  Keeping this in master-clock units preserves the PPU's
+    /// sub-dot accumulator when an instruction ends between dots.
+    fn nextHdmaEvent(self: *const Emulator) HdmaEvent {
+        const line_masters: u32 = @as(u32, zupernes_dots_per_line) * master_cycles_per_dot;
+        const frame_masters: u32 = line_masters * @as(u32, zupernes_lines_per_frame);
+        const now: u32 = @as(u32, self.ppu.scanline) * line_masters +
+            @as(u32, self.ppu.dot) * master_cycles_per_dot + self.ppu.master_accum;
+
+        const init_at: u32 = @as(u32, hdma_init_dot) * master_cycles_per_dot;
+        const init_delta = if (init_at > now)
+            init_at - now
+        else
+            frame_masters - now + init_at;
+
+        const transfer_offset: u32 = @as(u32, hdma_transfer_dot) * master_cycles_per_dot;
+        var transfer_at: u32 = undefined;
+        if (self.ppu.scanline <= 224) {
+            const this_line = @as(u32, self.ppu.scanline) * line_masters + transfer_offset;
+            if (this_line > now) {
+                transfer_at = this_line;
+            } else if (self.ppu.scanline < 224) {
+                transfer_at = (@as(u32, self.ppu.scanline) + 1) * line_masters + transfer_offset;
+            } else {
+                transfer_at = frame_masters + transfer_offset;
+            }
+        } else {
+            transfer_at = frame_masters + transfer_offset;
+        }
+        const transfer_delta = transfer_at - now;
+
+        if (init_delta < transfer_delta) {
+            return .{ .kind = .init, .masters_until = init_delta };
+        }
+        return .{ .kind = .transfer, .masters_until = transfer_delta };
+    }
+
+    /// Advance the PPU through one completed CPU instruction, stopping at the
+    /// DMA controller's hardware beam points.  CPU execution is still at
+    /// instruction granularity, but PPU/APU time is split at the event so an
+    /// HDMA register write is journaled at H=278 plus its byte-transfer time,
+    /// rather than at the following scanline's H=0.
+    fn advancePpuWithHdma(self: *Emulator, elapsed_masters: u32) void {
+        var remaining = elapsed_masters;
+        while (remaining != 0) {
+            const event = self.nextHdmaEvent();
+            if (event.masters_until > remaining) {
+                self.ppu.tick(remaining);
+                return;
+            }
+
+            self.ppu.tick(event.masters_until);
+            remaining -= event.masters_until;
+
+            self.bus.beginStandaloneDma();
+            switch (event.kind) {
+                .init => self.bus.dma.initHdma(&self.bus),
+                .transfer => if (self.bus.hdmaen != 0) {
+                    self.bus.dma.runHdma(&self.bus);
+                },
+            }
+
+            // HDMA byte time is produced synchronously by tickDmaByte().  It
+            // is stolen from the CPU at this beam point, so commit it now;
+            // leaving it for the next instruction would put the PPU write at
+            // the right projected dot but pause the actual beam too late.
+            const hdma_masters = self.bus.dma_masters;
+            self.bus.dma_masters = 0;
+            if (hdma_masters != 0) {
+                self.bus.runApu(hdma_masters);
+                self.ppu.tick(hdma_masters);
             }
         }
     }
@@ -631,4 +708,54 @@ test "recording is off by default and does not survive into a savestate" {
     var buf: [4]u16 = undefined;
     emu.recordInputs(&buf);
     try std.testing.expectEqual(before, Emulator.state_len);
+}
+
+test "HDMA initialization occurs at line zero H=6" {
+    var emu = Emulator.init();
+    emu.setup();
+
+    emu.bus.hdmaen = 0x01;
+    emu.bus.dma.hdma_enable = 0x01;
+    emu.bus.dma.channels[0].a_addr = 0x7E0000;
+    emu.bus.wram[0] = 0x81;
+
+    emu.advancePpuWithHdma(hdma_init_dot * master_cycles_per_dot - 1);
+    try std.testing.expectEqual(@as(u16, 0), emu.bus.dma.channels[0].hdma_addr);
+    try std.testing.expectEqual(@as(u8, 0), emu.bus.dma.channels[0].line_counter);
+
+    emu.advancePpuWithHdma(1);
+    try std.testing.expectEqual(hdma_init_dot, emu.ppu.dot);
+    try std.testing.expectEqual(@as(u16, 1), emu.bus.dma.channels[0].hdma_addr);
+    try std.testing.expectEqual(@as(u8, 0x81), emu.bus.dma.channels[0].line_counter);
+    try std.testing.expect(emu.bus.dma.channels[0].hdma_do_transfer);
+}
+
+test "visible-line HDMA write is journaled from H=278, not line start" {
+    var emu = Emulator.init();
+    emu.setup();
+
+    // Begin just after the separate H=6 initialization point and prepare one
+    // direct mode-0 byte to INIDISP.  A zero next line descriptor terminates
+    // the channel after this transfer.
+    emu.ppu.tick(277 * master_cycles_per_dot);
+    emu.bus.hdmaen = 0x01;
+    emu.bus.dma.hdma_enable = 0x01;
+    emu.bus.dma.channels[0].a_addr = 0x7E0000;
+    emu.bus.dma.channels[0].hdma_addr = 0;
+    emu.bus.dma.channels[0].line_counter = 1;
+    emu.bus.dma.channels[0].hdma_do_transfer = true;
+    emu.bus.wram[0] = 0x0F;
+    emu.bus.wram[1] = 0;
+
+    const before = emu.ppu.inidisp;
+    emu.advancePpuWithHdma(master_cycles_per_dot - 1);
+    try std.testing.expectEqual(before, emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(usize, 0), emu.ppu.render_event_count);
+
+    emu.advancePpuWithHdma(1);
+    try std.testing.expectEqual(@as(u8, 0x0F), emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 2), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 2), emu.ppu.dot);
+    try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
 }
