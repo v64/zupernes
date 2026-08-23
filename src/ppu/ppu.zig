@@ -3162,12 +3162,12 @@ test "Mode 1 BG3 priority bit puts BG3 high ahead of BG1 BG2 and OBJ3" {
 
     // Without $2105 bit 3, normal Mode 1 order starts with 1H then 2H.
     ppu.bgmode = 0x01;
-    ppu.renderScanline();
+    ppu.renderScanlineRange(0, 0, SCREEN_WIDTH);
     try std.testing.expectEqual(@as(u16, 0x001F), ppu.framebuffer[0]);
 
     // With bit 3, fullsnes promotes 3H ahead of every BG and OBJ level.
     ppu.bgmode = 0x09;
-    ppu.renderScanline();
+    ppu.renderScanlineRange(0, 0, SCREEN_WIDTH);
     try std.testing.expectEqual(@as(u16, 0x7C00), ppu.framebuffer[0]);
     try std.testing.expect(!ppu.spritePriorityWins(1, 3, 3, 1));
 }
