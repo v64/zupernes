@@ -919,6 +919,32 @@ pub const Ppu = struct {
         }
     }
 
+    /// Returns whether a Mode 1 candidate BG pixel is in front of the BG
+    /// pixel already selected for this dot. The tile priority bit is not a
+    /// global z value: BG1/2 low priority still precede BG3 high priority in
+    /// ordinary Mode 1. BGMODE's bit 3 promotes only BG3 high priority.
+    ///
+    /// Source: fullsnes, "PPU Priority", Mode 1 chart and the $2105
+    /// BGMODE description: https://problemkaputt.de/fullsnes.htm#snesppubgmode
+    fn mode1BgPixelWins(self: *const Ppu, current_layer: u8, current_priority: u8, candidate_layer: u8, candidate_priority: u8) bool {
+        const rank = struct {
+            fn get(bg3_priority: bool, layer: u8, tile_priority: u8) u8 {
+                return switch (layer) {
+                    1 => if (tile_priority == 1) 6 else 4, // 1H / 1L
+                    2 => if (tile_priority == 1) 5 else 3, // 2H / 2L
+                    // $2105 bit 3 changes Mode 1's 3H from behind 2L to
+                    // ahead of every BG and OBJ priority level.
+                    3 => if (tile_priority == 1) if (bg3_priority) 7 else 2 else 1, // 3H / 3L
+                    else => 0, // backdrop
+                };
+            }
+        }.get;
+
+        const bg3_priority = (self.bgmode & 0x08) != 0;
+        return rank(bg3_priority, candidate_layer, candidate_priority) >=
+            rank(bg3_priority, current_layer, current_priority);
+    }
+
     /// Render one horizontal span using the register state active for that
     /// span. Background/sprite line buffers are rebuilt per span: this is less
     /// expensive than dot rendering in the overwhelmingly common no-change
@@ -1056,8 +1082,10 @@ pub const Ppu = struct {
                 },
                 1 => {
                     // Mode 1: BG1/BG2 4bpp (16 colors), BG3 2bpp (4 colors)
-                    // Render back to front: BG3 (lowest), BG2, BG1 (highest)
-                    // Each layer only overwrites if it has a non-transparent pixel
+                    // Fullsnes's Mode 1 chart is ordered 1H, 2H, 1L, 2L,
+                    // 3H, 3L; when BGMODE bit 3 is set, 3H moves to the
+                    // very front.  `mode1BgPixelWins` keeps that ordering
+                    // instead of treating tile priority as a global z value.
                     // Apply window masking per layer
                     const x8: u8 = @intCast(x);
                     if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
@@ -1069,7 +1097,7 @@ pub const Ppu = struct {
                     }
                     if ((self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
                         if (bg_lines[1].pixel(x)) |c| {
-                            if (c.priority >= bg_priority) {
+                            if (self.mode1BgPixelWins(bg_layer, bg_priority, 2, c.priority)) {
                                 color = c.color;
                                 bg_priority = c.priority;
                                 bg_layer = 2;
@@ -1078,7 +1106,7 @@ pub const Ppu = struct {
                     }
                     if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
                         if (bg_lines[0].pixel(x)) |c| {
-                            if (c.priority >= bg_priority) {
+                            if (self.mode1BgPixelWins(bg_layer, bg_priority, 1, c.priority)) {
                                 color = c.color;
                                 bg_priority = c.priority;
                                 bg_layer = 1;
@@ -3107,6 +3135,41 @@ test "getTilePixel decodes planar tiles via spread LUT" {
     ppu.vram[32] = 0b10000000; // bp4: pixel 0 gets bit 4
     ppu.vram[49] = 0b10000000; // bp7: pixel 0 gets bit 7
     try std.testing.expectEqual(@as(u8, 9 | 0x10 | 0x80), ppu.getTilePixel(0, 0, 0, 8));
+}
+
+test "Mode 1 BG3 priority bit puts BG3 high ahead of BG1 BG2 and OBJ3" {
+    var ppu = Ppu.init();
+    ppu.inidisp = 0x0F;
+    ppu.tm = 0x07; // BG1, BG2, BG3
+    ppu.bg12nba = 0x43; // BG1=$6000, BG2=$8000
+    ppu.bg34nba = 0x05; // BG3=$A000
+    ppu.bg2sc = 0x04; // BG2 map=$0800
+    ppu.bg3sc = 0x08; // BG3 map=$1000
+
+    // Every layer supplies opaque color 1 from a high-priority tile.  Give
+    // their palette entries visibly distinct RGB15 values.
+    ppu.vram[0x6000] = 0xFF; // BG1 4bpp tile 0, plane 0 row 0
+    ppu.vram[0x8000] = 0xFF; // BG2 4bpp tile 0, plane 0 row 0
+    ppu.vram[0xA000] = 0xFF; // BG3 2bpp tile 0, plane 0 row 0
+    ppu.vram[0x0001] = 0x20; // BG1: palette 0, priority high
+    ppu.vram[0x0801] = 0x24; // BG2: palette 1, priority high
+    ppu.vram[0x1001] = 0x28; // BG3: palette 2, priority high
+    ppu.cgram[2] = 0x1F; // BG1 palette 0, color 1: red ($001F)
+    ppu.cgram[34] = 0xE0;
+    ppu.cgram[35] = 0x03; // BG2 palette 1, color 1: green ($03E0)
+    ppu.cgram[18] = 0x00;
+    ppu.cgram[19] = 0x7C; // BG3 palette 2, color 1: blue ($7C00)
+
+    // Without $2105 bit 3, normal Mode 1 order starts with 1H then 2H.
+    ppu.bgmode = 0x01;
+    ppu.renderScanline();
+    try std.testing.expectEqual(@as(u16, 0x001F), ppu.framebuffer[0]);
+
+    // With bit 3, fullsnes promotes 3H ahead of every BG and OBJ level.
+    ppu.bgmode = 0x09;
+    ppu.renderScanline();
+    try std.testing.expectEqual(@as(u16, 0x7C00), ppu.framebuffer[0]);
+    try std.testing.expect(!ppu.spritePriorityWins(1, 3, 3, 1));
 }
 
 test "lower OAM index wins overlapping OBJ pixels" {
