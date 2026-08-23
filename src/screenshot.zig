@@ -7,11 +7,13 @@
 // produced, without any windowing system involved.
 //
 // Usage:
-//   screenshot <rom.sfc> <frames> <out.ppm> [--input frame:buttons ...]
+//   screenshot <rom.sfc> <frames> <out.ppm> [options]
 //   screenshot <rom.sfc> <frames> <out.ppm> --every N <outdir>
 //
 // Input injection:
 //   --input 120:S       press Start at frame 120 (held for 30 frames)
+//   --input-when 100=07:S[:HOLD[:SETTLE]]
+//                         press when a WRAM predicate becomes true
 //   Buttons: S=Start, s=Select, A/B/X/Y, U/D/L/R (dpad), l/r (shoulders)
 //
 // Movies (TAS format, see src/movie.zig):
@@ -37,6 +39,19 @@ const InputEvent = struct {
     frame: u32,
     buttons: u16,
     hold: u32 = 30,
+};
+
+const WramPredicate = struct { addr: usize, value: u8 };
+
+const InputWhenEvent = struct {
+    predicates: []WramPredicate,
+    buttons: u16,
+    hold: u32 = 2,
+    settle: u32 = 4,
+
+    fn deinit(self: InputWhenEvent, allocator: std.mem.Allocator) void {
+        allocator.free(self.predicates);
+    }
 };
 
 /// Map a button character to its bit in the standard SNES joypad layout
@@ -75,6 +90,47 @@ fn parseInputEvent(spec: []const u8) !InputEvent {
         .buttons = buttons,
         .hold = if (hold_s) |h| try std.fmt.parseInt(u32, h, 10) else 30,
     };
+}
+
+fn parseInputWhenEvent(allocator: std.mem.Allocator, spec: []const u8) !InputWhenEvent {
+    var it = std.mem.splitScalar(u8, spec, ':');
+    const pred_s = it.next() orelse return error.BadInputSpec;
+    const btns_s = it.next() orelse return error.BadInputSpec;
+    const hold_s = it.next();
+    const settle_s = it.next();
+    if (it.next() != null) return error.BadInputSpec;
+
+    var list: std.ArrayListUnmanaged(WramPredicate) = .empty;
+    errdefer list.deinit(allocator);
+    var pred_it = std.mem.splitScalar(u8, pred_s, ',');
+    while (pred_it.next()) |predicate| {
+        const equal = std.mem.indexOfScalar(u8, predicate, '=') orelse return error.BadInputSpec;
+        if (equal == 0 or equal + 1 == predicate.len) return error.BadInputSpec;
+        const addr = try parseWramNumber(predicate[0..equal]);
+        const value_num = try parseWramNumber(predicate[equal + 1 ..]);
+        if (value_num > 0xFF) return error.BadInputSpec;
+        const value: u8 = @intCast(value_num);
+        if (addr >= 128 * 1024) return error.BadWramAddress;
+        try list.append(allocator, .{ .addr = addr, .value = value });
+    }
+    if (list.items.len == 0) return error.BadInputSpec;
+    var buttons: u16 = 0;
+    for (btns_s) |c| buttons |= buttonBit(c) orelse return error.BadButton;
+    return .{ .predicates = try list.toOwnedSlice(allocator), .buttons = buttons,
+        .hold = if (hold_s) |h| try std.fmt.parseInt(u32, h, 10) else 2,
+        .settle = if (settle_s) |s| try std.fmt.parseInt(u32, s, 10) else 4 };
+}
+
+fn parseWramNumber(text: []const u8) !u32 {
+    const digits = if (std.mem.startsWith(u8, text, "0x") or std.mem.startsWith(u8, text, "0X")) text[2..]
+        else if (std.mem.startsWith(u8, text, "$")) text[1..]
+        else text;
+    return try std.fmt.parseInt(u32, digits, 16);
+}
+
+fn predicatesMatch(event: InputWhenEvent, wram: []const u8) bool {
+    for (event.predicates) |predicate| if (wram[predicate.addr] != predicate.value) return false;
+    return true;
 }
 
 fn writePpm(framebuffer: []const u16, path: []const u8) !void {
@@ -197,6 +253,9 @@ pub fn main() !void {
             \\Usage: screenshot <rom.sfc> <frames> <out.ppm> [options]
             \\Options:
             \\  --input F:BTNS   press buttons at frame F (e.g. 120:S for Start)
+            \\  --input-when PRED[,PRED...]:BTNS[:HOLD[:SETTLE]]
+            \\                   press once WRAM predicates hold, in declaration order
+            \\                   (default HOLD is 2, SETTLE is 4; each trigger fires once)
             \\  --every N DIR    also dump a frame every N frames into DIR
             \\
         , .{});
@@ -209,6 +268,11 @@ pub fn main() !void {
 
     var inputs: std.ArrayListUnmanaged(InputEvent) = .empty;
     defer inputs.deinit(allocator);
+    var when_inputs: std.ArrayListUnmanaged(InputWhenEvent) = .empty;
+    defer {
+        for (when_inputs.items) |event| event.deinit(allocator);
+        when_inputs.deinit(allocator);
+    }
     var every: u32 = 0;
     var every_dir: []const u8 = "";
     var range_start: u32 = 0;
@@ -230,6 +294,9 @@ pub fn main() !void {
         if (std.mem.eql(u8, args[i], "--input")) {
             i += 1;
             try inputs.append(allocator, try parseInputEvent(args[i]));
+        } else if (std.mem.eql(u8, args[i], "--input-when")) {
+            i += 1;
+            try when_inputs.append(allocator, try parseInputWhenEvent(allocator, args[i]));
         } else if (std.mem.eql(u8, args[i], "--every")) {
             every = try std.fmt.parseInt(u32, args[i + 1], 10);
             every_dir = args[i + 2];
@@ -369,6 +436,13 @@ pub fn main() !void {
     defer audio.deinit(allocator);
 
     var frame: u32 = 0;
+    var when_index: usize = 0;
+    var when_requires_false = false;
+    var when_settled: u32 = 0;
+    var when_release_at: ?u32 = null;
+    var when_active_until = try allocator.alloc(u32, when_inputs.items.len);
+    defer allocator.free(when_active_until);
+    @memset(when_active_until, 0);
     while (frame < total_frames) : (frame += 1) {
         // Input priority: movie playback, else the --input schedule
         // (overlapping events OR together)
@@ -381,6 +455,49 @@ pub fn main() !void {
                     pad |= ev.buttons;
                 }
             }
+            // A trigger's hold is followed by one unconditional neutral
+            // frame.  SMW's ControllerUpdate turns that edge into the
+            // released/just-pressed distinction used by menu code; without
+            // it, back-to-back event presses can be observed as one press.
+            const when_is_release_frame = if (when_release_at) |release_at| frame == release_at else false;
+            if (!when_is_release_frame) {
+                for (when_inputs.items, 0..) |event, event_index| {
+                    if (frame < when_active_until[event_index]) pad |= event.buttons;
+                }
+            }
+            if (when_index < when_inputs.items.len) {
+                const event = when_inputs.items[when_index];
+                const matches = predicatesMatch(event, emulator.bus.wram[0..]);
+                if (when_is_release_frame) {
+                    // Do not even arm the next event during the neutral edge.
+                    when_settled = 0;
+                } else if (when_requires_false) {
+                    if (!matches) {
+                        when_requires_false = false;
+                        when_settled = 0;
+                    }
+                } else if (!matches) {
+                    when_settled = 0;
+                } else if (event.settle != 0 and when_settled + 1 < event.settle) {
+                    when_settled += 1;
+                } else if (matches) {
+                    pad |= event.buttons;
+                    when_active_until[when_index] = frame +| event.hold;
+                    // The neutral edge follows the held interval. A zero
+                    // hold still gets a released frame on the next frame.
+                    when_release_at = frame +| @max(event.hold, 1);
+                    std.debug.print("input-when trigger {d} at frame {d}\n", .{ when_index, frame });
+                    when_index += 1;
+                    when_settled = 0;
+                    // If the next predicate is already true, require it
+                    // to go false before firing: a generic leave-and-
+                    // return wait, without game-specific knowledge.
+                    if (when_index < when_inputs.items.len) {
+                        when_requires_false = predicatesMatch(when_inputs.items[when_index], emulator.bus.wram[0..]);
+                    }
+                }
+            }
+            if (when_is_release_frame) when_release_at = null;
         }
         if (save_state) |spec| if (frame == spec.frame) {
             // At the START of the frame, before it runs: resuming here and
