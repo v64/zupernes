@@ -31,6 +31,9 @@ const Dma = @import("dma.zig").Dma;
 const Apu = @import("apu/apu.zig").Apu;
 const Upd7725 = @import("coproc/upd7725.zig").Upd7725;
 const dbg = @import("debug.zig");
+const CpuClockPhase = @import("refresh_timing.zig").CpuPhase;
+
+const OrderedClockAdvanceFn = *const fn (*anyopaque, u32, CpuClockPhase) void;
 
 const line_masters: u64 = @as(u64, @import("ppu/ppu.zig").DOTS_PER_SCANLINE) *
     @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT;
@@ -310,7 +313,7 @@ pub const Bus = struct {
     // load-bearing: Super Mario Kart blind-writes its DSP parameters with
     // only ~66 master cycles between words, and the microcode's consume
     // chain must win that race like it does on hardware. Lives on the Bus
-    // so that BOTH the CPU access path (Cpu.accountAccess) and the DMA
+    // so that BOTH the CPU access helpers and the DMA
     // byte loop (dma.zig) can advance the DSP - on hardware the
     // coprocessor keeps running during DMA, and games depend on it:
     // Super Mario Kart DMA-reads DSP-1 results at exactly the pace the
@@ -326,8 +329,14 @@ pub const Bus = struct {
     // comparison.
     dma_masters: u32 = 0,
 
+    // Optional execution-ordered clock connection. The canonical runtime
+    // remains on the aggregate path until DMA/HDMA and interrupt sampling
+    // migrate; the no-DMA CPU fixture installs this callback explicitly.
+    ordered_clock_context: ?*anyopaque = null,
+    ordered_clock_advance: ?OrderedClockAdvanceFn = null,
+
     // End-of-access timestamp projected from the PPU's last committed beam
-    // position. CPU.accountAccess supplies the cumulative instruction time;
+    // position. CPU access helpers supply the cumulative instruction time;
     // tickDmaByte advances it for each synchronous DMA byte. The PPU uses it
     // only to timestamp render-register changes before root.zig commits the
     // batched clocks with Ppu.tick().
@@ -355,6 +364,28 @@ pub const Bus = struct {
         self.irq_level_at_instruction_start = self.irq_flag;
         self.irq_transition_count = 0;
         self.nmi_edge_count = 0;
+    }
+
+    pub fn connectOrderedClock(
+        self: *Bus,
+        context: *anyopaque,
+        advance: OrderedClockAdvanceFn,
+    ) void {
+        self.ordered_clock_context = context;
+        self.ordered_clock_advance = advance;
+        self.ppu_cpu_timing_base = 0;
+        self.ppu_write_timing_offset = 0;
+        self.ppu.setWriteTimingOffset(0);
+    }
+
+    pub fn orderedClockConnected(self: *const Bus) bool {
+        return self.ordered_clock_advance != null;
+    }
+
+    pub fn advanceCpuPhase(self: *Bus, masters: u32, phase: CpuClockPhase) void {
+        if (masters == 0) return;
+        const advance = self.ordered_clock_advance orelse return;
+        advance(self.ordered_clock_context.?, masters, phase);
     }
 
     /// Start HDMA at the PPU's current beam position, outside a CPU

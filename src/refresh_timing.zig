@@ -29,6 +29,20 @@ pub const SegmentKind = enum {
     dram_refresh,
 };
 
+/// Provenance retained at the CPU-to-clock-owner boundary. Every case is CPU
+/// work to the wall scheduler, but keeping the cause distinct prevents the
+/// conditional implied-operation IdleOrRead from becoming an anonymous flat
+/// six-master charge.
+pub const CpuPhase = enum {
+    read_leading,
+    read_trailing,
+    write,
+    idle_or_read_before_effect,
+    internal_before_effect,
+    internal_before_access,
+    internal_trailing,
+};
+
 /// CPU read handlers run after the access's leading clocks and before its
 /// final four master clocks. This is a hardware phase boundary, not a trace
 /// callback adjustment.

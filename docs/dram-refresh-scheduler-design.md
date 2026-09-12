@@ -3,7 +3,9 @@
 This branch starts from the canonical ZuperNES pin
 `e17dc5e3f68b417db8351b091885c4af921a2b3d`. It adds a copyright-free timing
 prototype and independent Mesen probe. It does not wire refresh into the live
-emulator, change an oracle pin, or claim the broader CPU clock model is ready.
+default emulator path, change an oracle pin, or claim the broader CPU clock
+model is ready. An explicit no-DMA fixture does run the actual CPU through the
+candidate owner; normal execution retains the pinned aggregate clock path.
 
 ## Required hardware event
 
@@ -68,8 +70,8 @@ callback-minus-four rule.
 
 ## Ordered CPU phase stage
 
-The first clock-ownership stage is now executable in the same module without
-changing the pinned runtime. `Timeline.advanceWorkOrdered` is the sole owner of
+The first clock-ownership stage is now executable without changing the pinned
+default runtime. `Timeline.advanceWorkOrdered` is the sole owner of
 wall time for its hardware sink. It splits CPU work at the next refresh or at
 the PPU sink's observed line rollover and emits ordered `cpu_work` and
 `dram_refresh` segments. Every segment advances the same sink, so refresh
@@ -86,12 +88,22 @@ a line boundary inside the stall.
 - a write advances its full 6/8/12-master access before its effect;
 - internal work advances before its architectural effect.
 
-The synthetic sink proves the exact segment order for the 48-work/88-wall
+The pure synthetic sink proves the exact segment order for the 48-work/88-wall
 fixture, refresh on either side of a six-master read handler, a write crossing,
-an internal cycle crossing, and a 1,360-master short-line rollover. This stage
-contains no DMA and is not connected to `Emulator.step`; that keeps the old
-aggregate PPU/APU path from double-counting clocks while the event dispatcher
-is still absent.
+an internal cycle crossing, and a 1,360-master short-line rollover.
+
+The same phase boundary is connected to actual `Cpu` execution behind the
+fixture-only `enableOrderedClockNoDmaFixture`. CPU read helpers advance leading
+clocks, invoke the real mapped handler, then advance four trailing clocks;
+writes advance their complete access first. The callback advances the PPU,
+APU, and DSP through each ordered work or refresh segment. In this mode
+`Emulator.step` advances only unflushed trailing internal work and returns
+without running its aggregate clock path, which proves clocks are not counted
+twice. Runtime tests execute the three-`LDA` fixture from wall master 500 and
+observe 48 CPU-work masters as wall 588, execute `BIT $4212` across active to
+HBlank and observe the returned flag from handler time, and journal a `$2100`
+write after its access crosses refresh. DMA and interrupt-enabled execution are
+asserted outside this fixture's scope.
 
 A separate copyright-free audit at the canonical pin ran 540 cases: 27
 implied/register opcodes at SlowROM and FastROM in emulation mode and all four
@@ -139,14 +151,30 @@ stall.
 | Lua | `33c511b8e9674c8146c1e42632b89303027d70cd08c6472bbf8704d3f0b67e93` |
 | trace | `088dcd1a4008dfe5f7886de57a6d2c4c619860cadeca8cdc02f1a41efcf7a646` |
 
-## Remaining live integration boundary
+## Approved ownership and remaining live integration
+
+The approved architecture is one serialized wall timeline with
+execution-ordered hardware advancement. `Emulator` owns wall time and event
+dispatch; CPU access and internal phases request work from that owner; DMA and
+HDMA must consume the same timeline; and PPU, APU, DSP, interrupt logic, and
+write journals must observe its ordered segments. Aggregate clocks are removed
+from each execution path as that path migrates.
+
+The staged scope is:
+
+1. clock ownership and actual CPU access phases with a no-DMA synthetic ROM;
+2. general DMA, HDMA, and hardware-event dispatch on the same owner;
+3. exact interrupt sampling, audio/state replay, and serialized refresh state.
+
+The first item is implemented only behind the explicit fixture connection.
+The canonical pin remains held until all stages and independent checks pass.
 
 An exact runtime change is broader than adding 40 to `Emulator.step`.
 The current pin executes a complete CPU instruction and its bus side effects
 before committing PPU time. Several paths then reconstruct wall order from
 aggregates:
 
-1. `Cpu.accountAccess` supplies cumulative CPU work to
+1. CPU access helpers supply cumulative CPU work to
    `Bus.setCpuAccessTiming`, which timestamps register effects.
 2. `Emulator.step` separately computes total instruction work and locates the
    interrupt sample by subtracting the nominal final cycle.
@@ -177,8 +205,7 @@ The remaining integration contract is:
 - savestate magic/length changes and captures `next_refresh_master`; restore
   resumes without deriving whether an exact-boundary event already fired.
 
-The ordered primitive is the reviewed boundary for that refactor. The next
-stage must connect its hardware sink and DMA/HDMA event dispatcher before live
-CPU execution switches over. Until then, the branch remains a research
-candidate: wiring only CPU accesses would let them pass undispatched HDMA
-events, while retaining the aggregate root clocks would double-count time.
+The ordered primitive and opt-in CPU fixture are the reviewed boundary for that
+refactor. The next stage must connect DMA/HDMA event dispatch before the default
+runtime switches over. Until then, the branch remains a research candidate:
+enabling it for a game could let CPU accesses pass undispatched HDMA events.

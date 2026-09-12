@@ -86,8 +86,8 @@ pub const Cpu = struct {
     // validate those counts and they remain the CPU-facing contract.
     mem_masters: u32,
     mem_accesses: u8,
-    // Internal cycles already flushed to the DSP clock by accountAccess
-    // (see there); Emulator.step ticks the DSP for the remainder.
+    // Internal cycles already flushed by the access/pre-effect phase helpers;
+    // Emulator.step handles the remainder on the selected clock path.
     internal_flushed: u32,
 
     // For debugging/tracing
@@ -368,9 +368,9 @@ pub const Cpu = struct {
 
     // ==================== Memory Access ====================
 
-    /// Record the true master-clock cost of one bus access (region-dependent
-    /// 6/8/12 - see the mem_masters field docs and Bus.memSpeed), and bring
-    /// the DSP coprocessor up to "now" BEFORE the access happens.
+    /// Flush internal work accumulated before the next bus access. On the
+    /// ordered path this advances every hardware clock immediately; the
+    /// aggregate path retains the pin's DSP-only mid-instruction behavior.
     ///
     /// The DSP must be ticked mid-instruction, not per-instruction: a bus
     /// access takes effect at the END of its cycle, after all the fetch/
@@ -380,24 +380,89 @@ pub const Cpu = struct {
     /// STA's cycles until after its write robs the DSP of ~3 instructions
     /// and the handshake slips a full station (the game overwrites each
     /// parameter before the microcode consumed it).
-    fn accountAccess(self: *Cpu, bank: u8, addr: u16) void {
-        const speed = self.bus.memSpeed(bank, addr);
+    fn flushInternalBeforeAccess(self: *Cpu) u32 {
         // Internal (non-access) cycles elapsed since the last flush: total
         // counted cycles minus one per completed access minus what was
-        // already flushed. Everything up to and including this access's
-        // own bus cycle happens-before its side effect.
+        // already flushed.
         const internal: u32 = @as(u32, self.cycles) - self.mem_accesses - self.internal_flushed;
-        self.bus.tickDsp(internal * 6 + speed);
+        if (self.bus.orderedClockConnected()) {
+            self.bus.advanceCpuPhase(internal * 6, .internal_before_access);
+        } else {
+            self.bus.tickDsp(internal * 6);
+        }
         self.internal_flushed += internal;
+        return internal;
+    }
+
+    fn recordAccess(self: *Cpu, speed: u32) void {
         self.mem_masters += speed;
         self.mem_accesses +%= 1;
         self.last_access_masters = @intCast(speed);
-        self.bus.setCpuAccessTiming(self.mem_masters + self.internal_flushed * 6);
+    }
+
+    /// Advance to the mapped read handler. Mesen's generic S-CPU access path
+    /// runs `speed - 4` leading masters, invokes the handler, then runs four
+    /// trailing masters in finishReadAccess.
+    fn beginReadAccess(self: *Cpu, bank: u8, addr: u16) u32 {
+        const speed = self.bus.memSpeed(bank, addr);
+        _ = self.flushInternalBeforeAccess();
+        self.recordAccess(speed);
+        if (self.bus.orderedClockConnected()) {
+            self.bus.advanceCpuPhase(speed - 4, .read_leading);
+        } else {
+            self.bus.tickDsp(speed);
+            self.bus.setCpuAccessTiming(self.mem_masters + self.internal_flushed * 6);
+        }
+        return speed;
+    }
+
+    fn finishReadAccess(self: *Cpu) void {
+        if (self.bus.orderedClockConnected()) {
+            self.bus.advanceCpuPhase(4, .read_trailing);
+        }
+    }
+
+    /// SNES writes take effect after their complete 6/8/12-master access.
+    fn beforeWriteAccess(self: *Cpu, bank: u8, addr: u16) void {
+        const speed = self.bus.memSpeed(bank, addr);
+        _ = self.flushInternalBeforeAccess();
+        self.recordAccess(speed);
+        if (self.bus.orderedClockConnected()) {
+            self.bus.advanceCpuPhase(speed, .write);
+        } else {
+            self.bus.tickDsp(speed);
+            self.bus.setCpuAccessTiming(self.mem_masters + self.internal_flushed * 6);
+        }
+    }
+
+    /// Add and execute one internal cycle before an architectural effect.
+    /// The first implied-operation phase retains IdleOrRead provenance so a
+    /// later interrupt-aware implementation can substitute a next-PC read.
+    fn idleOrReadBeforeEffect(self: *Cpu) void {
+        self.cycles += 1;
+        if (self.bus.orderedClockConnected()) {
+            self.bus.advanceCpuPhase(6, .idle_or_read_before_effect);
+        } else {
+            self.bus.tickDsp(6);
+        }
+        self.internal_flushed += 1;
+    }
+
+    /// XBA's second phase is an unconditional internal idle in Mesen.
+    fn internalBeforeEffect(self: *Cpu) void {
+        self.cycles += 1;
+        if (self.bus.orderedClockConnected()) {
+            self.bus.advanceCpuPhase(6, .internal_before_effect);
+        } else {
+            self.bus.tickDsp(6);
+        }
+        self.internal_flushed += 1;
     }
 
     fn fetchByte(self: *Cpu) u8 {
-        self.accountAccess(self.pbr, self.pc);
+        _ = self.beginReadAccess(self.pbr, self.pc);
         const value = self.bus.read(self.pbr, self.pc);
+        self.finishReadAccess();
         self.pc +%= 1;
         self.cycles += 1;
         return value;
@@ -417,9 +482,11 @@ pub const Cpu = struct {
     }
 
     fn readByte(self: *Cpu, bank: u8, addr: u16) u8 {
-        self.accountAccess(bank, addr);
+        _ = self.beginReadAccess(bank, addr);
         self.cycles += 1;
-        return self.bus.read(bank, addr);
+        const value = self.bus.read(bank, addr);
+        self.finishReadAccess();
+        return value;
     }
 
     fn readWord(self: *Cpu, bank: u8, addr: u16) u16 {
@@ -429,7 +496,7 @@ pub const Cpu = struct {
     }
 
     fn writeByte(self: *Cpu, bank: u8, addr: u16, value: u8) void {
-        self.accountAccess(bank, addr);
+        self.beforeWriteAccess(bank, addr);
         self.cycles += 1;
         // Low-RAM watchpoint (see dbg.trace_watch): report which
         // instruction writes the watched address, in any of its mirrors.
@@ -455,7 +522,7 @@ pub const Cpu = struct {
     }
 
     fn pushByte(self: *Cpu, value: u8) void {
-        self.accountAccess(0, self.sp);
+        self.beforeWriteAccess(0, self.sp);
         self.bus.write(0, self.sp, value);
         self.sp -%= 1;
         if (self.emulation_mode) {
@@ -474,9 +541,11 @@ pub const Cpu = struct {
         if (self.emulation_mode) {
             self.sp = 0x0100 | (self.sp & 0xFF);
         }
-        self.accountAccess(0, self.sp);
+        _ = self.beginReadAccess(0, self.sp);
         self.cycles += 1;
-        return self.bus.read(0, self.sp);
+        const value = self.bus.read(0, self.sp);
+        self.finishReadAccess();
+        return value;
     }
 
     fn pullWord(self: *Cpu) u16 {
@@ -492,7 +561,7 @@ pub const Cpu = struct {
     // datasheet errata and Bruce Clark's 65816 notes). Original-6502
     // instructions (PHA/PLA/JSR/RTS/BRK/...) keep the page-1 wrap above.
     fn pushByteRaw(self: *Cpu, value: u8) void {
-        self.accountAccess(0, self.sp);
+        self.beforeWriteAccess(0, self.sp);
         self.bus.write(0, self.sp, value);
         self.sp -%= 1;
         self.cycles += 1;
@@ -505,9 +574,11 @@ pub const Cpu = struct {
 
     fn pullByteRaw(self: *Cpu) u8 {
         self.sp +%= 1;
-        self.accountAccess(0, self.sp);
+        _ = self.beginReadAccess(0, self.sp);
         self.cycles += 1;
-        return self.bus.read(0, self.sp);
+        const value = self.bus.read(0, self.sp);
+        self.finishReadAccess();
+        return value;
     }
 
     fn pullWordRaw(self: *Cpu) u16 {

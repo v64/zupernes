@@ -13,6 +13,7 @@ pub const Dma = @import("dma.zig").Dma;
 pub const Spc700 = @import("apu/spc700.zig").Spc700;
 pub const movie = @import("movie.zig");
 pub const RefreshTimeline = @import("refresh_timing.zig").Timeline;
+const refresh_timing = @import("refresh_timing.zig");
 
 const zupernes_dots_per_line = @import("ppu/ppu.zig").DOTS_PER_SCANLINE;
 const zupernes_lines_per_frame = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
@@ -40,6 +41,11 @@ pub const Emulator = struct {
     // Track last scanline for HDMA timing
     last_scanline: u16,
 
+    // Research-stage serialized wall owner. It is connected explicitly only
+    // by the no-DMA CPU fixture until DMA/HDMA and interrupt sampling migrate
+    // to the same dispatcher.
+    refresh_timeline: RefreshTimeline,
+
     /// Capture-only input recorder; see `recordInputs`. Deliberately NOT
     /// part of the savestate: a snapshot captures the machine, not the
     /// instrument watching it.
@@ -56,6 +62,7 @@ pub const Emulator = struct {
             .ppu = Ppu.init(),
             .bus = undefined,
             .last_scanline = 0,
+            .refresh_timeline = RefreshTimeline.reset(),
         };
     }
 
@@ -75,6 +82,7 @@ pub const Emulator = struct {
         self.bus.dsp1.reset(); // Reset DSP-1 coprocessor (keeps its microcode)
         self.bus.dsp_accum = 0;
         self.last_scanline = 0;
+        self.refresh_timeline = RefreshTimeline.reset();
         // Note: APU ports (apu_out) keep their boot signature ($AA, $BB)
         // This is correct - APU reset would reinitialize them, not clear them
     }
@@ -125,6 +133,7 @@ pub const Emulator = struct {
         // Capture-only; see `traceExec`. One never-taken branch when disabled.
         self.exec_trace.record(self.ppu.writer_pc);
 
+        const instruction_start = absolutePpuMaster(&self.ppu);
         self.bus.beginCpuInstruction();
         const cycles = self.cpu.step();
 
@@ -150,6 +159,24 @@ pub const Emulator = struct {
         self.bus.dma_masters = 0;
         const master: u32 = self.cpu.mem_masters + internal * 6;
 
+        if (self.bus.orderedClockConnected()) {
+            // This first live stage is deliberately bounded to an access-only,
+            // no-DMA fixture. Accesses and flushed internal phases have already
+            // advanced the wall owner in execution order. Only CPU internal
+            // work left after the last access remains.
+            std.debug.assert(dma_extra == 0);
+            const trailing_internal = internal -| self.cpu.internal_flushed;
+            self.bus.advanceCpuPhase(trailing_internal * 6, .internal_trailing);
+            const instruction_end = absolutePpuMaster(&self.ppu);
+            std.debug.assert(instruction_end == self.refresh_timeline.wall_master);
+
+            // Interrupt acceptance still needs the later pre-final-cycle
+            // stage. Keep this mode limited to an interrupt-free fixture.
+            std.debug.assert((self.bus.nmitimen & 0xB0) == 0);
+            self.bus.syncInterruptFlagsTo(instruction_end);
+            return;
+        }
+
         // Run APU (SPC700) to stay synchronized with main CPU. The APU's
         // fixed-point ratio (~20.98 master cycles per SPC700 cycle) expects
         // master-clock units.
@@ -160,15 +187,13 @@ pub const Emulator = struct {
         // Games poll the DSP's RQM bit, so small ratio
         // error is absorbed by the handshake - but Super Mario Kart also
         // does BLIND cycle-counted writes, so the DSP is ticked at SUB-
-        // instruction granularity: Cpu.accountAccess brings it up to "now"
+        // instruction granularity: CPU access helpers bring it up to "now"
         // before every bus access (flushing internal_flushed cycles), and
         // only the instruction's trailing internal cycles remain here.
         self.bus.tickDsp((internal -| self.cpu.internal_flushed) * 6);
 
         // Absolute hardware time is the origin for placing interrupt edges
         // within this instruction.
-        const instruction_start = absolutePpuMaster(&self.ppu);
-
         // Advance the PPU by the instruction's true master-cycle cost (one
         // PPU dot is 4 master clocks, one scanline 1364), plus any DMA time
         // the instruction triggered. Using the real per-access memory
@@ -206,6 +231,51 @@ pub const Emulator = struct {
         if (self.bus.nmiEdgeInRange(sample_master, instruction_end)) {
             self.cpu.latchNmi();
         }
+    }
+
+    const OrderedClockSink = struct {
+        emu: *Emulator,
+
+        pub fn mastersUntilLineBoundary(self: *const OrderedClockSink) u64 {
+            const in_line = @as(u64, self.emu.ppu.dot) * master_cycles_per_dot +
+                self.emu.ppu.master_accum;
+            return masters_per_line - in_line;
+        }
+
+        pub fn advanceHardware(
+            self: *OrderedClockSink,
+            masters: u32,
+            kind: refresh_timing.SegmentKind,
+        ) void {
+            _ = kind;
+            self.emu.ppu.tick(masters);
+            self.emu.bus.runApu(masters);
+            self.emu.bus.tickDsp(masters);
+        }
+    };
+
+    fn advanceOrderedClock(
+        context: *anyopaque,
+        masters: u32,
+        phase: refresh_timing.CpuPhase,
+    ) void {
+        _ = phase;
+        const self: *Emulator = @ptrCast(@alignCast(context));
+        var sink = OrderedClockSink{ .emu = self };
+        self.refresh_timeline.advanceWorkOrdered(masters, &sink);
+    }
+
+    /// Connect actual CPU access execution to the ordered wall owner for the
+    /// bounded interrupt-free, no-DMA fixture. Production remains aggregate
+    /// until the later event-dispatch stages remove every double-count path.
+    fn enableOrderedClockNoDmaFixture(self: *Emulator) void {
+        const wall = absolutePpuMaster(&self.ppu);
+        const in_line = @as(u64, self.ppu.dot) * master_cycles_per_dot + self.ppu.master_accum;
+        const line_start = wall - in_line;
+        const refresh = refresh_timing.refreshMasterForLineStart(line_start);
+        const next_refresh = if (refresh >= wall) refresh else refresh_timing.no_refresh_scheduled;
+        self.refresh_timeline = RefreshTimeline.restore(wall, next_refresh) catch unreachable;
+        self.bus.connectOrderedClock(self, advanceOrderedClock);
     }
 
     const HdmaEvent = struct {
@@ -1013,4 +1083,77 @@ test "$4200 immediate NMI still waits for the next instruction sample" {
     try std.testing.expect(emu.cpu.nmi_pending);
     emu.step();
     try std.testing.expectEqual(@as(u16, 0x01FC), emu.cpu.sp);
+}
+
+test "actual CPU SlowROM accesses cross refresh on the ordered wall owner" {
+    const allocator = std.testing.allocator;
+    const flat = try allocator.alloc(u8, 0x10000);
+    defer allocator.free(flat);
+    @memset(flat, 0);
+
+    var emu = Emulator.init();
+    emu.setup();
+    emu.bus.flat_mem = flat;
+    emu.cpu.pbr = 0;
+    emu.cpu.pc = 0x8000;
+    flat[0x8000] = 0xA9; // LDA #$11
+    flat[0x8001] = 0x11;
+    flat[0x8002] = 0xA9; // LDA #$22
+    flat[0x8003] = 0x22;
+    flat[0x8004] = 0xA9; // LDA #$33
+    flat[0x8005] = 0x33;
+
+    emu.ppu.dot = 125; // absolute master 500
+    emu.enableOrderedClockNoDmaFixture();
+    emu.step();
+    emu.step();
+    emu.step();
+
+    // Six real CPU accesses consume 48 work masters. The refresh at 538 is
+    // emitted once to the same PPU/APU/DSP sink, producing 88 wall masters.
+    try std.testing.expectEqual(@as(u64, 588), emu.refresh_timeline.wall_master);
+    try std.testing.expectEqual(@as(u64, 588), absolutePpuMaster(&emu.ppu));
+    try std.testing.expectEqual(@as(u16, 0x8006), emu.cpu.pc);
+    try std.testing.expectEqual(@as(u16, 0x33), emu.cpu.a);
+    try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
+}
+
+test "actual CPU mapped read runs after its leading access clocks" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.cpu.pc = 0;
+    emu.bus.wram[0] = 0x2C; // BIT $4212
+    emu.bus.wram[1] = 0x12;
+    emu.bus.wram[2] = 0x42;
+
+    // Three eight-master fetches followed by two leading I/O masters put the
+    // handler at H=274 residual 2. Instruction start is still active display.
+    emu.ppu.dot = 268;
+    emu.enableOrderedClockNoDmaFixture();
+    emu.step();
+
+    try std.testing.expect(emu.cpu.p.v);
+    try std.testing.expectEqual(@as(u64, 1102), emu.refresh_timeline.wall_master);
+    try std.testing.expectEqual(@as(u64, 1102), absolutePpuMaster(&emu.ppu));
+}
+
+test "actual CPU mapped write takes effect after its complete access" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.cpu.pc = 0;
+    emu.cpu.a = 0x0F;
+    emu.bus.wram[0] = 0x8D; // STA $2100
+    emu.bus.wram[1] = 0x00;
+    emu.bus.wram[2] = 0x21;
+
+    // The three Slow/WRAM fetch accesses end at 536. The six-master write
+    // reaches refresh at 538, so its effect is journaled at wall master 582.
+    emu.ppu.dot = 128;
+    emu.enableOrderedClockNoDmaFixture();
+    emu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x0F), emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
+    try std.testing.expectEqual(@as(u16, 145), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u64, 582), emu.refresh_timeline.wall_master);
 }
