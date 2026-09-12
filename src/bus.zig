@@ -775,6 +775,9 @@ pub const Bus = struct {
 
     /// Write a byte to the 24-bit address space
     pub fn write(self: *Bus, bank: u8, addr: u16, value: u8) void {
+        // A mapped CPU-read handler phase cannot describe a later write or
+        // any direct/debug read that follows it in the same host call.
+        self.cpu_read_sample_valid = false;
         if (self.flat_mem) |m| {
             m[(@as(usize, bank) << 16) | addr] = value;
             return;
@@ -1136,6 +1139,9 @@ pub const Bus = struct {
 
     /// DMA read from A-bus (full 24-bit address)
     pub fn readDma(self: *Bus, addr: u24) u8 {
+        // DMA owns a separate timing path. Invalidate here as well as at its
+        // outer lifecycle boundaries so every direct entry is safe.
+        self.cpu_read_sample_valid = false;
         const bank: u8 = @truncate(addr >> 16);
         const offset: u16 = @truncate(addr);
         return self.read(bank, offset);

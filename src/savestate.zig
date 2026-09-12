@@ -494,6 +494,9 @@ pub fn read(
     last_scanline: *u16,
     src: []const u8,
 ) Error!usize {
+    // An attempted restore is a machine lifecycle boundary even when the
+    // input is rejected before any serialized field can be assigned.
+    bus.invalidateCpuReadSample();
     if (src.len < state_len) return Error.ShortBuffer;
     if (!std.mem.eql(u8, src[0..magic.len], magic)) return Error.BadMagic;
     var at: usize = magic.len;
@@ -673,10 +676,6 @@ pub fn read(
 
     // ---- Emulator ----
     last_scanline.* = getU16(src, &at);
-
-    // CPU handler phase is an in-flight execution detail, not machine state.
-    // A restored direct/debug read must use the committed PPU beam.
-    bus.invalidateCpuReadSample();
 
     std.debug.assert(at == state_len);
     return at;

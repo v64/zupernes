@@ -37,8 +37,9 @@ or after the handler without moving both timestamps together. The current
 candidate still has no refresh event and therefore is not pin-ready.
 
 The handler phase also carries explicit validity. CPU read accounting sets it;
-instruction completion, reset, savestate restore, standalone DMA, and each DMA
-timing step clear it. Direct/debug reads and DMA A-bus reads therefore use the
+instruction completion, every write, reset (before vector reads), every
+savestate restore attempt, standalone DMA, and every DMA A-bus read or timing
+step clear it. Direct/debug reads and DMA A-bus reads therefore use the
 committed PPU beam unless their caller has declared a phase. The last handler
 beam remains available only through a diagnostic accessor for the synthetic
 test. This prevents an unrelated `$4212` read from reusing an earlier CPU

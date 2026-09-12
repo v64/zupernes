@@ -69,12 +69,13 @@ pub const Emulator = struct {
     }
 
     pub fn reset(self: *Emulator) void {
+        // Reset-vector reads happen outside an executing CPU access phase.
+        self.bus.invalidateCpuReadSample();
         self.cpu.reset(); // Reset CPU state and read reset vector from ROM
         self.ppu.reset(); // Reset PPU registers and state
         self.bus.dma.reset(); // Reset DMA channel state
         self.bus.dsp1.reset(); // Reset DSP-1 coprocessor (keeps its microcode)
         self.bus.dsp_accum = 0;
-        self.bus.invalidateCpuReadSample();
         self.last_scanline = 0;
         // Note: APU ports (apu_out) keep their boot signature ($AA, $BB)
         // This is correct - APU reset would reinitialize them, not clear them
@@ -1199,12 +1200,15 @@ test "$4212 never reuses a stale CPU sample across direct DMA and reset boundari
     try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
 
     emu.bus.setCpuReadSampleTiming(700);
+    emu.bus.write(0, 0x0010, 0x5a);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
+
+    emu.bus.setCpuReadSampleTiming(700);
     emu.bus.beginStandaloneDma();
     try std.testing.expect(emu.bus.readDma(0x004212) & 0x40 == 0);
 
-    emu.bus.beginCpuInstruction();
+    // readDma itself is safe even if a caller bypasses the outer DMA setup.
     emu.bus.setCpuReadSampleTiming(700);
-    emu.bus.tickDmaByte();
     try std.testing.expect(emu.bus.readDma(0x004212) & 0x40 == 0);
 
     // Reset's committed beam is H=0 (HBlank in Mesen's counter rule). Seed a
@@ -1232,5 +1236,10 @@ test "$4212 CPU sample validity is transient across savestate restore" {
     try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 != 0);
     _ = try emu.readState(snapshot);
     try std.testing.expectEqual(@as(u16, 100), emu.ppu.dot);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
+
+    // A rejected restore must also end the transient execution phase.
+    emu.bus.setCpuReadSampleTiming(700);
+    try std.testing.expectError(error.ShortBuffer, emu.readState(&.{}));
     try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
 }
