@@ -480,10 +480,13 @@ pub fn write(
 
     // ---- Emulator ----
     putU16(dst, &at, last_scanline);
-    const saved_timeline = if (bus.orderedClockConnected())
-        refresh_timeline.*
-    else
-        normalizedTimelineForPpu(ppu);
+    const normalized_timeline = normalizedTimelineForPpu(ppu);
+    const saved_timeline = if (bus.orderedClockConnected()) refresh_timeline.* else normalized_timeline;
+    if (saved_timeline.wall_master != normalized_timeline.wall_master or
+        saved_timeline.next_refresh_master != normalized_timeline.next_refresh_master)
+    {
+        return Error.InvalidRefreshSchedule;
+    }
     putU64(dst, &at, saved_timeline.wall_master);
     putU64(dst, &at, saved_timeline.next_refresh_master);
 

@@ -1530,4 +1530,7 @@ test "ordered wall and audio state replay exactly across refresh" {
     // audio clocks, DSP accumulator, and explicit wall/next-refresh fields.
     try std.testing.expectEqualSlices(u8, expected, actual);
     try std.testing.expectEqual(@as(u64, 588), replay.refresh_timeline.wall_master);
+
+    replay.refresh_timeline.next_refresh_master = 0;
+    try std.testing.expectError(error.InvalidRefreshSchedule, replay.writeState(actual));
 }
