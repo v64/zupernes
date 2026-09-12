@@ -1357,3 +1357,85 @@ test "ordered interrupt sampling distinguishes pre-final and final-cycle edges" 
         nmi.ordered_last_cpu_cycle_start,
     );
 }
+
+test "implied and register opcodes retain their internal final cycle" {
+    const TimingCase = struct { opcode: u8, cycles: u8 };
+    const cases = [_]TimingCase{
+        .{ .opcode = 0x18, .cycles = 2 }, // CLC
+        .{ .opcode = 0x38, .cycles = 2 }, // SEC
+        .{ .opcode = 0x58, .cycles = 2 }, // CLI
+        .{ .opcode = 0x78, .cycles = 2 }, // SEI
+        .{ .opcode = 0xB8, .cycles = 2 }, // CLV
+        .{ .opcode = 0xD8, .cycles = 2 }, // CLD
+        .{ .opcode = 0xF8, .cycles = 2 }, // SED
+        .{ .opcode = 0xAA, .cycles = 2 }, // TAX
+        .{ .opcode = 0xA8, .cycles = 2 }, // TAY
+        .{ .opcode = 0x8A, .cycles = 2 }, // TXA
+        .{ .opcode = 0x98, .cycles = 2 }, // TYA
+        .{ .opcode = 0xBA, .cycles = 2 }, // TSX
+        .{ .opcode = 0x9A, .cycles = 2 }, // TXS
+        .{ .opcode = 0x9B, .cycles = 2 }, // TXY
+        .{ .opcode = 0xBB, .cycles = 2 }, // TYX
+        .{ .opcode = 0x5B, .cycles = 2 }, // TCD
+        .{ .opcode = 0x7B, .cycles = 2 }, // TDC
+        .{ .opcode = 0x1B, .cycles = 2 }, // TCS
+        .{ .opcode = 0x3B, .cycles = 2 }, // TSC
+        .{ .opcode = 0xE8, .cycles = 2 }, // INX
+        .{ .opcode = 0xCA, .cycles = 2 }, // DEX
+        .{ .opcode = 0xC8, .cycles = 2 }, // INY
+        .{ .opcode = 0x88, .cycles = 2 }, // DEY
+        .{ .opcode = 0x1A, .cycles = 2 }, // INC A
+        .{ .opcode = 0x3A, .cycles = 2 }, // DEC A
+        .{ .opcode = 0xEB, .cycles = 3 }, // XBA
+        .{ .opcode = 0xFB, .cycles = 2 }, // XCE
+    };
+    const Profile = struct { emulation: bool, m: bool, x: bool, carry: bool };
+    const profiles = [_]Profile{
+        .{ .emulation = true, .m = true, .x = true, .carry = false },
+        .{ .emulation = true, .m = true, .x = true, .carry = true },
+        .{ .emulation = false, .m = false, .x = false, .carry = false },
+        .{ .emulation = false, .m = false, .x = false, .carry = true },
+    };
+    const Region = struct { bank: u8, memsel: u8, fetch_masters: u32 };
+    const regions = [_]Region{
+        .{ .bank = 0x00, .memsel = 0, .fetch_masters = 8 }, // SlowROM
+        .{ .bank = 0x80, .memsel = 1, .fetch_masters = 6 }, // FastROM
+    };
+    var rom = [_]u8{0} ** 0x8000;
+
+    for (cases) |timing| {
+        rom[0] = timing.opcode;
+        for (profiles) |profile| {
+            for (regions) |region| {
+                var emu = Emulator.init();
+                emu.setup();
+                try emu.bus.loadCartridge(&rom);
+                emu.bus.memsel = region.memsel;
+                emu.cpu.pbr = region.bank;
+                emu.cpu.pc = 0x8000;
+                emu.cpu.emulation_mode = profile.emulation;
+                emu.cpu.p.m = profile.m;
+                emu.cpu.p.x = profile.x;
+                emu.cpu.p.c = profile.carry;
+                emu.cpu.p.i = true;
+                emu.cpu.a = 0x12A5;
+                emu.cpu.x = 0x34B6;
+                emu.cpu.y = 0x56C7;
+                emu.cpu.sp = 0x78D8;
+
+                const start = absolutePpuMaster(&emu.ppu);
+                emu.step();
+                const elapsed = absolutePpuMaster(&emu.ppu) - start;
+                const expected_masters = region.fetch_masters +
+                    @as(u32, timing.cycles - 1) * 6;
+
+                try std.testing.expectEqual(timing.cycles, emu.cpu.cycles);
+                try std.testing.expectEqual(@as(u8, 1), emu.cpu.mem_accesses);
+                try std.testing.expectEqual(region.fetch_masters, emu.cpu.mem_masters);
+                try std.testing.expectEqual(@as(u32, timing.cycles - 1), emu.cpu.internal_flushed);
+                try std.testing.expectEqual(@as(u32, 6), emu.cpu.finalCycleMasters());
+                try std.testing.expectEqual(@as(u64, expected_masters), elapsed);
+            }
+        }
+    }
+}
