@@ -1246,3 +1246,48 @@ test "HDMA event and transfer work interrupt CPU work on the ordered owner" {
     try std.testing.expectEqual(@as(u64, 1364 + 1150), emu.refresh_timeline.wall_master);
     try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
 }
+
+test "audited implied phases advance before effects on the ordered owner" {
+    const allocator = std.testing.allocator;
+    const flat = try allocator.alloc(u8, 0x10000);
+    defer allocator.free(flat);
+    @memset(flat, 0);
+
+    var clc = Emulator.init();
+    clc.setup();
+    clc.bus.flat_mem = flat;
+    clc.cpu.pbr = 0;
+    clc.cpu.pc = 0x8000;
+    clc.cpu.p.c = true;
+    flat[0x8000] = 0x18; // CLC: opcode access then IdleOrRead before effect
+    clc.ppu.dot = 132; // wall 528; opcode ends 536
+    clc.enableOrderedClockFixture();
+    clc.step();
+
+    // The six-master pre-effect phase crosses refresh at 538. CLC therefore
+    // ends at 582 with a two-cycle/one-access shape and a six-master final
+    // cycle for the still-canonical aggregate interrupt sampler.
+    try std.testing.expect(!clc.cpu.p.c);
+    try std.testing.expectEqual(@as(u8, 2), clc.cpu.cycles);
+    try std.testing.expectEqual(@as(u8, 1), clc.cpu.mem_accesses);
+    try std.testing.expectEqual(@as(u32, 1), clc.cpu.internal_flushed);
+    try std.testing.expectEqual(@as(u32, 6), clc.cpu.finalCycleMasters());
+    try std.testing.expectEqual(@as(u64, 582), clc.refresh_timeline.wall_master);
+
+    var xba = Emulator.init();
+    xba.setup();
+    xba.bus.flat_mem = flat;
+    xba.cpu.pbr = 0;
+    xba.cpu.pc = 0x8001;
+    xba.cpu.a = 0x1234;
+    flat[0x8001] = 0xEB; // XBA: IdleOrRead plus unconditional idle
+    xba.ppu.dot = 125; // wall 500
+    xba.enableOrderedClockFixture();
+    xba.step();
+
+    try std.testing.expectEqual(@as(u16, 0x3412), xba.cpu.a);
+    try std.testing.expectEqual(@as(u8, 3), xba.cpu.cycles);
+    try std.testing.expectEqual(@as(u32, 2), xba.cpu.internal_flushed);
+    try std.testing.expectEqual(@as(u32, 6), xba.cpu.finalCycleMasters());
+    try std.testing.expectEqual(@as(u64, 520), xba.refresh_timeline.wall_master);
+}

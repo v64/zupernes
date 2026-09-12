@@ -112,9 +112,13 @@ only its opcode access. The WDC table and Mesen independently require one
 six-master `IdleOrRead` phase before the effect for CLC/SEC/CLI/SEI/CLV/CLD/SED,
 the register transfers, INX/DEX/INY/DEY, accumulator INC/DEC, and XCE. XBA
 requires that phase plus one unconditional six-master idle. A later CPU patch
-must use the ordered pre-effect API. Treating the conditional `IdleOrRead` as a
-universal six-master idle remains explicitly incomplete when an interrupt can
-substitute a next-PC dummy read.
+now uses the ordered pre-effect API for all 27 rows. A live CLC fixture places
+its opcode end at wall 536 and proves the internal phase crosses refresh before
+the flag changes, ending at 582; an XBA control consumes both distinct phases.
+The transient final-phase width remains six masters for the canonical aggregate
+interrupt sampler. Treating the conditional `IdleOrRead` as a universal
+six-master idle remains explicitly incomplete when an interrupt can substitute
+a next-PC dummy read.
 
 ## Independent Mesen execution
 
