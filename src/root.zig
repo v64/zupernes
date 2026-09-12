@@ -650,12 +650,28 @@ pub const Emulator = struct {
 
     /// Capture the whole machine into dst (>= state_len bytes).
     pub fn writeState(self: *const Emulator, dst: []u8) StateError!usize {
-        return savestate.write(&self.cpu, &self.ppu, &self.bus, self.last_scanline, dst);
+        return savestate.write(
+            &self.cpu,
+            &self.ppu,
+            &self.bus,
+            &self.refresh_timeline,
+            self.last_scanline,
+            dst,
+        );
     }
 
     /// Restore a snapshot previously produced by writeState.
     pub fn readState(self: *Emulator, src: []const u8) StateError!usize {
-        return savestate.read(&self.cpu, &self.ppu, &self.bus, &self.last_scanline, src);
+        const read = try savestate.read(
+            &self.cpu,
+            &self.ppu,
+            &self.bus,
+            &self.refresh_timeline,
+            &self.last_scanline,
+            src,
+        );
+        self.ordered_last_cpu_cycle_start = self.refresh_timeline.wall_master;
+        return read;
     }
 
     /// Restore from a snapshot FILE, reporting the snapshot's own sha256 so a
@@ -1467,4 +1483,51 @@ test "implied and register opcodes retain their internal final cycle" {
             }
         }
     }
+}
+
+test "ordered wall and audio state replay exactly across refresh" {
+    const allocator = std.testing.allocator;
+    const flat = try allocator.alloc(u8, 0x10000);
+    defer allocator.free(flat);
+    @memset(flat, 0);
+    flat[0x8000] = 0xA9;
+    flat[0x8001] = 0x11;
+    flat[0x8002] = 0xA9;
+    flat[0x8003] = 0x22;
+    flat[0x8004] = 0xA9;
+    flat[0x8005] = 0x33;
+
+    const checkpoint = try allocator.alloc(u8, Emulator.state_len);
+    defer allocator.free(checkpoint);
+    const expected = try allocator.alloc(u8, Emulator.state_len);
+    defer allocator.free(expected);
+    const actual = try allocator.alloc(u8, Emulator.state_len);
+    defer allocator.free(actual);
+
+    var source = Emulator.init();
+    source.setup();
+    source.bus.flat_mem = flat;
+    source.cpu.pbr = 0;
+    source.cpu.pc = 0x8000;
+    source.ppu.dot = 125; // wall 500
+    source.enableOrderedClockFixture();
+    source.step(); // checkpoint at 516, before refresh
+    _ = try source.writeState(checkpoint);
+    source.step();
+    source.step(); // continuation crosses refresh and ends at 588
+    _ = try source.writeState(expected);
+
+    var replay = Emulator.init();
+    replay.setup();
+    replay.bus.flat_mem = flat;
+    replay.enableOrderedClockFixture(); // establish callback; state restores clocks
+    _ = try replay.readState(checkpoint);
+    replay.step();
+    replay.step();
+    _ = try replay.writeState(actual);
+
+    // Full pointer-free state equality includes CPU/PPU, DMA, the APU and its
+    // audio clocks, DSP accumulator, and explicit wall/next-refresh fields.
+    try std.testing.expectEqualSlices(u8, expected, actual);
+    try std.testing.expectEqual(@as(u64, 588), replay.refresh_timeline.wall_master);
 }

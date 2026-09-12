@@ -44,6 +44,8 @@ const ppu_mod = @import("ppu/ppu.zig");
 const Ppu = ppu_mod.Ppu;
 const Dma = @import("dma.zig").Dma;
 const Apu = @import("apu/apu.zig").Apu;
+const refresh_timing = @import("refresh_timing.zig");
+const RefreshTimeline = refresh_timing.Timeline;
 
 /// Bumped whenever the byte layout changes DELIBERATELY, so a stale snapshot
 /// is REJECTED rather than silently misread - a savestate that quietly
@@ -56,7 +58,7 @@ const Apu = @import("apu/apu.zig").Apu;
 /// everything captured, and `read` refuses a mismatch. The version covers a
 /// deliberate REORDER at equal size; the length covers every accidental
 /// change, which is the one that actually happens.
-pub const magic = "ZNSAVE\x00\x05";
+pub const magic = "ZNSAVE\x00\x06";
 
 const fb_bytes = ppu_mod.SCREEN_WIDTH * ppu_mod.SCREEN_HEIGHT * 2;
 const render_state_bytes = blk: {
@@ -72,7 +74,7 @@ const render_state_bytes = blk: {
 };
 const render_event_bytes = 8 + 2 + render_state_bytes;
 
-pub const Error = error{ BadMagic, BadLayout, ShortBuffer };
+pub const Error = error{ BadMagic, BadLayout, ShortBuffer, InvalidRefreshSchedule };
 
 // =============================================================================
 // THE `.origin` SIDECAR
@@ -284,8 +286,8 @@ pub const state_len: usize = blk: {
     // DSP-1 mutable state: ram, pc, stack, sp, a, b, flaga, flagb,
     // eleven u16 registers, dp, idb.
     n += 256 * 2 + 2 + 16 * 2 + 1 + 2 + 2 + 1 + 1 + 2 * 11 + 1 + 2;
-    // Emulator
-    n += 2;
+    // Emulator: last scanline plus serialized wall/refresh owner.
+    n += 2 + 8 + 8;
     break :blk n;
 };
 
@@ -295,6 +297,7 @@ pub fn write(
     cpu: *const Cpu,
     ppu: *const Ppu,
     bus: *const Bus,
+    refresh_timeline: *const RefreshTimeline,
     last_scanline: u16,
     dst: []u8,
 ) Error!usize {
@@ -477,6 +480,12 @@ pub fn write(
 
     // ---- Emulator ----
     putU16(dst, &at, last_scanline);
+    const saved_timeline = if (bus.orderedClockConnected())
+        refresh_timeline.*
+    else
+        normalizedTimelineForPpu(ppu);
+    putU64(dst, &at, saved_timeline.wall_master);
+    putU64(dst, &at, saved_timeline.next_refresh_master);
 
     std.debug.assert(at == state_len);
     return at;
@@ -491,11 +500,13 @@ pub fn read(
     cpu: *Cpu,
     ppu: *Ppu,
     bus: *Bus,
+    refresh_timeline: *RefreshTimeline,
     last_scanline: *u16,
     src: []const u8,
 ) Error!usize {
-    if (src.len < state_len) return Error.ShortBuffer;
+    if (src.len < magic.len) return Error.ShortBuffer;
     if (!std.mem.eql(u8, src[0..magic.len], magic)) return Error.BadMagic;
+    if (src.len < state_len) return Error.ShortBuffer;
     var at: usize = magic.len;
     // The layout guard: any change to WHAT is captured moves this sum, so a
     // snapshot from a different build is refused instead of being read as
@@ -673,9 +684,30 @@ pub fn read(
 
     // ---- Emulator ----
     last_scanline.* = getU16(src, &at);
+    const wall_master = getU64(src, &at);
+    const next_refresh_master = getU64(src, &at);
+    const expected = normalizedTimelineForPpu(ppu);
+    if (wall_master != expected.wall_master or next_refresh_master != expected.next_refresh_master) {
+        return Error.InvalidRefreshSchedule;
+    }
+    refresh_timeline.* = RefreshTimeline.restore(wall_master, next_refresh_master) catch {
+        return Error.InvalidRefreshSchedule;
+    };
 
     std.debug.assert(at == state_len);
     return at;
+}
+
+fn normalizedTimelineForPpu(ppu: *const Ppu) RefreshTimeline {
+    const line_masters: u64 = ppu_mod.DOTS_PER_SCANLINE * ppu_mod.MASTER_CYCLES_PER_DOT;
+    const frame_masters: u64 = line_masters * ppu_mod.SCANLINES_PER_FRAME;
+    const in_line = @as(u64, ppu.dot) * ppu_mod.MASTER_CYCLES_PER_DOT + ppu.master_accum;
+    const wall = ppu.frame_count * frame_masters + @as(u64, ppu.scanline) * line_masters + in_line;
+    const refresh = refresh_timing.refreshMasterForLineStart(wall - in_line);
+    return .{
+        .wall_master = wall,
+        .next_refresh_master = if (refresh >= wall) refresh else refresh_timing.no_refresh_scheduled,
+    };
 }
 
 // ---- DSP flag packing --------------------------------------------------------
@@ -708,7 +740,8 @@ test "state_len matches what write actually emits" {
     var ppu = Ppu.init();
     var bus = Bus.init(&ppu);
     var cpu = Cpu.init(&bus);
-    try std.testing.expectEqual(state_len, try write(&cpu, &ppu, &bus, 0, buf));
+    var timeline = RefreshTimeline.reset();
+    try std.testing.expectEqual(state_len, try write(&cpu, &ppu, &bus, &timeline, 0, buf));
 }
 
 test "read rejects a foreign buffer instead of misreading it" {
@@ -718,8 +751,9 @@ test "read rejects a foreign buffer instead of misreading it" {
     var ppu = Ppu.init();
     var bus = Bus.init(&ppu);
     var cpu = Cpu.init(&bus);
+    var timeline = RefreshTimeline.reset();
     var last: u16 = 0;
-    try std.testing.expectError(Error.BadMagic, read(&cpu, &ppu, &bus, &last, buf));
+    try std.testing.expectError(Error.BadMagic, read(&cpu, &ppu, &bus, &timeline, &last, buf));
 }
 
 test "read rejects a snapshot whose layout length disagrees" {
@@ -733,11 +767,49 @@ test "read rejects a snapshot whose layout length disagrees" {
     var ppu = Ppu.init();
     var bus = Bus.init(&ppu);
     var cpu = Cpu.init(&bus);
-    _ = try write(&cpu, &ppu, &bus, 0, buf);
+    var timeline = RefreshTimeline.reset();
+    _ = try write(&cpu, &ppu, &bus, &timeline, 0, buf);
     var at: usize = magic.len;
     putU32(buf, &at, @as(u32, @intCast(state_len)) + 1);
     var last: u16 = 0;
-    try std.testing.expectError(Error.BadLayout, read(&cpu, &ppu, &bus, &last, buf));
+    try std.testing.expectError(Error.BadLayout, read(&cpu, &ppu, &bus, &timeline, &last, buf));
+}
+
+test "version five snapshots are explicitly rejected" {
+    const version_five_len = state_len - 16;
+    const buf = try std.testing.allocator.alloc(u8, version_five_len);
+    defer std.testing.allocator.free(buf);
+    @memset(buf, 0);
+    @memcpy(buf[0..magic.len], "ZNSAVE\x00\x05");
+    var ppu = Ppu.init();
+    var bus = Bus.init(&ppu);
+    var cpu = Cpu.init(&bus);
+    var timeline = RefreshTimeline.reset();
+    var last: u16 = 0;
+    try std.testing.expectError(
+        Error.BadMagic,
+        read(&cpu, &ppu, &bus, &timeline, &last, buf),
+    );
+}
+
+test "read rejects refresh state inconsistent with the restored PPU wall" {
+    const buf = try std.testing.allocator.alloc(u8, state_len);
+    defer std.testing.allocator.free(buf);
+    var ppu = Ppu.init();
+    ppu.dot = 10;
+    var bus = Bus.init(&ppu);
+    var cpu = Cpu.init(&bus);
+    var timeline = RefreshTimeline.reset();
+    _ = try write(&cpu, &ppu, &bus, &timeline, 0, buf);
+
+    // The serialized next-refresh value occupies the final eight bytes.
+    // Zero is already behind PPU wall master 40 and must fail in release too.
+    @memset(buf[state_len - 8 ..], 0);
+    var last: u16 = 0;
+    try std.testing.expectError(
+        Error.InvalidRefreshSchedule,
+        read(&cpu, &ppu, &bus, &timeline, &last, buf),
+    );
 }
 
 test "read preserves interior pointers and round-trips scalars" {
@@ -746,6 +818,7 @@ test "read preserves interior pointers and round-trips scalars" {
     var ppu = Ppu.init();
     var bus = Bus.init(&ppu);
     var cpu = Cpu.init(&bus);
+    var timeline = RefreshTimeline.reset();
     cpu.a = 0x1234;
     cpu.pbr = 0x7E;
     cpu.nmi_latched = true;
@@ -753,7 +826,7 @@ test "read preserves interior pointers and round-trips scalars" {
     ppu.frame_count = 99;
     bus.wram[0x1234] = 0xAB;
     bus.irq_hold_until_master = 0x123456789ABCDEF0;
-    _ = try write(&cpu, &ppu, &bus, 7, buf);
+    _ = try write(&cpu, &ppu, &bus, &timeline, 7, buf);
 
     cpu.a = 0;
     cpu.pbr = 0;
@@ -763,7 +836,7 @@ test "read preserves interior pointers and round-trips scalars" {
     bus.wram[0x1234] = 0;
     bus.irq_hold_until_master = 0;
     var last: u16 = 0;
-    _ = try read(&cpu, &ppu, &bus, &last, buf);
+    _ = try read(&cpu, &ppu, &bus, &timeline, &last, buf);
 
     try std.testing.expectEqual(@as(u16, 0x1234), cpu.a);
     try std.testing.expectEqual(@as(u8, 0x7E), cpu.pbr);
@@ -784,6 +857,7 @@ test "savestate preserves an unfinished mid-scanline render journal" {
     var ppu = Ppu.init();
     var bus = Bus.init(&ppu);
     var cpu = Cpu.init(&bus);
+    var timeline = RefreshTimeline.reset();
 
     // White backdrop, enabled display. Line 0 is the pre-render line; line 1
     // is the visible line whose unfinished journal the snapshot must retain.
@@ -794,13 +868,13 @@ test "savestate preserves an unfinished mid-scanline render journal" {
     ppu.tick(80 * ppu_mod.MASTER_CYCLES_PER_DOT);
     ppu.writeRegister(0x2100, 0x8F);
 
-    _ = try write(&cpu, &ppu, &bus, 1, buf);
+    _ = try write(&cpu, &ppu, &bus, &timeline, 1, buf);
     const clocks_left = (ppu_mod.DOTS_PER_SCANLINE - 80) * ppu_mod.MASTER_CYCLES_PER_DOT;
     ppu.tick(clocks_left);
     const expected = ppu.framebuffer;
 
     var last: u16 = 0;
-    _ = try read(&cpu, &ppu, &bus, &last, buf);
+    _ = try read(&cpu, &ppu, &bus, &timeline, &last, buf);
     ppu.tick(clocks_left);
     try std.testing.expectEqualSlices(u16, &expected, &ppu.framebuffer);
     try std.testing.expectEqual(@as(u16, 1), last);

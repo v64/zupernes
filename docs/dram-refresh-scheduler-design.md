@@ -182,11 +182,18 @@ addition to refresh and line rollover. CPU work stops exactly at that event;
 the sink marks it consumed before dispatch and DMA advances the same timeline
 reentrantly as `dma_work`. Refresh reached during that DMA work advances the
 same PPU/APU/DSP sink. No `dma_masters` aggregate remains for root to add later.
+Each transferred byte is split at its independently observed handlers: four
+DMA masters, source read, four DMA masters, destination write. Mesen's
+`ReadDma`/`WriteDma` order requires this; charging all eight before both leaves
+the final write time correct while sampling a mapped source four masters late.
 
 Two actual-runtime fixtures exercise the causal order:
 
 - a one-byte general DMA begins at wall 536, reaches refresh at 538 during its
-  eight transfer masters, and writes `$2100` at wall 584;
+  first half, samples its source at 580, and writes `$2100` at wall 584;
+- a `$4212` source begins at wall 1090, samples active display at 1094, then
+  writes zero at 1098; the rejected eight-before-read order samples HBlank and
+  writes `$40` instead;
 - CPU work reaches the established ZuperNES H=278 HDMA event, the current
   explicit 18+8+8-master transfer executes on the owner, and the `$2100` write
   is journaled at local H-clock 1146 before the interrupted CPU work finishes.
@@ -245,6 +252,26 @@ H-IRQ that rises before the final access, latch an immediate `$4200` NMI edge
 at the end of the final access, and retain a sample at 536 when refresh stretches
 a final internal cycle through wall 582.
 
-Serialized replay remains before the default runtime can switch over. Until
-then, the branch is a research candidate and must not replace the canonical
-oracle pin.
+### Audio and serialized replay stage
+
+Every ordered CPU, DMA, and refresh segment advances `Apu.runCycles` and the
+DSP-1 accumulator beside the PPU. Savestate version 6 adds the explicit
+`wall_master` and `next_refresh_master` fields. Restore requires wall equality
+with the restored PPU beam and requires the next event to be exactly the
+current line's reset-aligned event or the no-event sentinel after it has fired;
+malformed schedules return `InvalidRefreshSchedule` in release builds. Version
+5 snapshots are explicitly rejected by magic. This is the ZuperNES diagnostic
+savestate format and does not change ZuperWorld's user save format.
+
+The replay test snapshots the real ordered CPU at wall 516, continues through
+refresh to 588, restores into a separately initialized machine, and repeats the
+continuation. The complete pointer-free states match byte for byte, including
+CPU, PPU, DMA, APU/audio state, DSP accumulator, wall time, and next refresh.
+The default aggregate path writes a PPU-normalized timeline until the candidate
+owner becomes the runtime default, so existing default-path savestate callers
+remain internally consistent within version 6.
+
+The three migration stages are now executable behind the opt-in connection.
+Broader CPU conditional-dummy-read work, DMA overhead audit, and independent
+ROM-profile review remain; this branch is a research candidate and must not
+replace the canonical oracle pin.
