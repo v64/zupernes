@@ -66,6 +66,44 @@ The unit tests establish:
 These tests falsify a per-frame total, per-instruction flat surcharge, or a
 callback-minus-four rule.
 
+## Ordered CPU phase stage
+
+The first clock-ownership stage is now executable in the same module without
+changing the pinned runtime. `Timeline.advanceWorkOrdered` is the sole owner of
+wall time for its hardware sink. It splits CPU work at the next refresh or at
+the PPU sink's observed line rollover and emits ordered `cpu_work` and
+`dram_refresh` segments. Every segment advances the same sink, so refresh
+cannot become an instruction total that the PPU, APU, or coprocessor misses.
+On rollover the timeline derives the next event from the resulting absolute
+wall master; it does not assume a fixed frame repeat. Wall-only refresh time
+is split at a rollover as well, so even a synthetic short geometry cannot hide
+a line boundary inside the stall.
+
+`CpuAccessPhases` exposes the CPU boundaries needed by mapped devices:
+
+- a read advances `access_masters - 4`, runs its handler, then advances four
+  trailing masters;
+- a write advances its full 6/8/12-master access before its effect;
+- internal work advances before its architectural effect.
+
+The synthetic sink proves the exact segment order for the 48-work/88-wall
+fixture, refresh on either side of a six-master read handler, a write crossing,
+an internal cycle crossing, and a 1,360-master short-line rollover. This stage
+contains no DMA and is not connected to `Emulator.step`; that keeps the old
+aggregate PPU/APU path from double-counting clocks while the event dispatcher
+is still absent.
+
+A separate copyright-free audit at the canonical pin ran 540 cases: 27
+implied/register opcodes at SlowROM and FastROM in emulation mode and all four
+native M/X modes, with both initial carry values. Every case currently records
+only its opcode access. The WDC table and Mesen independently require one
+six-master `IdleOrRead` phase before the effect for CLC/SEC/CLI/SEI/CLV/CLD/SED,
+the register transfers, INX/DEX/INY/DEY, accumulator INC/DEC, and XCE. XBA
+requires that phase plus one unconditional six-master idle. A later CPU patch
+must use the ordered pre-effect API. Treating the conditional `IdleOrRead` as a
+universal six-master idle remains explicitly incomplete when an interrupt can
+substitute a next-PC dummy read.
+
 ## Independent Mesen execution
 
 `test/mesen/dram_refresh_probe.mjs` generates a 32 KiB copyright-free SlowROM
@@ -101,7 +139,7 @@ stall.
 | Lua | `33c511b8e9674c8146c1e42632b89303027d70cd08c6472bbf8704d3f0b67e93` |
 | trace | `088dcd1a4008dfe5f7886de57a6d2c4c619860cadeca8cdc02f1a41efcf7a646` |
 
-## Live integration boundary
+## Remaining live integration boundary
 
 An exact runtime change is broader than adding 40 to `Emulator.step`.
 The current pin executes a complete CPU instruction and its bus side effects
@@ -126,7 +164,7 @@ completion. A total `+40` cannot recover those distinctions. Pre-projecting
 refresh while leaving HDMA to the later commit can also advance the refresh
 scheduler out of event order.
 
-The required integration contract is:
+The remaining integration contract is:
 
 - one serialized hardware timeline owns physical wall time and the next
   refresh event, reset to `{0, 538}` before timed execution;
@@ -139,9 +177,8 @@ The required integration contract is:
 - savestate magic/length changes and captures `next_refresh_master`; restore
   resumes without deriving whether an exact-boundary event already fired.
 
-Moving HDMA event dispatch into this shared timeline, or advancing all hardware
-clocks during CPU execution, changes the emulator's central clock contract. The
-prototype intentionally stops before that refactor. The live implementation
-should proceed only after review chooses that ownership model; otherwise a
-small patch would improve the 48/88 fixture while remaining wrong for access,
-interrupt, and DMA crossings.
+The ordered primitive is the reviewed boundary for that refactor. The next
+stage must connect its hardware sink and DMA/HDMA event dispatcher before live
+CPU execution switches over. Until then, the branch remains a research
+candidate: wiring only CPU accesses would let them pass undispatched HDMA
+events, while retaining the aggregate root clocks would double-count time.

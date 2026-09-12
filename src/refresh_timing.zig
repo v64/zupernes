@@ -24,6 +24,47 @@ pub const Advance = struct {
     refreshes: u32,
 };
 
+pub const SegmentKind = enum {
+    cpu_work,
+    dram_refresh,
+};
+
+/// CPU read handlers run after the access's leading clocks and before its
+/// final four master clocks. This is a hardware phase boundary, not a trace
+/// callback adjustment.
+pub fn cpuReadLeadingMasters(access_masters: u32) u32 {
+    std.debug.assert(access_masters == 6 or access_masters == 8 or access_masters == 12);
+    return access_masters - 4;
+}
+
+pub const CpuAccessPhases = struct {
+    timeline: *Timeline,
+
+    /// Advance to a mapped read handler. The caller performs the read only
+    /// after this returns, then calls finishRead for the trailing clocks.
+    pub fn beginRead(self: CpuAccessPhases, access_masters: u32, sink: anytype) void {
+        self.timeline.advanceWorkOrdered(cpuReadLeadingMasters(access_masters), sink);
+    }
+
+    pub fn finishRead(self: CpuAccessPhases, sink: anytype) void {
+        self.timeline.advanceWorkOrdered(4, sink);
+    }
+
+    /// SNES writes take effect after the complete access cycle.
+    pub fn beforeWrite(self: CpuAccessPhases, access_masters: u32, sink: anytype) void {
+        std.debug.assert(access_masters == 6 or access_masters == 8 or access_masters == 12);
+        self.timeline.advanceWorkOrdered(access_masters, sink);
+    }
+
+    /// Advance an internal CPU phase before its architectural effect. The
+    /// separately audited implied/register family uses one such six-master
+    /// phase, while XBA uses two.
+    pub fn beforeInternalEffect(self: CpuAccessPhases, internal_masters: u32, sink: anytype) void {
+        std.debug.assert(internal_masters % 6 == 0);
+        self.timeline.advanceWorkOrdered(internal_masters, sink);
+    }
+};
+
 /// Prototype timeline for any bus-owning work: CPU, DMA, or HDMA consumes
 /// `work_masters`; the PPU/APU/coprocessors observe `wall_elapsed`. Keeping the
 /// next event explicit distinguishes an unprocessed event at an exact boundary
@@ -46,6 +87,71 @@ pub const Timeline = struct {
     pub fn beginLine(self: *Timeline, line_start_master: u64) void {
         std.debug.assert(self.wall_master == line_start_master);
         self.next_refresh_master = refreshMasterForLineStart(line_start_master);
+    }
+
+    /// Consume CPU work on the single serialized wall timeline. `sink`
+    /// advances every independently clocked device for each ordered segment
+    /// and reports the PPU's current distance to its actual line boundary.
+    /// Reaching that boundary schedules the following line from the observed
+    /// absolute wall time, so a short or long line changes refresh phase.
+    ///
+    /// `sink` contract:
+    ///   mastersUntilLineBoundary() -> positive u64
+    ///   advanceHardware(masters: u32, kind: SegmentKind) -> void
+    pub fn advanceWorkOrdered(self: *Timeline, work_masters: u64, sink: anytype) void {
+        var remaining = work_masters;
+        while (remaining != 0) {
+            const line_delta: u64 = sink.mastersUntilLineBoundary();
+            std.debug.assert(line_delta != 0);
+            const line_boundary = self.wall_master + line_delta;
+            const event_master = @min(self.next_refresh_master, line_boundary);
+            const work_to_event = event_master - self.wall_master;
+
+            if (remaining < work_to_event) {
+                advanceSegment(self, sink, remaining, .cpu_work);
+                return;
+            }
+
+            if (work_to_event != 0) {
+                advanceSegment(self, sink, work_to_event, .cpu_work);
+                remaining -= work_to_event;
+            }
+
+            if (event_master == line_boundary) {
+                // advanceHardware above moved the PPU through its real line
+                // rollover. Its absolute position is the next line's origin.
+                self.beginLine(self.wall_master);
+            } else {
+                self.next_refresh_master = no_refresh_scheduled;
+                self.advanceWallThroughLines(refresh_stall_masters, sink, .dram_refresh);
+            }
+        }
+    }
+
+    /// Advance wall-only time, splitting at real PPU line rollovers. Refresh
+    /// is normally far from the boundary, but handling the crossing here
+    /// keeps the clock contract correct for every geometry the sink exposes.
+    fn advanceWallThroughLines(
+        self: *Timeline,
+        wall_masters: u64,
+        sink: anytype,
+        kind: SegmentKind,
+    ) void {
+        var remaining = wall_masters;
+        while (remaining != 0) {
+            const line_delta: u64 = sink.mastersUntilLineBoundary();
+            std.debug.assert(line_delta != 0);
+            const segment = @min(remaining, line_delta);
+            advanceSegment(self, sink, segment, kind);
+            remaining -= segment;
+            if (segment == line_delta) self.beginLine(self.wall_master);
+        }
+    }
+
+    fn advanceSegment(self: *Timeline, sink: anytype, masters: u64, kind: SegmentKind) void {
+        std.debug.assert(masters <= std.math.maxInt(u32));
+        self.wall_master += masters;
+        sink.advanceHardware(@intCast(masters), kind);
     }
 
     pub fn advanceWork(self: *Timeline, work_masters: u64) Advance {
@@ -71,6 +177,46 @@ pub const Timeline = struct {
     }
 };
 
+const RecordedSegment = struct {
+    masters: u32,
+    kind: SegmentKind,
+};
+
+const TestHardware = struct {
+    line_lengths: []const u16,
+    line_index: usize = 0,
+    in_line: u16 = 0,
+    cpu_work: u64 = 0,
+    refresh: u64 = 0,
+    segments: [16]RecordedSegment = undefined,
+    segment_count: usize = 0,
+
+    fn mastersUntilLineBoundary(self: *const TestHardware) u64 {
+        return self.line_lengths[self.line_index] - self.in_line;
+    }
+
+    fn advanceHardware(self: *TestHardware, masters: u32, kind: SegmentKind) void {
+        self.segments[self.segment_count] = .{ .masters = masters, .kind = kind };
+        self.segment_count += 1;
+        switch (kind) {
+            .cpu_work => self.cpu_work += masters,
+            .dram_refresh => self.refresh += masters,
+        }
+
+        var remaining = masters;
+        while (remaining != 0) {
+            const to_boundary: u32 = self.line_lengths[self.line_index] - self.in_line;
+            const step = @min(remaining, to_boundary);
+            self.in_line += @intCast(step);
+            remaining -= step;
+            if (self.in_line == self.line_lengths[self.line_index]) {
+                self.in_line = 0;
+                self.line_index = (self.line_index + 1) % self.line_lengths.len;
+            }
+        }
+    }
+};
+
 test "reset schedule follows 538 minus line-start master modulo eight" {
     try std.testing.expectEqual(@as(u64, 538), refreshMasterForLineStart(0));
     try std.testing.expectEqual(@as(u64, 1364 + 534), refreshMasterForLineStart(1364));
@@ -93,6 +239,116 @@ test "three SlowROM immediate loads crossing refresh consume 48 work and 88 wall
     try std.testing.expectEqual(@as(u64, 40), result.refresh_masters);
     try std.testing.expectEqual(@as(u32, 1), result.refreshes);
     try std.testing.expectEqual(@as(u64, 588), timeline.wall_master);
+}
+
+test "ordered wall clock emits CPU work and refresh to one hardware sink" {
+    const lines = [_]u16{@intCast(current_line_masters)};
+    var hardware = TestHardware{ .line_lengths = &lines, .in_line = 500 };
+    var timeline = try Timeline.restore(500, refreshMasterForLineStart(0));
+
+    timeline.advanceWorkOrdered(48, &hardware);
+
+    try std.testing.expectEqual(@as(u64, 588), timeline.wall_master);
+    try std.testing.expectEqual(@as(u64, 48), hardware.cpu_work);
+    try std.testing.expectEqual(@as(u64, 40), hardware.refresh);
+    try std.testing.expectEqual(@as(usize, 3), hardware.segment_count);
+    try std.testing.expectEqualDeep(
+        RecordedSegment{ .masters = 38, .kind = .cpu_work },
+        hardware.segments[0],
+    );
+    try std.testing.expectEqualDeep(
+        RecordedSegment{ .masters = 40, .kind = .dram_refresh },
+        hardware.segments[1],
+    );
+    try std.testing.expectEqualDeep(
+        RecordedSegment{ .masters = 10, .kind = .cpu_work },
+        hardware.segments[2],
+    );
+}
+
+test "CPU read handler and write effect occupy causal wall phases" {
+    const lines = [_]u16{@intCast(current_line_masters)};
+    try std.testing.expectEqual(@as(u32, 2), cpuReadLeadingMasters(6));
+    try std.testing.expectEqual(@as(u32, 4), cpuReadLeadingMasters(8));
+    try std.testing.expectEqual(@as(u32, 8), cpuReadLeadingMasters(12));
+
+    // A six-master I/O read beginning at 536 reaches refresh during its two
+    // leading masters. The mapped handler runs at 578, then four clocks trail.
+    var read_hardware = TestHardware{ .line_lengths = &lines, .in_line = 536 };
+    var read_timeline = try Timeline.restore(536, refreshMasterForLineStart(0));
+    const read_phases = CpuAccessPhases{ .timeline = &read_timeline };
+    read_phases.beginRead(6, &read_hardware);
+    const handler_master = read_timeline.wall_master;
+    read_phases.finishRead(&read_hardware);
+    try std.testing.expectEqual(@as(u64, 578), handler_master);
+    try std.testing.expectEqual(@as(u64, 582), read_timeline.wall_master);
+
+    // Starting two clocks earlier puts the handler before refresh. Only the
+    // trailing phase stalls, which a callback-minus-four projection misses.
+    var trailing_hardware = TestHardware{ .line_lengths = &lines, .in_line = 534 };
+    var trailing_timeline = try Timeline.restore(534, refreshMasterForLineStart(0));
+    const trailing_phases = CpuAccessPhases{ .timeline = &trailing_timeline };
+    trailing_phases.beginRead(6, &trailing_hardware);
+    const earlier_handler = trailing_timeline.wall_master;
+    trailing_phases.finishRead(&trailing_hardware);
+    try std.testing.expectEqual(@as(u64, 536), earlier_handler);
+    try std.testing.expectEqual(@as(u64, 580), trailing_timeline.wall_master);
+
+    // A write effect occurs only after the complete access and any refresh
+    // reached by it has advanced the independently clocked hardware.
+    var write_hardware = TestHardware{ .line_lengths = &lines, .in_line = 536 };
+    var write_timeline = try Timeline.restore(536, refreshMasterForLineStart(0));
+    const write_phases = CpuAccessPhases{ .timeline = &write_timeline };
+    write_phases.beforeWrite(6, &write_hardware);
+    try std.testing.expectEqual(@as(u64, 582), write_timeline.wall_master);
+}
+
+test "internal instruction work advances before its architectural effect" {
+    const lines = [_]u16{@intCast(current_line_masters)};
+    var hardware = TestHardware{ .line_lengths = &lines, .in_line = 536 };
+    var timeline = try Timeline.restore(536, refreshMasterForLineStart(0));
+    const phases = CpuAccessPhases{ .timeline = &timeline };
+
+    phases.beforeInternalEffect(6, &hardware);
+    try std.testing.expectEqual(@as(u64, 582), timeline.wall_master);
+    try std.testing.expectEqual(@as(u64, 6), hardware.cpu_work);
+    try std.testing.expectEqual(@as(u64, 40), hardware.refresh);
+}
+
+test "actual short-line rollover determines the next refresh phase" {
+    const lines = [_]u16{ 1360, 1364 };
+    var hardware = TestHardware{
+        .line_lengths = &lines,
+        .in_line = 1350,
+    };
+    var timeline = try Timeline.restore(1350, no_refresh_scheduled);
+
+    timeline.advanceWorkOrdered(548, &hardware);
+
+    // Ten work clocks reach the actual 1360-master boundary. The following
+    // line schedules at local H=538, reached by the remaining 538 work clocks.
+    try std.testing.expectEqual(@as(u64, 1938), timeline.wall_master);
+    try std.testing.expectEqual(@as(u64, 548), hardware.cpu_work);
+    try std.testing.expectEqual(@as(u64, 40), hardware.refresh);
+    try std.testing.expectEqual(@as(usize, 1), hardware.line_index);
+    try std.testing.expectEqual(@as(u16, 578), hardware.in_line);
+}
+
+test "wall-only refresh time also observes a line rollover" {
+    // Deliberately tiny synthetic geometry forces the refresh stall itself
+    // across a boundary, exercising the generic ordered-wall contract.
+    const lines = [_]u16{ 560, 600 };
+    var hardware = TestHardware{ .line_lengths = &lines, .in_line = 536 };
+    var timeline = try Timeline.restore(536, refreshMasterForLineStart(0));
+
+    timeline.advanceWorkOrdered(2, &hardware);
+
+    try std.testing.expectEqual(@as(u64, 578), timeline.wall_master);
+    try std.testing.expectEqual(@as(u64, 2), hardware.cpu_work);
+    try std.testing.expectEqual(@as(u64, 40), hardware.refresh);
+    try std.testing.expectEqual(@as(usize, 1), hardware.line_index);
+    try std.testing.expectEqual(@as(u16, 18), hardware.in_line);
+    try std.testing.expectEqual(refreshMasterForLineStart(560), timeline.next_refresh_master);
 }
 
 test "work ending on refresh start pays the stall before completing" {
