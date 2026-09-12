@@ -23,14 +23,19 @@ Clean Mesen2 source revision
 - every CPU and DMA clock advance passes through `Exec`, so a crossing is a
   wall-clock event rather than an opcode-specific surcharge.
 
-Because one scanline is 1,364 masters, line starts alternate modulo eight.
-Refresh therefore starts at H-clock 538 on even lines and 534 on odd lines;
-every absolute refresh start is congruent to 2 modulo 8. The 262-line frame is
-divisible by eight masters, so the same phase repeats next frame.
+In the current fixed 1,364-master, 262-line PPU profile, line starts alternate
+modulo eight. Refresh therefore starts at H-clock 538 on even lines and 534 on
+odd lines, and the same local pattern repeats next frame. This is a property of
+that profile, not a general hardware geometry rule. A 1,360-master short line
+changes the following line's local refresh position by four clocks; an
+interlace field can also contain 263 lines. The prototype therefore computes
+each event from an observed absolute line start rather than a line index or
+frame period.
 
 ## Executable scheduler
 
-`src/refresh_timing.zig` models the smallest reusable contract:
+`src/refresh_timing.zig` models the smallest reusable contract. The owner
+calls `beginLine(actual_line_start_master)` at each PPU boundary:
 
 ```text
 Timeline { wall_master, next_refresh_master }
@@ -45,7 +50,8 @@ event already consumed.
 
 The unit tests establish:
 
-- the 538/534 alternating reset schedule and frame wrap;
+- the current profile's 538/534 schedule, plus a short-line boundary that
+  changes the next local H-clock without resetting global wall phase;
 - the existing three-`LDA #$00` fixture's 48 work masters become 88 wall
   masters from H-clock 500;
 - 38 work masters ending exactly at the first event consume 78 wall masters;
@@ -54,7 +60,8 @@ The unit tests establish:
   its four trailing masters, where the callback is 44 rather than four wall
   masters after the handler;
 - a DMA-like span uses the same scheduler and crosses refresh normally;
-- restoring `{ wall_master, next_refresh_master }` replays the same decision.
+- restoring `{ wall_master, next_refresh_master }` replays the same decision,
+  while a malformed already-past event is rejected in release builds.
 
 These tests falsify a per-frame total, per-instruction flat surcharge, or a
 callback-minus-four rule.
