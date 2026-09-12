@@ -44,6 +44,7 @@ pub const Emulator = struct {
     // Research-stage serialized wall owner. It is connected explicitly only
     // by bounded fixtures until interrupt sampling and state replay migrate.
     refresh_timeline: RefreshTimeline,
+    ordered_last_cpu_cycle_start: u64,
 
     /// Capture-only input recorder; see `recordInputs`. Deliberately NOT
     /// part of the savestate: a snapshot captures the machine, not the
@@ -62,6 +63,7 @@ pub const Emulator = struct {
             .bus = undefined,
             .last_scanline = 0,
             .refresh_timeline = RefreshTimeline.reset(),
+            .ordered_last_cpu_cycle_start = 0,
         };
     }
 
@@ -82,6 +84,7 @@ pub const Emulator = struct {
         self.bus.dsp_accum = 0;
         self.last_scanline = 0;
         self.refresh_timeline = RefreshTimeline.reset();
+        self.ordered_last_cpu_cycle_start = 0;
         // Note: APU ports (apu_out) keep their boot signature ($AA, $BB)
         // This is correct - APU reset would reinitialize them, not clear them
     }
@@ -133,6 +136,7 @@ pub const Emulator = struct {
         self.exec_trace.record(self.ppu.writer_pc);
 
         const instruction_start = absolutePpuMaster(&self.ppu);
+        self.ordered_last_cpu_cycle_start = instruction_start;
         self.bus.beginCpuInstruction();
         const cycles = self.cpu.step();
 
@@ -165,14 +169,29 @@ pub const Emulator = struct {
             // the legacy aggregate.
             std.debug.assert(dma_extra == 0);
             const trailing_internal = internal -| self.cpu.internal_flushed;
-            self.bus.advanceCpuPhase(trailing_internal * 6, .internal_trailing);
+            for (0..trailing_internal) |_| {
+                self.bus.advanceCpuPhase(6, .internal_trailing);
+            }
             const instruction_end = absolutePpuMaster(&self.ppu);
             std.debug.assert(instruction_end == self.refresh_timeline.wall_master);
 
-            // Interrupt acceptance still needs the later pre-final-cycle
-            // stage. Keep this mode limited to an interrupt-free fixture.
-            std.debug.assert((self.bus.nmitimen & 0xB0) == 0);
+            const sample_master = self.ordered_last_cpu_cycle_start;
+            if (self.cpu.nmi_latched or self.bus.nmiEdgeInRange(instruction_start, sample_master)) {
+                self.cpu.triggerNmi();
+            }
+            const irq_at_sample = self.bus.irqLineAt(sample_master);
+            if (irq_at_sample) {
+                self.cpu.wakeFromIrqLine();
+                if (!self.cpu.irq_sample_i) self.cpu.triggerIrq();
+            }
+
             self.bus.syncInterruptFlagsTo(instruction_end);
+            if (!irq_at_sample and self.bus.irqLineAt(instruction_end)) {
+                self.cpu.wakeFromIrqLine();
+            }
+            if (self.bus.nmiEdgeInRange(sample_master, instruction_end)) {
+                self.cpu.latchNmi();
+            }
             return;
         }
 
@@ -273,6 +292,7 @@ pub const Emulator = struct {
             self.emu.ppu.tick(masters);
             self.emu.bus.runApu(masters);
             self.emu.bus.tickDsp(masters);
+            self.emu.bus.syncInterruptFlagsTo(absolutePpuMaster(&self.emu.ppu));
         }
     };
 
@@ -281,8 +301,11 @@ pub const Emulator = struct {
         masters: u32,
         phase: refresh_timing.CpuPhase,
     ) void {
-        _ = phase;
         const self: *Emulator = @ptrCast(@alignCast(context));
+        switch (phase) {
+            .read_trailing => {},
+            else => self.ordered_last_cpu_cycle_start = self.refresh_timeline.wall_master,
+        }
         var sink = OrderedClockSink{ .emu = self };
         self.refresh_timeline.advanceWorkOrdered(masters, &sink);
     }
@@ -294,8 +317,8 @@ pub const Emulator = struct {
     }
 
     /// Connect actual CPU and DMA execution to the ordered wall owner for the
-    /// bounded interrupt-free fixtures. Production remains aggregate until
-    /// interrupt sampling and state replay complete the migration.
+    /// bounded fixtures. Production remains aggregate until state replay and
+    /// broader oracle checks complete the migration.
     fn enableOrderedClockFixture(self: *Emulator) void {
         const wall = absolutePpuMaster(&self.ppu);
         const in_line = @as(u64, self.ppu.dot) * master_cycles_per_dot + self.ppu.master_accum;
@@ -1272,6 +1295,7 @@ test "audited implied phases advance before effects on the ordered owner" {
     try std.testing.expectEqual(@as(u8, 1), clc.cpu.mem_accesses);
     try std.testing.expectEqual(@as(u32, 1), clc.cpu.internal_flushed);
     try std.testing.expectEqual(@as(u32, 6), clc.cpu.finalCycleMasters());
+    try std.testing.expectEqual(@as(u64, 536), clc.ordered_last_cpu_cycle_start);
     try std.testing.expectEqual(@as(u64, 582), clc.refresh_timeline.wall_master);
 
     var xba = Emulator.init();
@@ -1290,4 +1314,46 @@ test "audited implied phases advance before effects on the ordered owner" {
     try std.testing.expectEqual(@as(u32, 2), xba.cpu.internal_flushed);
     try std.testing.expectEqual(@as(u32, 6), xba.cpu.finalCycleMasters());
     try std.testing.expectEqual(@as(u64, 520), xba.refresh_timeline.wall_master);
+}
+
+test "ordered interrupt sampling distinguishes pre-final and final-cycle edges" {
+    var irq = Emulator.init();
+    irq.setup();
+    irq.cpu.pc = 0;
+    irq.cpu.p.i = false;
+    irq.bus.wram[0] = 0xA9; // LDA #$00, two eight-master accesses
+    irq.bus.wram[1] = 0x00;
+    irq.bus.nmitimen = 0x10; // H-IRQ
+    irq.bus.htime = 0; // timer output at local H-clock 10
+    irq.ppu.dot = 1; // instruction begins at H-clock 4
+    irq.enableOrderedClockFixture();
+    irq.step();
+
+    // The timer rises during the opcode access at 10. The operand/final CPU
+    // cycle starts at 12, so IRQ is accepted for the next boundary.
+    try std.testing.expectEqual(@as(u64, 12), irq.ordered_last_cpu_cycle_start);
+    try std.testing.expect(irq.bus.irqLineAt(irq.ordered_last_cpu_cycle_start));
+    try std.testing.expect(irq.cpu.irq_pending);
+
+    var nmi = Emulator.init();
+    nmi.setup();
+    nmi.cpu.pc = 0;
+    nmi.cpu.a = 0x80;
+    nmi.bus.wram[0] = 0x8D; // STA $4200; enable NMI in final access
+    nmi.bus.wram[1] = 0x00;
+    nmi.bus.wram[2] = 0x42;
+    nmi.ppu.scanline = 225;
+    nmi.ppu.dot = 100;
+    nmi.bus.nmi_flag = true;
+    nmi.enableOrderedClockFixture();
+    nmi.step();
+
+    // The write's immediate NMI edge is at its end, after the sample at the
+    // access start. It is latched rather than accepted by this instruction.
+    try std.testing.expect(!nmi.cpu.nmi_pending);
+    try std.testing.expect(nmi.cpu.nmi_latched);
+    try std.testing.expectEqual(
+        @as(u64, 225 * 1364 + 100 * 4 + 24),
+        nmi.ordered_last_cpu_cycle_start,
+    );
 }

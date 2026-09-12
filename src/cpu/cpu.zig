@@ -386,7 +386,12 @@ pub const Cpu = struct {
         // already flushed.
         const internal: u32 = @as(u32, self.cycles) - self.mem_accesses - self.internal_flushed;
         if (self.bus.orderedClockConnected()) {
-            self.bus.advanceCpuPhase(internal * 6, .internal_before_access);
+            // One callback per CPU cycle preserves the exact start of the
+            // final cycle for interrupt sampling, even when refresh or HDMA
+            // stretches an earlier cycle's wall span.
+            for (0..internal) |_| {
+                self.bus.advanceCpuPhase(6, .internal_before_access);
+            }
         } else {
             self.bus.tickDsp(internal * 6);
         }

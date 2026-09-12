@@ -235,6 +235,16 @@ The remaining integration contract is:
   resumes without deriving whether an exact-boundary event already fired.
 
 The ordered primitive and opt-in CPU/DMA fixtures are the reviewed boundary for
-that refactor. Exact pre-final-cycle interrupt sampling and serialized replay
-remain before the default runtime can switch over. Until then, the branch is a
-research candidate and must not replace the canonical oracle pin.
+that refactor. The opt-in path now also records the wall start of each real CPU
+cycle. A read records before its leading phase and retains that value through
+the trailing four clocks; internal cycles are emitted individually. Root uses
+the final recorded start as the 65816 interrupt sample, so refresh or HDMA can
+stretch the final cycle without moving the sample to `instruction_end - 6`.
+Hardware segments synchronize timer/NMI edges as they occur. Tests accept an
+H-IRQ that rises before the final access, latch an immediate `$4200` NMI edge
+at the end of the final access, and retain a sample at 536 when refresh stretches
+a final internal cycle through wall 582.
+
+Serialized replay remains before the default runtime can switch over. Until
+then, the branch is a research candidate and must not replace the canonical
+oracle pin.
