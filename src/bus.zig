@@ -34,6 +34,7 @@ const dbg = @import("debug.zig");
 const CpuClockPhase = @import("refresh_timing.zig").CpuPhase;
 
 const OrderedClockAdvanceFn = *const fn (*anyopaque, u32, CpuClockPhase) void;
+const OrderedDmaAdvanceFn = *const fn (*anyopaque, u32) void;
 
 const line_masters: u64 = @as(u64, @import("ppu/ppu.zig").DOTS_PER_SCANLINE) *
     @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT;
@@ -330,10 +331,11 @@ pub const Bus = struct {
     dma_masters: u32 = 0,
 
     // Optional execution-ordered clock connection. The canonical runtime
-    // remains on the aggregate path until DMA/HDMA and interrupt sampling
-    // migrate; the no-DMA CPU fixture installs this callback explicitly.
+    // remains on the aggregate path until interrupt sampling and state replay
+    // migrate; bounded CPU/DMA fixtures install these callbacks explicitly.
     ordered_clock_context: ?*anyopaque = null,
     ordered_clock_advance: ?OrderedClockAdvanceFn = null,
+    ordered_dma_advance: ?OrderedDmaAdvanceFn = null,
 
     // End-of-access timestamp projected from the PPU's last committed beam
     // position. CPU access helpers supply the cumulative instruction time;
@@ -370,9 +372,11 @@ pub const Bus = struct {
         self: *Bus,
         context: *anyopaque,
         advance: OrderedClockAdvanceFn,
+        advance_dma: OrderedDmaAdvanceFn,
     ) void {
         self.ordered_clock_context = context;
         self.ordered_clock_advance = advance;
+        self.ordered_dma_advance = advance_dma;
         self.ppu_cpu_timing_base = 0;
         self.ppu_write_timing_offset = 0;
         self.ppu.setWriteTimingOffset(0);
@@ -513,6 +517,10 @@ pub const Bus = struct {
     /// global, per-channel, and indirect-pointer overhead during which the CPU
     /// is paused but the PPU, APU, and cartridge coprocessor keep running.
     pub fn tickDmaMasters(self: *Bus, masters: u32) void {
+        if (self.ordered_dma_advance) |advance| {
+            advance(self.ordered_clock_context.?, masters);
+            return;
+        }
         self.dma_masters += masters;
         self.ppu_write_timing_offset += masters;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);

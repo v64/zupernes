@@ -26,6 +26,7 @@ pub const Advance = struct {
 
 pub const SegmentKind = enum {
     cpu_work,
+    dma_work,
     dram_refresh,
 };
 
@@ -111,23 +112,44 @@ pub const Timeline = struct {
     ///
     /// `sink` contract:
     ///   mastersUntilLineBoundary() -> positive u64
+    ///   mastersUntilExternalEvent() -> ?u64 (strictly positive when present)
     ///   advanceHardware(masters: u32, kind: SegmentKind) -> void
+    ///   dispatchExternalEvent() -> void
     pub fn advanceWorkOrdered(self: *Timeline, work_masters: u64, sink: anytype) void {
+        self.advanceWorkOrderedAs(work_masters, sink, .cpu_work);
+    }
+
+    pub fn advanceDmaWorkOrdered(self: *Timeline, work_masters: u64, sink: anytype) void {
+        self.advanceWorkOrderedAs(work_masters, sink, .dma_work);
+    }
+
+    fn advanceWorkOrderedAs(
+        self: *Timeline,
+        work_masters: u64,
+        sink: anytype,
+        work_kind: SegmentKind,
+    ) void {
         var remaining = work_masters;
         while (remaining != 0) {
             const line_delta: u64 = sink.mastersUntilLineBoundary();
             std.debug.assert(line_delta != 0);
             const line_boundary = self.wall_master + line_delta;
-            const event_master = @min(self.next_refresh_master, line_boundary);
+            const external_delta = sink.mastersUntilExternalEvent();
+            if (external_delta) |delta| std.debug.assert(delta != 0);
+            const external_master = if (external_delta) |delta|
+                self.wall_master + delta
+            else
+                no_refresh_scheduled;
+            const event_master = @min(@min(self.next_refresh_master, line_boundary), external_master);
             const work_to_event = event_master - self.wall_master;
 
             if (remaining < work_to_event) {
-                advanceSegment(self, sink, remaining, .cpu_work);
+                advanceSegment(self, sink, remaining, work_kind);
                 return;
             }
 
             if (work_to_event != 0) {
-                advanceSegment(self, sink, work_to_event, .cpu_work);
+                advanceSegment(self, sink, work_to_event, work_kind);
                 remaining -= work_to_event;
             }
 
@@ -136,8 +158,12 @@ pub const Timeline = struct {
                 // rollover. Its absolute position is the next line's origin.
                 self.beginLine(self.wall_master);
             } else {
-                self.next_refresh_master = no_refresh_scheduled;
-                self.advanceWallThroughLines(refresh_stall_masters, sink, .dram_refresh);
+                if (event_master == self.next_refresh_master) {
+                    self.next_refresh_master = no_refresh_scheduled;
+                    self.advanceWallThroughLines(refresh_stall_masters, sink, .dram_refresh);
+                } else {
+                    sink.dispatchExternalEvent();
+                }
             }
         }
     }
@@ -201,6 +227,7 @@ const TestHardware = struct {
     line_index: usize = 0,
     in_line: u16 = 0,
     cpu_work: u64 = 0,
+    dma_work: u64 = 0,
     refresh: u64 = 0,
     segments: [16]RecordedSegment = undefined,
     segment_count: usize = 0,
@@ -209,11 +236,22 @@ const TestHardware = struct {
         return self.line_lengths[self.line_index] - self.in_line;
     }
 
+    fn mastersUntilExternalEvent(self: *const TestHardware) ?u64 {
+        _ = self;
+        return null;
+    }
+
+    fn dispatchExternalEvent(self: *TestHardware) void {
+        _ = self;
+        unreachable;
+    }
+
     fn advanceHardware(self: *TestHardware, masters: u32, kind: SegmentKind) void {
         self.segments[self.segment_count] = .{ .masters = masters, .kind = kind };
         self.segment_count += 1;
         switch (kind) {
             .cpu_work => self.cpu_work += masters,
+            .dma_work => self.dma_work += masters,
             .dram_refresh => self.refresh += masters,
         }
 
@@ -406,6 +444,15 @@ test "read handler and callback remain distinct around a refresh" {
 }
 
 test "DMA-like work uses the same bus timeline and actual line boundaries" {
+    const lines = [_]u16{@intCast(current_line_masters)};
+    var hardware = TestHardware{ .line_lengths = &lines, .in_line = 520 };
+    var ordered_dma = try Timeline.restore(520, refreshMasterForLineStart(0));
+    ordered_dma.advanceDmaWorkOrdered(64, &hardware);
+    try std.testing.expectEqual(@as(u64, 624), ordered_dma.wall_master);
+    try std.testing.expectEqual(@as(u64, 0), hardware.cpu_work);
+    try std.testing.expectEqual(@as(u64, 64), hardware.dma_work);
+    try std.testing.expectEqual(@as(u64, 40), hardware.refresh);
+
     var dma = try Timeline.restore(520, refreshMasterForLineStart(0));
     const dma_result = dma.advanceWork(64);
     try std.testing.expectEqual(@as(u64, 104), dma_result.wall_elapsed);

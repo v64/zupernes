@@ -4,8 +4,8 @@ This branch starts from the canonical ZuperNES pin
 `e17dc5e3f68b417db8351b091885c4af921a2b3d`. It adds a copyright-free timing
 prototype and independent Mesen probe. It does not wire refresh into the live
 default emulator path, change an oracle pin, or claim the broader CPU clock
-model is ready. An explicit no-DMA fixture does run the actual CPU through the
-candidate owner; normal execution retains the pinned aggregate clock path.
+model is ready. Explicit fixtures run the actual CPU and DMA/HDMA paths through
+the candidate owner; normal execution retains the pinned aggregate clock path.
 
 ## Required hardware event
 
@@ -93,7 +93,7 @@ fixture, refresh on either side of a six-master read handler, a write crossing,
 an internal cycle crossing, and a 1,360-master short-line rollover.
 
 The same phase boundary is connected to actual `Cpu` execution behind the
-fixture-only `enableOrderedClockNoDmaFixture`. CPU read helpers advance leading
+fixture-only `enableOrderedClockFixture`. CPU read helpers advance leading
 clocks, invoke the real mapped handler, then advance four trailing clocks;
 writes advance their complete access first. The callback advances the PPU,
 APU, and DSP through each ordered work or refresh segment. In this mode
@@ -102,8 +102,8 @@ without running its aggregate clock path, which proves clocks are not counted
 twice. Runtime tests execute the three-`LDA` fixture from wall master 500 and
 observe 48 CPU-work masters as wall 588, execute `BIT $4212` across active to
 HBlank and observe the returned flag from handler time, and journal a `$2100`
-write after its access crosses refresh. DMA and interrupt-enabled execution are
-asserted outside this fixture's scope.
+write after its access crosses refresh. Interrupt-enabled execution remains
+asserted outside this fixture's scope; DMA is exercised in the next stage.
 
 A separate copyright-free audit at the canonical pin ran 540 cases: 27
 implied/register opcodes at SlowROM and FastROM in emulation mode and all four
@@ -158,7 +158,8 @@ execution-ordered hardware advancement. `Emulator` owns wall time and event
 dispatch; CPU access and internal phases request work from that owner; DMA and
 HDMA must consume the same timeline; and PPU, APU, DSP, interrupt logic, and
 write journals must observe its ordered segments. Aggregate clocks are removed
-from each execution path as that path migrates.
+from each execution path as that path migrates. This ownership decision is
+approved; the remaining stages do not await another architecture choice.
 
 The staged scope is:
 
@@ -166,8 +167,32 @@ The staged scope is:
 2. general DMA, HDMA, and hardware-event dispatch on the same owner;
 3. exact interrupt sampling, audio/state replay, and serialized refresh state.
 
-The first item is implemented only behind the explicit fixture connection.
-The canonical pin remains held until all stages and independent checks pass.
+The first two items are implemented only behind the explicit fixture
+connection. The canonical pin remains held until all stages and independent
+checks pass.
+
+### DMA/HDMA event stage
+
+The ordered scheduler asks its sink for the next hardware-event distance in
+addition to refresh and line rollover. CPU work stops exactly at that event;
+the sink marks it consumed before dispatch and DMA advances the same timeline
+reentrantly as `dma_work`. Refresh reached during that DMA work advances the
+same PPU/APU/DSP sink. No `dma_masters` aggregate remains for root to add later.
+
+Two actual-runtime fixtures exercise the causal order:
+
+- a one-byte general DMA begins at wall 536, reaches refresh at 538 during its
+  eight transfer masters, and writes `$2100` at wall 584;
+- CPU work reaches the established ZuperNES H=278 HDMA event, the current
+  explicit 18+8+8-master transfer executes on the owner, and the `$2100` write
+  is journaled at local H-clock 1146 before the interrupted CPU work finishes.
+
+Mesen's `SnesMemoryManager::Exec` is used by CPU and DMA clock advances and
+dispatches refresh/HDMA from that common stream. Its DMA controller also calls
+`ProcessPendingTransfers` while general DMA runs. This independently supports
+the shared, reentrant event shape. These fixtures preserve ZuperNES's existing
+DMA/HDMA cost constants; they establish scheduling and refresh crossing, not a
+fresh proof that every transfer overhead or arbitration edge is complete.
 
 An exact runtime change is broader than adding 40 to `Emulator.step`.
 The current pin executes a complete CPU instruction and its bus side effects
@@ -205,7 +230,7 @@ The remaining integration contract is:
 - savestate magic/length changes and captures `next_refresh_master`; restore
   resumes without deriving whether an exact-boundary event already fired.
 
-The ordered primitive and opt-in CPU fixture are the reviewed boundary for that
-refactor. The next stage must connect DMA/HDMA event dispatch before the default
-runtime switches over. Until then, the branch remains a research candidate:
-enabling it for a game could let CPU accesses pass undispatched HDMA events.
+The ordered primitive and opt-in CPU/DMA fixtures are the reviewed boundary for
+that refactor. Exact pre-final-cycle interrupt sampling and serialized replay
+remain before the default runtime can switch over. Until then, the branch is a
+research candidate and must not replace the canonical oracle pin.

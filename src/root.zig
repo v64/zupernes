@@ -42,8 +42,7 @@ pub const Emulator = struct {
     last_scanline: u16,
 
     // Research-stage serialized wall owner. It is connected explicitly only
-    // by the no-DMA CPU fixture until DMA/HDMA and interrupt sampling migrate
-    // to the same dispatcher.
+    // by bounded fixtures until interrupt sampling and state replay migrate.
     refresh_timeline: RefreshTimeline,
 
     /// Capture-only input recorder; see `recordInputs`. Deliberately NOT
@@ -160,10 +159,10 @@ pub const Emulator = struct {
         const master: u32 = self.cpu.mem_masters + internal * 6;
 
         if (self.bus.orderedClockConnected()) {
-            // This first live stage is deliberately bounded to an access-only,
-            // no-DMA fixture. Accesses and flushed internal phases have already
-            // advanced the wall owner in execution order. Only CPU internal
-            // work left after the last access remains.
+            // Accesses, DMA, and flushed internal phases have already advanced
+            // the wall owner in execution order. Only CPU internal work left
+            // after the last access remains. Ordered DMA never accumulates in
+            // the legacy aggregate.
             std.debug.assert(dma_extra == 0);
             const trailing_internal = internal -| self.cpu.internal_flushed;
             self.bus.advanceCpuPhase(trailing_internal * 6, .internal_trailing);
@@ -233,13 +232,36 @@ pub const Emulator = struct {
         }
     }
 
+    const HdmaEventKind = enum { init, transfer };
+
     const OrderedClockSink = struct {
         emu: *Emulator,
+        pending_hdma: ?HdmaEventKind = null,
 
         pub fn mastersUntilLineBoundary(self: *const OrderedClockSink) u64 {
             const in_line = @as(u64, self.emu.ppu.dot) * master_cycles_per_dot +
                 self.emu.ppu.master_accum;
             return masters_per_line - in_line;
+        }
+
+        pub fn mastersUntilExternalEvent(self: *OrderedClockSink) ?u64 {
+            const event = self.emu.nextHdmaEvent();
+            self.pending_hdma = event.kind;
+            return event.masters_until;
+        }
+
+        pub fn dispatchExternalEvent(self: *OrderedClockSink) void {
+            const kind = self.pending_hdma.?;
+            // Mark the event consumed before DMA advances this same timeline
+            // reentrantly. nextHdmaEvent is strictly after the committed beam.
+            self.pending_hdma = null;
+            self.emu.bus.beginStandaloneDma();
+            switch (kind) {
+                .init => self.emu.bus.dma.initHdma(&self.emu.bus),
+                .transfer => if (self.emu.bus.hdmaen != 0) {
+                    self.emu.bus.dma.runHdma(&self.emu.bus);
+                },
+            }
         }
 
         pub fn advanceHardware(
@@ -265,21 +287,27 @@ pub const Emulator = struct {
         self.refresh_timeline.advanceWorkOrdered(masters, &sink);
     }
 
-    /// Connect actual CPU access execution to the ordered wall owner for the
-    /// bounded interrupt-free, no-DMA fixture. Production remains aggregate
-    /// until the later event-dispatch stages remove every double-count path.
-    fn enableOrderedClockNoDmaFixture(self: *Emulator) void {
+    fn advanceOrderedDmaClock(context: *anyopaque, masters: u32) void {
+        const self: *Emulator = @ptrCast(@alignCast(context));
+        var sink = OrderedClockSink{ .emu = self };
+        self.refresh_timeline.advanceDmaWorkOrdered(masters, &sink);
+    }
+
+    /// Connect actual CPU and DMA execution to the ordered wall owner for the
+    /// bounded interrupt-free fixtures. Production remains aggregate until
+    /// interrupt sampling and state replay complete the migration.
+    fn enableOrderedClockFixture(self: *Emulator) void {
         const wall = absolutePpuMaster(&self.ppu);
         const in_line = @as(u64, self.ppu.dot) * master_cycles_per_dot + self.ppu.master_accum;
         const line_start = wall - in_line;
         const refresh = refresh_timing.refreshMasterForLineStart(line_start);
         const next_refresh = if (refresh >= wall) refresh else refresh_timing.no_refresh_scheduled;
         self.refresh_timeline = RefreshTimeline.restore(wall, next_refresh) catch unreachable;
-        self.bus.connectOrderedClock(self, advanceOrderedClock);
+        self.bus.connectOrderedClock(self, advanceOrderedClock, advanceOrderedDmaClock);
     }
 
     const HdmaEvent = struct {
-        kind: enum { init, transfer },
+        kind: HdmaEventKind,
         masters_until: u32,
     };
 
@@ -1104,7 +1132,7 @@ test "actual CPU SlowROM accesses cross refresh on the ordered wall owner" {
     flat[0x8005] = 0x33;
 
     emu.ppu.dot = 125; // absolute master 500
-    emu.enableOrderedClockNoDmaFixture();
+    emu.enableOrderedClockFixture();
     emu.step();
     emu.step();
     emu.step();
@@ -1129,7 +1157,7 @@ test "actual CPU mapped read runs after its leading access clocks" {
     // Three eight-master fetches followed by two leading I/O masters put the
     // handler at H=274 residual 2. Instruction start is still active display.
     emu.ppu.dot = 268;
-    emu.enableOrderedClockNoDmaFixture();
+    emu.enableOrderedClockFixture();
     emu.step();
 
     try std.testing.expect(emu.cpu.p.v);
@@ -1149,11 +1177,72 @@ test "actual CPU mapped write takes effect after its complete access" {
     // The three Slow/WRAM fetch accesses end at 536. The six-master write
     // reaches refresh at 538, so its effect is journaled at wall master 582.
     emu.ppu.dot = 128;
-    emu.enableOrderedClockNoDmaFixture();
+    emu.enableOrderedClockFixture();
     emu.step();
 
     try std.testing.expectEqual(@as(u8, 0x0F), emu.ppu.inidisp);
     try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
     try std.testing.expectEqual(@as(u16, 145), emu.ppu.render_events[0].dot);
     try std.testing.expectEqual(@as(u64, 582), emu.refresh_timeline.wall_master);
+}
+
+test "general DMA work crosses refresh on the same ordered wall owner" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.cpu.pc = 0;
+    emu.cpu.a = 0x01;
+    emu.bus.wram[0] = 0x8D; // STA $420B: start DMA channel 0
+    emu.bus.wram[1] = 0x0B;
+    emu.bus.wram[2] = 0x42;
+    emu.bus.wram[0x0100] = 0x0F;
+    emu.bus.dma.writeRegister(0x4300, 0x00); // A -> B, mode 0
+    emu.bus.dma.writeRegister(0x4301, 0x00); // $2100 INIDISP
+    emu.bus.dma.writeRegister(0x4302, 0x00);
+    emu.bus.dma.writeRegister(0x4303, 0x01);
+    emu.bus.dma.writeRegister(0x4304, 0x00);
+    emu.bus.dma.writeRegister(0x4305, 0x01);
+    emu.bus.dma.writeRegister(0x4306, 0x00);
+
+    // STA's mapped-write handler runs at 536. The byte's eight DMA clocks
+    // cross refresh at 538; its PPU write therefore occurs at wall 584.
+    emu.ppu.dot = 126;
+    emu.ppu.master_accum = 2;
+    emu.enableOrderedClockFixture();
+    emu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x0F), emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
+    try std.testing.expectEqual(@as(u16, 146), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u64, 584), emu.refresh_timeline.wall_master);
+    try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
+}
+
+test "HDMA event and transfer work interrupt CPU work on the ordered owner" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.cpu.pc = 0;
+    emu.bus.wram[0] = 0xA9; // LDA #$00: sixteen CPU-work masters
+    emu.bus.wram[1] = 0x00;
+    emu.bus.wram[0x0100] = 0x07;
+    emu.bus.write(0, 0x420C, 0x01);
+    emu.bus.dma.writeRegister(0x4300, 0x00); // direct A -> B, mode 0
+    emu.bus.dma.writeRegister(0x4301, 0x00); // $2100 INIDISP
+    emu.bus.dma.writeRegister(0x4308, 0x00);
+    emu.bus.dma.writeRegister(0x4309, 0x01);
+    emu.bus.dma.writeRegister(0x430A, 0x82); // transfer, then one repeat line
+    emu.bus.dma.channels[0].hdma_do_transfer = true;
+
+    // Starting at line 1 H=275 leaves twelve CPU-work masters to the H=278
+    // event. Current explicit HDMA costs add 18+8+8 masters, then the final
+    // four CPU clocks complete at local H-clock 1150.
+    emu.ppu.scanline = 1;
+    emu.ppu.dot = 275;
+    emu.enableOrderedClockFixture();
+    emu.step();
+
+    try std.testing.expectEqual(@as(u8, 0x07), emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
+    try std.testing.expectEqual(@as(u16, 286), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u64, 1364 + 1150), emu.refresh_timeline.wall_master);
+    try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
 }
