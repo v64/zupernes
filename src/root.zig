@@ -12,6 +12,7 @@ pub const Cartridge = @import("cartridge.zig").Cartridge;
 pub const Dma = @import("dma.zig").Dma;
 pub const Spc700 = @import("apu/spc700.zig").Spc700;
 pub const movie = @import("movie.zig");
+pub const RefreshTimeline = @import("refresh_timing.zig").Timeline;
 
 const zupernes_dots_per_line = @import("ppu/ppu.zig").DOTS_PER_SCANLINE;
 const zupernes_lines_per_frame = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
