@@ -103,11 +103,11 @@ pub const Cpu = struct {
     nmi_latched: bool,
     irq_pending: bool,
 
-    // Duration of the most recent bus-access cycle. This is transient
-    // instruction bookkeeping: Emulator.step() uses it immediately to place
-    // the interrupt sample before the final CPU cycle, and Cpu.step() resets
-    // it before executing the next instruction.
-    last_access_masters: u8,
+    // Duration of the most recent access or explicitly timed internal phase.
+    // This is transient instruction bookkeeping: Emulator.step() uses it to
+    // place the interrupt sample before the final CPU cycle, and Cpu.step()
+    // resets it before executing the next instruction.
+    last_timed_phase_masters: u8,
     // I-flag value seen by the interrupt check before the final CPU cycle.
     // CLI/SEI/PLP/REP/SEP change I during that final cycle, so this can differ
     // from the architectural P value left at the instruction boundary.
@@ -143,7 +143,7 @@ pub const Cpu = struct {
             .nmi_pending = false,
             .nmi_latched = false,
             .irq_pending = false,
-            .last_access_masters = 6,
+            .last_timed_phase_masters = 6,
             .irq_sample_i = true,
             .waiting = false,
             .wai_resume_cycles = 0,
@@ -208,7 +208,7 @@ pub const Cpu = struct {
         self.mem_masters = 0;
         self.mem_accesses = 0;
         self.internal_flushed = 0;
-        self.last_access_masters = 6;
+        self.last_timed_phase_masters = 6;
         self.irq_sample_i = self.p.i;
 
         if (self.wai_resume_cycles != 0) {
@@ -305,12 +305,12 @@ pub const Cpu = struct {
     }
 
     /// Master clocks in the final CPU cycle of the just-completed step.
-    /// Interrupt inputs are sampled immediately before this cycle. Trailing
-    /// internal cycles are always 6 clocks; otherwise the last cycle was the
-    /// most recently priced 6/8/12-clock bus access.
+    /// Interrupt inputs are sampled immediately before this cycle. An
+    /// unflushed trailing internal cycle is always 6 clocks; otherwise retain
+    /// the width of the most recently timed access or internal phase.
     pub fn finalCycleMasters(self: *const Cpu) u32 {
         const internal = @as(u32, self.cycles) -| self.mem_accesses;
-        return if (internal > self.internal_flushed) 6 else self.last_access_masters;
+        return if (internal > self.internal_flushed) 6 else self.last_timed_phase_masters;
     }
 
     fn handleNmi(self: *Cpu) void {
@@ -397,7 +397,7 @@ pub const Cpu = struct {
     fn recordAccess(self: *Cpu, speed: u32) void {
         self.mem_masters += speed;
         self.mem_accesses +%= 1;
-        self.last_access_masters = @intCast(speed);
+        self.last_timed_phase_masters = @intCast(speed);
     }
 
     /// Advance to the mapped read handler. Mesen's generic S-CPU access path
@@ -440,6 +440,7 @@ pub const Cpu = struct {
     /// later interrupt-aware implementation can substitute a next-PC read.
     fn idleOrReadBeforeEffect(self: *Cpu) void {
         self.cycles += 1;
+        self.last_timed_phase_masters = 6;
         if (self.bus.orderedClockConnected()) {
             self.bus.advanceCpuPhase(6, .idle_or_read_before_effect);
         } else {
@@ -451,6 +452,7 @@ pub const Cpu = struct {
     /// XBA's second phase is an unconditional internal idle in Mesen.
     fn internalBeforeEffect(self: *Cpu) void {
         self.cycles += 1;
+        self.last_timed_phase_masters = 6;
         if (self.bus.orderedClockConnected()) {
             self.bus.advanceCpuPhase(6, .internal_before_effect);
         } else {
@@ -2604,6 +2606,7 @@ pub const Cpu = struct {
 
             // ===== Transfer Instructions =====
             0xAA => { // TAX
+                self.idleOrReadBeforeEffect();
                 if (self.p.x) {
                     self.x = self.a & 0xFF;
                     self.setNZ8(@truncate(self.x));
@@ -2613,6 +2616,7 @@ pub const Cpu = struct {
                 }
             },
             0xA8 => { // TAY
+                self.idleOrReadBeforeEffect();
                 if (self.p.x) {
                     self.y = self.a & 0xFF;
                     self.setNZ8(@truncate(self.y));
@@ -2622,6 +2626,7 @@ pub const Cpu = struct {
                 }
             },
             0x8A => { // TXA
+                self.idleOrReadBeforeEffect();
                 if (self.p.m) {
                     self.a = (self.a & 0xFF00) | (self.x & 0xFF);
                     self.setNZ8(@truncate(self.a));
@@ -2631,6 +2636,7 @@ pub const Cpu = struct {
                 }
             },
             0x98 => { // TYA
+                self.idleOrReadBeforeEffect();
                 if (self.p.m) {
                     self.a = (self.a & 0xFF00) | (self.y & 0xFF);
                     self.setNZ8(@truncate(self.a));
@@ -2640,6 +2646,7 @@ pub const Cpu = struct {
                 }
             },
             0xBA => { // TSX
+                self.idleOrReadBeforeEffect();
                 if (self.p.x) {
                     self.x = self.sp & 0xFF;
                     self.setNZ8(@truncate(self.x));
@@ -2649,6 +2656,7 @@ pub const Cpu = struct {
                 }
             },
             0x9A => { // TXS
+                self.idleOrReadBeforeEffect();
                 if (self.emulation_mode) {
                     self.sp = 0x0100 | (self.x & 0xFF);
                 } else {
@@ -2656,6 +2664,7 @@ pub const Cpu = struct {
                 }
             },
             0x9B => { // TXY
+                self.idleOrReadBeforeEffect();
                 if (self.p.x) {
                     self.y = self.x & 0xFF;
                     self.setNZ8(@truncate(self.y));
@@ -2665,6 +2674,7 @@ pub const Cpu = struct {
                 }
             },
             0xBB => { // TYX
+                self.idleOrReadBeforeEffect();
                 if (self.p.x) {
                     self.x = self.y & 0xFF;
                     self.setNZ8(@truncate(self.x));
@@ -2674,24 +2684,29 @@ pub const Cpu = struct {
                 }
             },
             0x5B => { // TCD - Transfer C (A) to Direct Page
+                self.idleOrReadBeforeEffect();
                 self.dp = self.a;
                 self.setNZ16(self.dp);
             },
             0x7B => { // TDC - Transfer Direct Page to C (A)
+                self.idleOrReadBeforeEffect();
                 self.a = self.dp;
                 self.setNZ16(self.a);
             },
             0x1B => { // TCS - Transfer C (A) to Stack Pointer
+                self.idleOrReadBeforeEffect();
                 // In emulation mode the stack high byte is hardwired to $01
                 self.sp = if (self.emulation_mode) 0x0100 | (self.a & 0xFF) else self.a;
             },
             0x3B => { // TSC - Transfer Stack Pointer to C (A)
+                self.idleOrReadBeforeEffect();
                 self.a = self.sp;
                 self.setNZ16(self.a);
             },
 
             // ===== Increment/Decrement =====
             0x1A => { // INC A
+                self.idleOrReadBeforeEffect();
                 if (self.p.m) {
                     self.a = (self.a & 0xFF00) | ((self.a +% 1) & 0xFF);
                     self.setNZ8(@truncate(self.a));
@@ -2701,6 +2716,7 @@ pub const Cpu = struct {
                 }
             },
             0x3A => { // DEC A
+                self.idleOrReadBeforeEffect();
                 if (self.p.m) {
                     self.a = (self.a & 0xFF00) | ((self.a -% 1) & 0xFF);
                     self.setNZ8(@truncate(self.a));
@@ -2710,6 +2726,7 @@ pub const Cpu = struct {
                 }
             },
             0xE8 => { // INX
+                self.idleOrReadBeforeEffect();
                 if (self.p.x) {
                     self.x = (self.x +% 1) & 0xFF;
                     self.setNZ8(@truncate(self.x));
@@ -2719,6 +2736,7 @@ pub const Cpu = struct {
                 }
             },
             0xCA => { // DEX
+                self.idleOrReadBeforeEffect();
                 if (self.p.x) {
                     self.x = (self.x -% 1) & 0xFF;
                     self.setNZ8(@truncate(self.x));
@@ -2728,6 +2746,7 @@ pub const Cpu = struct {
                 }
             },
             0xC8 => { // INY
+                self.idleOrReadBeforeEffect();
                 if (self.p.x) {
                     self.y = (self.y +% 1) & 0xFF;
                     self.setNZ8(@truncate(self.y));
@@ -2737,6 +2756,7 @@ pub const Cpu = struct {
                 }
             },
             0x88 => { // DEY
+                self.idleOrReadBeforeEffect();
                 if (self.p.x) {
                     self.y = (self.y -% 1) & 0xFF;
                     self.setNZ8(@truncate(self.y));
@@ -2972,13 +2992,34 @@ pub const Cpu = struct {
             },
 
             // ===== Flag Instructions =====
-            0x18 => self.p.c = false, // CLC
-            0x38 => self.p.c = true, // SEC
-            0x58 => self.p.i = false, // CLI
-            0x78 => self.p.i = true, // SEI
-            0xD8 => self.p.d = false, // CLD
-            0xF8 => self.p.d = true, // SED
-            0xB8 => self.p.v = false, // CLV
+            0x18 => { // CLC
+                self.idleOrReadBeforeEffect();
+                self.p.c = false;
+            },
+            0x38 => { // SEC
+                self.idleOrReadBeforeEffect();
+                self.p.c = true;
+            },
+            0x58 => { // CLI
+                self.idleOrReadBeforeEffect();
+                self.p.i = false;
+            },
+            0x78 => { // SEI
+                self.idleOrReadBeforeEffect();
+                self.p.i = true;
+            },
+            0xD8 => { // CLD
+                self.idleOrReadBeforeEffect();
+                self.p.d = false;
+            },
+            0xF8 => { // SED
+                self.idleOrReadBeforeEffect();
+                self.p.d = true;
+            },
+            0xB8 => { // CLV
+                self.idleOrReadBeforeEffect();
+                self.p.v = false;
+            },
             0xC2 => { // REP
                 const mask = self.fetchByte();
                 const current = self.p.toByte();
@@ -2995,6 +3036,7 @@ pub const Cpu = struct {
                 self.truncateIndexRegs();
             },
             0xFB => { // XCE
+                self.idleOrReadBeforeEffect();
                 const old_c = self.p.c;
                 self.p.c = self.emulation_mode;
                 self.emulation_mode = old_c;
@@ -3036,6 +3078,8 @@ pub const Cpu = struct {
                 self.pc = self.readWord(0, if (self.emulation_mode) @as(u16, 0xFFF4) else 0xFFE4);
             },
             0xEB => { // XBA - Exchange B and A
+                self.idleOrReadBeforeEffect();
+                self.internalBeforeEffect();
                 const low: u8 = @truncate(self.a);
                 const high: u8 = @truncate(self.a >> 8);
                 self.a = (@as(u16, low) << 8) | high;
