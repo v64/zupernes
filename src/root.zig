@@ -1593,3 +1593,51 @@ test "savestate timing profile rejects cross restore before mutation" {
     _ = try legacy_target.writeState(actual);
     try std.testing.expectEqualSlices(u8, expected, actual);
 }
+
+test "copyright-free ROM exposes general DMA timing for cross oracle" {
+    var rom: [0x8000]u8 = @splat(0xFF);
+    const program = [_]u8{
+        0x78, 0xD8, 0xA2, 0xFF, 0x9A, // SEI; CLD; LDX #$FF; TXS
+        0x9C, 0x00, 0x42, // STZ $4200
+        0xA9, 0x00, 0x8D, 0x00, 0x43, // mode 0, A -> B
+        0xA9, 0x00, 0x8D, 0x01, 0x43, // destination $2100
+        0xA9, 0x12, 0x8D, 0x02, 0x43, // source low $12
+        0xA9, 0x42, 0x8D, 0x03, 0x43, // source high $42
+        0xA9, 0x00, 0x8D, 0x04, 0x43, // source bank $00
+        0xA9, 0x01, 0x8D, 0x05, 0x43, // one byte
+        0xA9, 0x00, 0x8D, 0x06, 0x43,
+        0xA9, 0x01,
+        0x8D, 0x0B, 0x42, // STA $420B
+        0x4C, 0x30, 0x80, // marker loop
+    };
+    @memcpy(rom[0..program.len], &program);
+    rom[0x7FD5] = 0x20; // LoROM, SlowROM
+    rom[0x7FD6] = 0x00; // ROM only
+    rom[0x7FD7] = 0x08; // 32 KiB
+    rom[0x7FD8] = 0x00;
+    rom[0x7FD9] = 0x01; // NTSC
+    rom[0x7FDA] = 0x33;
+    rom[0x7FFC] = 0x00;
+    rom[0x7FFD] = 0x80;
+
+    var emu = Emulator.init();
+    emu.setup();
+    try emu.loadRom(&rom);
+    // The candidate's declared diagnostic origin is immediately after its
+    // untimed reset-vector reads: PPU wall 0, next refresh 538.
+    emu.enableOrderedClockFixture();
+    while (emu.cpu.pc != 0x802D) emu.step();
+    const sta_start = emu.refresh_timeline.wall_master;
+    emu.step();
+
+    // Candidate chronology: STA's three accesses end at its $420B handler at
+    // 456, then the synchronous controller samples at 460 and writes at 464.
+    // The matching Mesen ROM observes handler/source/destination at
+    // 682/716/720: the byte halves agree, while this path lacks the generic
+    // CPU halt, alignment, and controller overhead before the first source.
+    try std.testing.expectEqual(@as(u64, 426), sta_start);
+    try std.testing.expectEqual(@as(u64, 464), emu.refresh_timeline.wall_master);
+    try std.testing.expectEqual(@as(u8, 0), emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
+    try std.testing.expectEqual(@as(u16, 116), emu.ppu.render_events[0].dot);
+}
