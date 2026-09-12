@@ -254,18 +254,20 @@ pub const Dma = struct {
                 // results from $6000, at exactly the pace the microcode
                 // streams words into DR. With an instantaneous DMA the DSP
                 // would never advance between reads and the whole transfer
-                // would see one stale value. tickDmaByte also accounts the
-                // 8 master cycles so the emulator loop can bill the PPU/APU
-                // for the transfer's duration.
-                bus.tickDmaByte();
-
+                // would see one stale value. Mesen's generic DMA path advances
+                // four masters before the source handler and another four
+                // before the destination effect; keeping that split is
+                // observable for mapped sources such as $4212 or DSP-1 DR.
+                bus.tickDmaHalfByte();
                 if (!ctrl.direction) {
                     // A→B: Read from A-bus (CPU memory), write to B-bus (PPU)
                     const value = bus.readDma(channel.a_addr);
+                    bus.tickDmaHalfByte();
                     bus.writePpuDma(b_addr, value);
                 } else {
                     // B→A: Read from B-bus (PPU), write to A-bus (CPU memory)
                     const value = bus.readPpuDma(b_addr);
+                    bus.tickDmaHalfByte();
                     bus.writeDma(channel.a_addr, value);
                 }
 
@@ -416,12 +418,6 @@ pub const Dma = struct {
                     const b_offset = getBOffset(ctrl.transfer_mode, @intCast(byte_idx));
                     const b_addr = b_base + b_offset;
 
-                    // Coprocessor keeps running during HDMA too (games can
-                    // HDMA raster data straight out of the DSP-1 DR), and
-                    // the 8 master cycles per byte are billed to the frame
-                    // clock like general DMA.
-                    bus.tickDmaByte();
-
                     var src_addr: u16 = undefined;
                     var src_bank: u8 = undefined;
 
@@ -435,8 +431,12 @@ pub const Dma = struct {
                         channel.hdma_addr +%= 1;
                     }
 
+                    // HDMA uses the same four-master source/four-master
+                    // destination split as general DMA.
+                    bus.tickDmaHalfByte();
                     if (!ctrl.direction) {
                         const value = bus.read(src_bank, src_addr);
+                        bus.tickDmaHalfByte();
                         bus.writePpuDma(b_addr, value);
 
                         // Trace window register writes (WH0-WH3: $2126-$2129) which are used for spotlight effect
@@ -447,6 +447,7 @@ pub const Dma = struct {
                         }
                     } else {
                         const value = bus.readPpuDma(b_addr);
+                        bus.tickDmaHalfByte();
                         bus.write(src_bank, src_addr, value);
                     }
                 }

@@ -321,7 +321,7 @@ pub const Bus = struct {
     // microcode streams them into DR.
     dsp_accum: u32,
     // Master cycles consumed by DMA/HDMA transfers since the emulator loop
-    // last drained this (see tickDmaByte). DMA runs synchronously inside a
+    // last drained this (see tickDmaHalfByte). DMA runs synchronously inside a
     // CPU register write, so its duration is invisible to the per-
     // instruction cycle count; the loop adds this to the PPU/APU clocks
     // after the instruction completes. Without it, DMA is time-free and
@@ -339,7 +339,7 @@ pub const Bus = struct {
 
     // End-of-access timestamp projected from the PPU's last committed beam
     // position. CPU access helpers supply the cumulative instruction time;
-    // tickDmaByte advances it for each synchronous DMA byte. The PPU uses it
+    // DMA timing helpers advance it for each synchronous DMA byte. The PPU uses it
     // only to timestamp render-register changes before root.zig commits the
     // batched clocks with Ppu.tick().
     ppu_cpu_timing_base: u32 = 0,
@@ -527,11 +527,10 @@ pub const Bus = struct {
         self.tickDsp(masters);
     }
 
-    /// Account one DMA'd byte: 8 master cycles of bus time (see the comment at
-    /// the dma.zig call site - Super Mario Kart DMA-reads DSP-1 results at
-    /// exactly the pace the microcode streams them).
-    pub fn tickDmaByte(self: *Bus) void {
-        self.tickDmaMasters(8);
+    /// One half of a DMA byte transfer. The source handler runs after the
+    /// first four masters and the destination effect after the second four.
+    pub fn tickDmaHalfByte(self: *Bus) void {
+        self.tickDmaMasters(4);
     }
 
     // ==========================================================================

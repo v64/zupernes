@@ -157,7 +157,7 @@ pub const Emulator = struct {
         // that triggered them (a $420B write, or runHdma below on a prior
         // step); their bus time accumulates in Bus.dma_masters and is
         // billed here. The DSP was ALREADY ticked during the transfer
-        // (Bus.tickDmaByte), so dma_extra goes to the PPU/APU only.
+        // (Bus.tickDmaHalfByte), so dma_extra goes to the PPU/APU only.
         const dma_extra: u32 = self.bus.dma_masters;
         self.bus.dma_masters = 0;
         const master: u32 = self.cpu.mem_masters + internal * 6;
@@ -396,7 +396,7 @@ pub const Emulator = struct {
                 },
             }
 
-            // HDMA byte time is produced synchronously by tickDmaByte().  It
+            // HDMA byte time is produced synchronously by tickDmaHalfByte(). It
             // is stolen from the CPU at this beam point, so commit it now;
             // leaving it for the next instruction would put the PPU write at
             // the right projected dot but pause the actual beam too late.
@@ -1238,6 +1238,35 @@ test "general DMA work crosses refresh on the same ordered wall owner" {
     try std.testing.expectEqual(@as(u16, 146), emu.ppu.render_events[0].dot);
     try std.testing.expectEqual(@as(u64, 584), emu.refresh_timeline.wall_master);
     try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
+}
+
+test "DMA samples a mapped source between its two four-master halves" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.cpu.pc = 0;
+    emu.cpu.a = 0x01;
+    emu.bus.wram[0] = 0x8D; // STA $420B
+    emu.bus.wram[1] = 0x0B;
+    emu.bus.wram[2] = 0x42;
+    emu.bus.dma.writeRegister(0x4300, 0x00); // A -> B, mode 0
+    emu.bus.dma.writeRegister(0x4301, 0x00); // $2100 INIDISP
+    emu.bus.dma.writeRegister(0x4302, 0x12);
+    emu.bus.dma.writeRegister(0x4303, 0x42);
+    emu.bus.dma.writeRegister(0x4304, 0x00); // source $00:4212 HVBJOY
+    emu.bus.dma.writeRegister(0x4305, 0x01);
+    emu.bus.dma.writeRegister(0x4306, 0x00);
+
+    // STA reaches $420B at 1090. The source handler runs four masters later
+    // at 1094 (H=273 residual 2, active); the destination write runs at 1098.
+    // Charging all eight before the read would incorrectly copy HBlank bit 6.
+    emu.ppu.dot = 265;
+    emu.enableOrderedClockFixture();
+    emu.step();
+
+    try std.testing.expectEqual(@as(u8, 0), emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
+    try std.testing.expectEqual(@as(u16, 274), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u64, 1098), emu.refresh_timeline.wall_master);
 }
 
 test "HDMA event and transfer work interrupt CPU work on the ordered owner" {
