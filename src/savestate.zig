@@ -674,6 +674,10 @@ pub fn read(
     // ---- Emulator ----
     last_scanline.* = getU16(src, &at);
 
+    // CPU handler phase is an in-flight execution detail, not machine state.
+    // A restored direct/debug read must use the committed PPU beam.
+    bus.invalidateCpuReadSample();
+
     std.debug.assert(at == state_len);
     return at;
 }

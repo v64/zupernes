@@ -348,6 +348,7 @@ pub const Bus = struct {
     // Explicit mapped-read handler phase. This is earlier than the end of a
     // CPU read and must remain separate when a stall falls after the sample.
     cpu_read_sample_master: u64 = 0,
+    cpu_read_sample_valid: bool = false,
     irq_level_at_instruction_start: bool = false,
     irq_transitions: [max_irq_transitions]IrqTransition = undefined,
     irq_transition_count: u8 = 0,
@@ -362,7 +363,7 @@ pub const Bus = struct {
         self.ppu_write_timing_offset = self.ppu_cpu_timing_base;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
         self.interrupt_horizon_master = absolutePpuMaster(self.ppu);
-        self.cpu_read_sample_master = self.interrupt_horizon_master;
+        self.cpu_read_sample_valid = false;
         self.irq_level_at_instruction_start = self.irq_flag;
         self.irq_transition_count = 0;
         self.nmi_edge_count = 0;
@@ -371,6 +372,7 @@ pub const Bus = struct {
     /// Start HDMA at the PPU's current beam position, outside a CPU
     /// instruction. root.zig has already drained earlier DMA clocks here.
     pub fn beginStandaloneDma(self: *Bus) void {
+        self.cpu_read_sample_valid = false;
         self.ppu_cpu_timing_base = 0;
         self.ppu_write_timing_offset = 0;
         self.ppu.setWriteTimingOffset(0);
@@ -391,11 +393,31 @@ pub const Bus = struct {
     pub fn setCpuReadSampleTiming(self: *Bus, instruction_masters: u32) void {
         self.cpu_read_sample_master = absolutePpuMaster(self.ppu) +
             self.ppu_cpu_timing_base + instruction_masters;
+        self.cpu_read_sample_valid = true;
     }
 
-    /// Beam position at the current CPU read's mapped-register handler phase.
-    pub fn cpuReadSampleBeam(self: *const Bus) CpuReadSampleBeam {
+    /// Clear a transient CPU handler phase at instruction, DMA, reset, and
+    /// restore boundaries. Direct/debug reads then use the committed PPU.
+    pub fn invalidateCpuReadSample(self: *Bus) void {
+        self.cpu_read_sample_valid = false;
+    }
+
+    /// Diagnostic view of the most recently declared CPU read phase. Runtime
+    /// register reads must use cpuRegisterReadBeam so validity is enforced.
+    pub fn lastCpuReadSampleBeam(self: *const Bus) CpuReadSampleBeam {
         const master = self.cpu_read_sample_master;
+        return beamAtMaster(master);
+    }
+
+    fn cpuRegisterReadBeam(self: *const Bus) CpuReadSampleBeam {
+        const master = if (self.cpu_read_sample_valid)
+            self.cpu_read_sample_master
+        else
+            absolutePpuMaster(self.ppu);
+        return beamAtMaster(master);
+    }
+
+    fn beamAtMaster(master: u64) CpuReadSampleBeam {
         const in_frame = master % frame_masters;
         const in_line = in_frame % line_masters;
         return .{
@@ -516,6 +538,9 @@ pub const Bus = struct {
     /// global, per-channel, and indirect-pointer overhead during which the CPU
     /// is paused but the PPU, APU, and cartridge coprocessor keep running.
     pub fn tickDmaMasters(self: *Bus, masters: u32) void {
+        // DMA A/B-bus reads bypass Cpu.accountAccess. Until a DMA phase is
+        // explicitly modeled, status reads must use the committed PPU beam.
+        self.cpu_read_sample_valid = false;
         self.dma_masters += masters;
         self.ppu_write_timing_offset += masters;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
@@ -926,7 +951,7 @@ pub const Bus = struct {
                 // 16 bits out of each controller. Well-behaved games wait for
                 // bit 0 to clear before reading $4218-$421F, so we model that
                 // busy window even though our latch is instantaneous.
-                const beam = self.cpuReadSampleBeam();
+                const beam = self.cpuRegisterReadBeam();
                 var status: u8 = 0;
                 if (beam.scanline >= 225) status |= 0x80; // VBlank
                 const hclock = @as(u16, beam.dot) * @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT + beam.master_residual;

@@ -74,6 +74,7 @@ pub const Emulator = struct {
         self.bus.dma.reset(); // Reset DMA channel state
         self.bus.dsp1.reset(); // Reset DSP-1 coprocessor (keeps its microcode)
         self.bus.dsp_accum = 0;
+        self.bus.invalidateCpuReadSample();
         self.last_scanline = 0;
         // Note: APU ports (apu_out) keep their boot signature ($AA, $BB)
         // This is correct - APU reset would reinitialize them, not clear them
@@ -126,6 +127,7 @@ pub const Emulator = struct {
         self.exec_trace.record(self.ppu.writer_pc);
 
         self.bus.beginCpuInstruction();
+        defer self.bus.invalidateCpuReadSample();
         const cycles = self.cpu.step();
 
         // ======================================================================
@@ -1071,7 +1073,7 @@ fn probeSyntheticHvbjoyWait(scanline: u16, dot: u16, residual: u2, initial_y: u8
             std.debug.assert(read_index < out.reads.len);
             out.reads[read_index] = .{
                 .pc = pc,
-                .beam = emu.bus.cpuReadSampleBeam(),
+                .beam = emu.bus.lastCpuReadSampleBeam(),
                 .hblank = emu.cpu.p.v,
                 .next_pc = 0,
             };
@@ -1151,8 +1153,8 @@ test "$4212 samples the mapped-read handler phase at the H=274 half-cycle" {
     before_edge.bus.beginCpuInstruction();
     before_edge.bus.setCpuReadSampleTiming(26);
     before_edge.bus.setCpuAccessTiming(30);
-    try std.testing.expectEqual(@as(u16, 273), before_edge.bus.cpuReadSampleBeam().dot);
-    try std.testing.expectEqual(@as(u2, 2), before_edge.bus.cpuReadSampleBeam().master_residual);
+    try std.testing.expectEqual(@as(u16, 273), before_edge.bus.lastCpuReadSampleBeam().dot);
+    try std.testing.expectEqual(@as(u2, 2), before_edge.bus.lastCpuReadSampleBeam().master_residual);
     try std.testing.expect(before_edge.bus.read(0, 0x4212) & 0x40 == 0);
 
     // These starts put the handler on the two sides of Mesen's observable
@@ -1165,8 +1167,8 @@ test "$4212 samples the mapped-read handler phase at the H=274 half-cycle" {
     edge_zero.bus.beginCpuInstruction();
     edge_zero.bus.setCpuReadSampleTiming(26);
     edge_zero.bus.setCpuAccessTiming(30);
-    try std.testing.expectEqual(@as(u16, 274), edge_zero.bus.cpuReadSampleBeam().dot);
-    try std.testing.expectEqual(@as(u2, 0), edge_zero.bus.cpuReadSampleBeam().master_residual);
+    try std.testing.expectEqual(@as(u16, 274), edge_zero.bus.lastCpuReadSampleBeam().dot);
+    try std.testing.expectEqual(@as(u2, 0), edge_zero.bus.lastCpuReadSampleBeam().master_residual);
     try std.testing.expect(edge_zero.bus.read(0, 0x4212) & 0x40 == 0);
 
     var edge_two = Emulator.init();
@@ -1177,7 +1179,58 @@ test "$4212 samples the mapped-read handler phase at the H=274 half-cycle" {
     edge_two.bus.beginCpuInstruction();
     edge_two.bus.setCpuReadSampleTiming(26);
     edge_two.bus.setCpuAccessTiming(30);
-    try std.testing.expectEqual(@as(u16, 274), edge_two.bus.cpuReadSampleBeam().dot);
-    try std.testing.expectEqual(@as(u2, 2), edge_two.bus.cpuReadSampleBeam().master_residual);
+    try std.testing.expectEqual(@as(u16, 274), edge_two.bus.lastCpuReadSampleBeam().dot);
+    try std.testing.expectEqual(@as(u2, 2), edge_two.bus.lastCpuReadSampleBeam().master_residual);
     try std.testing.expect(edge_two.bus.read(0, 0x4212) & 0x40 != 0);
+}
+
+test "$4212 never reuses a stale CPU sample across direct DMA and reset boundaries" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.scanline = 36;
+    emu.ppu.dot = 100;
+
+    // An explicitly declared CPU handler phase may differ from committed PPU
+    // time and is used only while valid.
+    emu.bus.beginCpuInstruction();
+    emu.bus.setCpuReadSampleTiming(700);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 != 0);
+    emu.bus.invalidateCpuReadSample();
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
+
+    emu.bus.setCpuReadSampleTiming(700);
+    emu.bus.beginStandaloneDma();
+    try std.testing.expect(emu.bus.readDma(0x004212) & 0x40 == 0);
+
+    emu.bus.beginCpuInstruction();
+    emu.bus.setCpuReadSampleTiming(700);
+    emu.bus.tickDmaByte();
+    try std.testing.expect(emu.bus.readDma(0x004212) & 0x40 == 0);
+
+    // Reset's committed beam is H=0 (HBlank in Mesen's counter rule). Seed a
+    // stale active-display handler first, so the observed bit proves reset
+    // cleared validity rather than coincidentally agreeing with it.
+    emu.bus.beginCpuInstruction();
+    emu.bus.setCpuReadSampleTiming(0);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
+    emu.reset();
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 != 0);
+}
+
+test "$4212 CPU sample validity is transient across savestate restore" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.scanline = 36;
+    emu.ppu.dot = 100;
+
+    const snapshot = try std.testing.allocator.alloc(u8, Emulator.state_len);
+    defer std.testing.allocator.free(snapshot);
+    _ = try emu.writeState(snapshot);
+
+    emu.bus.beginCpuInstruction();
+    emu.bus.setCpuReadSampleTiming(700);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 != 0);
+    _ = try emu.readState(snapshot);
+    try std.testing.expectEqual(@as(u16, 100), emu.ppu.dot);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
 }

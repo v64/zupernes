@@ -36,6 +36,14 @@ This separation is required for a future refresh model to place a stall before
 or after the handler without moving both timestamps together. The current
 candidate still has no refresh event and therefore is not pin-ready.
 
+The handler phase also carries explicit validity. CPU read accounting sets it;
+instruction completion, reset, savestate restore, standalone DMA, and each DMA
+timing step clear it. Direct/debug reads and DMA A-bus reads therefore use the
+committed PPU beam unless their caller has declared a phase. The last handler
+beam remains available only through a diagnostic accessor for the synthetic
+test. This prevents an unrelated `$4212` read from reusing an earlier CPU
+sample after the instruction or machine lifecycle has moved on.
+
 Mesen's current `$4212` rule reports HBlank for H-clock `< 4` or `> 274*4`.
 The candidate retains its observable half-cycle: H=274 residual 0 is active,
 while residuals 1 through 3 are HBlank. Mesen's CPU advances in two-master
