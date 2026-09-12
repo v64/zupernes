@@ -1,6 +1,7 @@
 # Zig build artifacts
 .zig-cache/
 zig-out/
+.oracle/
 
 # macOS
 .DS_Store

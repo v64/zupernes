@@ -54,6 +54,13 @@ fn nextPeriodicAfter(now: u64, phase: u64, period: u64) u64 {
     return phase + ((now - phase) / period + 1) * period;
 }
 
+pub const CpuAccessBeam = struct {
+    frame: u64,
+    scanline: u16,
+    dot: u16,
+    master_residual: u2,
+};
+
 pub const WramWrite = struct {
     addr: u24, // WRAM offset 0..$1FFFF (bank $7E = $00000, $7F = $10000)
     value: u8, // the byte written
@@ -370,6 +377,22 @@ pub const Bus = struct {
         self.ppu_write_timing_offset = self.ppu_cpu_timing_base + instruction_masters;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
         self.syncInterruptFlagsTo(absolutePpuMaster(self.ppu) + self.ppu_write_timing_offset);
+    }
+
+    /// Beam position at the end of the current CPU bus access. CPU.step runs
+    /// before root.zig commits the instruction's clocks to Ppu.tick(), so
+    /// register reads that depend on the beam must use this projected horizon
+    /// rather than the PPU's instruction-start dot.
+    pub fn cpuAccessBeam(self: *const Bus) CpuAccessBeam {
+        const master = @max(self.interrupt_horizon_master, absolutePpuMaster(self.ppu));
+        const in_frame = master % frame_masters;
+        const in_line = in_frame % line_masters;
+        return .{
+            .frame = master / frame_masters,
+            .scanline = @intCast(in_frame / line_masters),
+            .dot = @intCast(in_line / @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT),
+            .master_residual = @intCast(in_line % @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT),
+        };
     }
 
     /// Advance the CPU-visible RDNMI latch through hardware time without
@@ -883,18 +906,22 @@ pub const Bus = struct {
             0x4212 => {
                 // HVBJOY - PPU status
                 // Bit 7: VBlank (1 during scanlines 225-261)
-                // Bit 6: HBlank (1 during dots 274-339)
+                // Bit 6: HBlank. Mesen2 3b058f9f independently exposes the
+                // counter rule as H-clock < 4 or > 274*4; the half-cycle
+                // after H=274 is observable to a CPU access.
                 // Bit 0: Auto-joypad read in progress
                 //
                 // Real hardware takes ~3 scanlines (225-227) to serially clock
                 // 16 bits out of each controller. Well-behaved games wait for
                 // bit 0 to clear before reading $4218-$421F, so we model that
                 // busy window even though our latch is instantaneous.
+                const beam = self.cpuAccessBeam();
                 var status: u8 = 0;
-                if (self.ppu.scanline >= 225) status |= 0x80; // VBlank
-                if (self.ppu.dot >= 274) status |= 0x40; // HBlank
+                if (beam.scanline >= 225) status |= 0x80; // VBlank
+                const hclock = @as(u16, beam.dot) * @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT + beam.master_residual;
+                if (hclock < 4 or hclock > 274 * 4) status |= 0x40; // HBlank
                 if ((self.nmitimen & 0x01) != 0 and
-                    self.ppu.scanline >= 225 and self.ppu.scanline < 228)
+                    beam.scanline >= 225 and beam.scanline < 228)
                 {
                     status |= 0x01; // Auto-joypad read in progress
                 }
