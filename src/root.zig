@@ -1534,3 +1534,62 @@ test "ordered wall and audio state replay exactly across refresh" {
     replay.refresh_timeline.next_refresh_master = 0;
     try std.testing.expectError(error.InvalidRefreshSchedule, replay.writeState(actual));
 }
+
+test "savestate timing profile rejects cross restore before mutation" {
+    const allocator = std.testing.allocator;
+    const flat = try allocator.alloc(u8, 0x10000);
+    defer allocator.free(flat);
+    @memset(flat, 0);
+    flat[0x8000] = 0xA9; // LDA #$11
+    flat[0x8001] = 0x11;
+    flat[0x8002] = 0xA9; // LDA #$22
+    flat[0x8003] = 0x22;
+
+    const legacy_checkpoint = try allocator.alloc(u8, Emulator.state_len);
+    defer allocator.free(legacy_checkpoint);
+    const ordered_checkpoint = try allocator.alloc(u8, Emulator.state_len);
+    defer allocator.free(ordered_checkpoint);
+    const expected = try allocator.alloc(u8, Emulator.state_len);
+    defer allocator.free(expected);
+    const actual = try allocator.alloc(u8, Emulator.state_len);
+    defer allocator.free(actual);
+
+    var legacy_source = Emulator.init();
+    legacy_source.setup();
+    legacy_source.bus.flat_mem = flat;
+    legacy_source.cpu.pc = 0x8000;
+    legacy_source.cpu.pbr = 0;
+    _ = try legacy_source.writeState(legacy_checkpoint);
+
+    var ordered_source = Emulator.init();
+    ordered_source.setup();
+    ordered_source.bus.flat_mem = flat;
+    ordered_source.cpu.pc = 0x8000;
+    ordered_source.cpu.pbr = 0;
+    ordered_source.enableOrderedClockFixture();
+    _ = try ordered_source.writeState(ordered_checkpoint);
+
+    var legacy_target = Emulator.init();
+    legacy_target.setup();
+    legacy_target.bus.flat_mem = flat;
+    legacy_target.cpu.a = 0xCAFE;
+    try std.testing.expectError(error.InvalidTimingProfile, legacy_target.readState(ordered_checkpoint));
+    try std.testing.expectEqual(@as(u16, 0xCAFE), legacy_target.cpu.a);
+
+    var ordered_target = Emulator.init();
+    ordered_target.setup();
+    ordered_target.bus.flat_mem = flat;
+    ordered_target.enableOrderedClockFixture();
+    ordered_target.cpu.a = 0xBEEF;
+    try std.testing.expectError(error.InvalidTimingProfile, ordered_target.readState(legacy_checkpoint));
+    try std.testing.expectEqual(@as(u16, 0xBEEF), ordered_target.cpu.a);
+
+    // Matching aggregate callers retain their profile and execute the same
+    // actual next instruction after restore.
+    legacy_source.step();
+    _ = try legacy_source.writeState(expected);
+    _ = try legacy_target.readState(legacy_checkpoint);
+    legacy_target.step();
+    _ = try legacy_target.writeState(actual);
+    try std.testing.expectEqualSlices(u8, expected, actual);
+}

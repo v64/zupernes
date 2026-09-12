@@ -58,7 +58,15 @@ const RefreshTimeline = refresh_timing.Timeline;
 /// everything captured, and `read` refuses a mismatch. The version covers a
 /// deliberate REORDER at equal size; the length covers every accidental
 /// change, which is the one that actually happens.
-pub const magic = "ZNSAVE\x00\x06";
+pub const magic = "ZNSAVE\x00\x07";
+
+/// Clock ownership changes observable execution order, so it is part of the
+/// diagnostic state's compatibility contract even though the callback
+/// pointers themselves remain caller-owned.
+pub const TimingProfile = enum(u8) {
+    aggregate = 0,
+    ordered_refresh = 1,
+};
 
 const fb_bytes = ppu_mod.SCREEN_WIDTH * ppu_mod.SCREEN_HEIGHT * 2;
 const render_state_bytes = blk: {
@@ -74,7 +82,7 @@ const render_state_bytes = blk: {
 };
 const render_event_bytes = 8 + 2 + render_state_bytes;
 
-pub const Error = error{ BadMagic, BadLayout, ShortBuffer, InvalidRefreshSchedule };
+pub const Error = error{ BadMagic, BadLayout, ShortBuffer, InvalidRefreshSchedule, InvalidTimingProfile };
 
 // =============================================================================
 // THE `.origin` SIDECAR
@@ -262,7 +270,9 @@ fn getRenderState(src: []const u8, at: *usize) Ppu.RenderState {
 /// Exact snapshot size. Asserted against the cursor at the end of both
 /// `write` and `read`, so a layout edit that forgets one side fails loudly.
 pub const state_len: usize = blk: {
-    var n: usize = magic.len + 4; // magic + the u32 layout length below
+    // Magic, layout length, and execution profile. The profile is in the
+    // header so a mismatched caller is rejected before any machine mutation.
+    var n: usize = magic.len + 4 + 1;
     // CPU
     n += 2 * 5 + 3 + 2 + 1 + 1 + 1 + 4 + 1 + 4 + 8 + 8 + 4 + 1;
     // PPU arrays
@@ -306,6 +316,7 @@ pub fn write(
     @memcpy(dst[at..][0..magic.len], magic);
     at += magic.len;
     putU32(dst, &at, @intCast(state_len));
+    putU8(dst, &at, @intFromEnum(timingProfile(bus)));
 
     // ---- CPU ----
     putU16(dst, &at, cpu.a);
@@ -515,6 +526,10 @@ pub fn read(
     // snapshot from a different build is refused instead of being read as
     // whatever the new field order happens to make of its bytes.
     if (getU32(src, &at) != @as(u32, @intCast(state_len))) return Error.BadLayout;
+    const encoded_profile = std.meta.intToEnum(TimingProfile, getU8(src, &at)) catch {
+        return Error.InvalidTimingProfile;
+    };
+    if (encoded_profile != timingProfile(bus)) return Error.InvalidTimingProfile;
 
     // ---- CPU ----
     cpu.a = getU16(src, &at);
@@ -713,6 +728,10 @@ fn normalizedTimelineForPpu(ppu: *const Ppu) RefreshTimeline {
     };
 }
 
+fn timingProfile(bus: *const Bus) TimingProfile {
+    return if (bus.orderedClockConnected()) .ordered_refresh else .aggregate;
+}
+
 // ---- DSP flag packing --------------------------------------------------------
 // Upd7725's Flags is a plain (unpacked) struct, so it gets an explicit bit
 // layout here rather than a @bitCast.
@@ -778,12 +797,12 @@ test "read rejects a snapshot whose layout length disagrees" {
     try std.testing.expectError(Error.BadLayout, read(&cpu, &ppu, &bus, &timeline, &last, buf));
 }
 
-test "version five snapshots are explicitly rejected" {
-    const version_five_len = state_len - 16;
-    const buf = try std.testing.allocator.alloc(u8, version_five_len);
+test "version six snapshots are explicitly rejected" {
+    const version_six_len = state_len - 1;
+    const buf = try std.testing.allocator.alloc(u8, version_six_len);
     defer std.testing.allocator.free(buf);
     @memset(buf, 0);
-    @memcpy(buf[0..magic.len], "ZNSAVE\x00\x05");
+    @memcpy(buf[0..magic.len], "ZNSAVE\x00\x06");
     var ppu = Ppu.init();
     var bus = Bus.init(&ppu);
     var cpu = Cpu.init(&bus);
@@ -793,6 +812,24 @@ test "version five snapshots are explicitly rejected" {
         Error.BadMagic,
         read(&cpu, &ppu, &bus, &timeline, &last, buf),
     );
+}
+
+test "read rejects an unknown timing profile before machine mutation" {
+    const buf = try std.testing.allocator.alloc(u8, state_len);
+    defer std.testing.allocator.free(buf);
+    var ppu = Ppu.init();
+    var bus = Bus.init(&ppu);
+    var cpu = Cpu.init(&bus);
+    var timeline = RefreshTimeline.reset();
+    _ = try write(&cpu, &ppu, &bus, &timeline, 0, buf);
+    buf[magic.len + 4] = 0xFF;
+    cpu.a = 0xCAFE;
+    var last: u16 = 0;
+    try std.testing.expectError(
+        Error.InvalidTimingProfile,
+        read(&cpu, &ppu, &bus, &timeline, &last, buf),
+    );
+    try std.testing.expectEqual(@as(u16, 0xCAFE), cpu.a);
 }
 
 test "read rejects refresh state inconsistent with the restored PPU wall" {

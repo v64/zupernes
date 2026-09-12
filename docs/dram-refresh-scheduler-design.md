@@ -238,8 +238,9 @@ The remaining integration contract is:
   aggregates;
 - PPU, APU, DSP, interrupt edges, and render/write journals consume the same
   ordered wall segments, including refresh stalls;
-- savestate magic/length changes and captures `next_refresh_master`; restore
-  resumes without deriving whether an exact-boundary event already fired.
+- savestate magic/length changes, captures `next_refresh_master`, and tags the
+  aggregate or ordered-refresh timing profile; restore rejects a caller whose
+  connected profile differs before mutating the machine.
 
 The ordered primitive and opt-in CPU/DMA fixtures are the reviewed boundary for
 that refactor. The opt-in path now also records the wall start of each real CPU
@@ -255,12 +256,15 @@ a final internal cycle through wall 582.
 ### Audio and serialized replay stage
 
 Every ordered CPU, DMA, and refresh segment advances `Apu.runCycles` and the
-DSP-1 accumulator beside the PPU. Savestate version 6 adds the explicit
-`wall_master` and `next_refresh_master` fields. Restore requires wall equality
+DSP-1 accumulator beside the PPU. Savestate version 7 adds the explicit
+`wall_master` and `next_refresh_master` fields plus the timing-profile header.
+That header prevents ordered state from silently continuing through the legacy
+aggregate path, or the reverse; mismatches fail before CPU/PPU mutation.
+Restore requires wall equality
 with the restored PPU beam and requires the next event to be exactly the
 current line's reset-aligned event or the no-event sentinel after it has fired;
 malformed schedules return `InvalidRefreshSchedule` in release builds. Version
-5 snapshots are explicitly rejected by magic. This is the ZuperNES diagnostic
+6 snapshots are explicitly rejected by magic. This is the ZuperNES diagnostic
 savestate format and does not change ZuperWorld's user save format.
 
 The replay test snapshots the real ordered CPU at wall 516, continues through
@@ -269,7 +273,8 @@ continuation. The complete pointer-free states match byte for byte, including
 CPU, PPU, DMA, APU/audio state, DSP accumulator, wall time, and next refresh.
 The default aggregate path writes a PPU-normalized timeline until the candidate
 owner becomes the runtime default, so existing default-path savestate callers
-remain internally consistent within version 6.
+remain internally consistent within version 7. Both profiles have actual
+matching-profile next-step replay coverage; cross-profile restore is rejected.
 
 The three migration stages are now executable behind the opt-in connection.
 Broader CPU conditional-dummy-read work, DMA overhead audit, and independent
