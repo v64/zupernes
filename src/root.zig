@@ -1017,7 +1017,7 @@ test "$4200 immediate NMI still waits for the next instruction sample" {
 
 const HvbjoyReadProbe = struct {
     pc: u16,
-    beam: bus_module.CpuAccessBeam,
+    beam: bus_module.CpuReadSampleBeam,
     hblank: bool,
     next_pc: u16,
 };
@@ -1071,7 +1071,7 @@ fn probeSyntheticHvbjoyWait(scanline: u16, dot: u16, residual: u2, initial_y: u8
             std.debug.assert(read_index < out.reads.len);
             out.reads[read_index] = .{
                 .pc = pc,
-                .beam = emu.bus.cpuAccessBeam(),
+                .beam = emu.bus.cpuReadSampleBeam(),
                 .hblank = emu.cpu.p.v,
                 .next_pc = 0,
             };
@@ -1085,7 +1085,7 @@ fn probeSyntheticHvbjoyWait(scanline: u16, dot: u16, residual: u2, initial_y: u8
     @panic("synthetic WaitForHBlank did not return");
 }
 
-test "$4212 samples its projected CPU access beam and drives WaitForHBlank branches" {
+test "$4212 samples its mapped-read handler phase and drives WaitForHBlank branches" {
     const cases = [_]struct {
         dot: u16,
         residual: u2,
@@ -1101,13 +1101,19 @@ test "$4212 samples its projected CPU access beam and drives WaitForHBlank branc
         .{ .dot = 109, .residual = 1, .y = 0x1f, .return_line = 37, .return_dot = 181, .return_residual = 1, .reads = 13 },
         .{ .dot = 109, .residual = 2, .y = 0x1f, .return_line = 37, .return_dot = 181, .return_residual = 2, .reads = 13 },
         .{ .dot = 109, .residual = 3, .y = 0x1f, .return_line = 37, .return_dot = 181, .return_residual = 3, .reads = 13 },
-        // These four land the successful read exactly on H=274. Residual 0
-        // is still active display in Mesen's counter rule; 1/2/3 are HBlank.
+        // These four land the access end on H=274, but the handler is four
+        // masters earlier. All therefore remain active and take one more
+        // polling iteration; this falsifies end-of-access sampling directly.
         .{ .dot = 102, .residual = 0, .y = 0x1f, .return_line = 37, .return_dot = 187, .return_residual = 0, .reads = 14 },
-        .{ .dot = 102, .residual = 1, .y = 0x1f, .return_line = 37, .return_dot = 174, .return_residual = 1, .reads = 13 },
-        .{ .dot = 102, .residual = 2, .y = 0x1f, .return_line = 37, .return_dot = 174, .return_residual = 2, .reads = 13 },
-        .{ .dot = 102, .residual = 3, .y = 0x1f, .return_line = 37, .return_dot = 174, .return_residual = 3, .reads = 13 },
+        .{ .dot = 102, .residual = 1, .y = 0x1f, .return_line = 37, .return_dot = 187, .return_residual = 1, .reads = 14 },
+        .{ .dot = 102, .residual = 2, .y = 0x1f, .return_line = 37, .return_dot = 187, .return_residual = 2, .reads = 14 },
+        .{ .dot = 102, .residual = 3, .y = 0x1f, .return_line = 37, .return_dot = 187, .return_residual = 3, .reads = 14 },
+        // These put the handler itself on H=274. Residual 0 is active in
+        // Mesen's counter rule; residuals 1/2/3 are HBlank.
+        .{ .dot = 103, .residual = 0, .y = 0x1f, .return_line = 37, .return_dot = 188, .return_residual = 0, .reads = 14 },
+        .{ .dot = 103, .residual = 1, .y = 0x1f, .return_line = 37, .return_dot = 175, .return_residual = 1, .reads = 13 },
         .{ .dot = 103, .residual = 2, .y = 0x1f, .return_line = 37, .return_dot = 175, .return_residual = 2, .reads = 13 },
+        .{ .dot = 103, .residual = 3, .y = 0x1f, .return_line = 37, .return_dot = 175, .return_residual = 3, .reads = 13 },
         .{ .dot = 109, .residual = 0, .y = 0x07, .return_line = 37, .return_dot = 1, .return_residual = 0, .reads = 13 },
         .{ .dot = 109, .residual = 0, .y = 0x20, .return_line = 37, .return_dot = 188, .return_residual = 2, .reads = 13 },
     };
@@ -1125,44 +1131,53 @@ test "$4212 samples its projected CPU access beam and drives WaitForHBlank branc
             } else {
                 try std.testing.expectEqual(if (read.hblank) @as(u16, 0x003a) else 0x0035, read.next_pc);
             }
-            // BIT's $4212 read is its final access. Assert the returned flag
-            // against that projected access beam directly.
+            // Assert the returned flag against the explicit handler phase.
             const hclock = @as(u16, read.beam.dot) * master_cycles_per_dot + read.beam.master_residual;
             try std.testing.expectEqual(read.hblank, hclock < 4 or hclock > 274 * 4);
         }
     }
 }
 
-test "$4212 access projection preserves the Mesen H=274 half-cycle boundary" {
-    var projected = Emulator.init();
-    projected.setup();
-    projected.ppu.scanline = 36;
-    projected.ppu.dot = 267;
-    projected.ppu.master_accum = 0;
-    projected.bus.beginCpuInstruction();
-    // A BIT abs performs three SlowROM fetches plus one six-master I/O read.
-    // The instruction starts in active display and reads at H=274 residual 2.
-    projected.bus.setCpuAccessTiming(30);
-    try std.testing.expectEqual(@as(u16, 274), projected.bus.cpuAccessBeam().dot);
-    try std.testing.expectEqual(@as(u2, 2), projected.bus.cpuAccessBeam().master_residual);
-    try std.testing.expect(projected.bus.read(0, 0x4212) & 0x40 != 0);
+test "$4212 samples the mapped-read handler phase at the H=274 half-cycle" {
+    // A BIT abs performs three eight-master fetches, then samples its
+    // six-master I/O read after two masters and finishes four masters later.
+    // This first case ends at H=274 residual 2 but samples at H=273 residual
+    // 2, so an access-end model would return the wrong HBlank bit.
+    var before_edge = Emulator.init();
+    before_edge.setup();
+    before_edge.ppu.scanline = 36;
+    before_edge.ppu.dot = 267;
+    before_edge.ppu.master_accum = 0;
+    before_edge.bus.beginCpuInstruction();
+    before_edge.bus.setCpuReadSampleTiming(26);
+    before_edge.bus.setCpuAccessTiming(30);
+    try std.testing.expectEqual(@as(u16, 273), before_edge.bus.cpuReadSampleBeam().dot);
+    try std.testing.expectEqual(@as(u2, 2), before_edge.bus.cpuReadSampleBeam().master_residual);
+    try std.testing.expect(before_edge.bus.read(0, 0x4212) & 0x40 == 0);
 
-    var edge = Emulator.init();
-    edge.setup();
-    edge.ppu.scanline = 36;
-    edge.ppu.dot = 274;
-    edge.ppu.master_accum = 0;
-    edge.bus.beginCpuInstruction();
-    try std.testing.expect(edge.bus.read(0, 0x4212) & 0x40 == 0);
-    edge.bus.setCpuAccessTiming(1);
-    try std.testing.expect(edge.bus.read(0, 0x4212) & 0x40 != 0);
+    // These starts put the handler on the two sides of Mesen's observable
+    // H=274 edge: residual 0 is active; residual 2 is HBlank.
+    var edge_zero = Emulator.init();
+    edge_zero.setup();
+    edge_zero.ppu.scanline = 36;
+    edge_zero.ppu.dot = 267;
+    edge_zero.ppu.master_accum = 2;
+    edge_zero.bus.beginCpuInstruction();
+    edge_zero.bus.setCpuReadSampleTiming(26);
+    edge_zero.bus.setCpuAccessTiming(30);
+    try std.testing.expectEqual(@as(u16, 274), edge_zero.bus.cpuReadSampleBeam().dot);
+    try std.testing.expectEqual(@as(u2, 0), edge_zero.bus.cpuReadSampleBeam().master_residual);
+    try std.testing.expect(edge_zero.bus.read(0, 0x4212) & 0x40 == 0);
 
-    var line_start = Emulator.init();
-    line_start.setup();
-    line_start.ppu.scanline = 37;
-    line_start.ppu.dot = 0;
-    line_start.bus.beginCpuInstruction();
-    try std.testing.expect(line_start.bus.read(0, 0x4212) & 0x40 != 0);
-    line_start.bus.setCpuAccessTiming(4);
-    try std.testing.expect(line_start.bus.read(0, 0x4212) & 0x40 == 0);
+    var edge_two = Emulator.init();
+    edge_two.setup();
+    edge_two.ppu.scanline = 36;
+    edge_two.ppu.dot = 268;
+    edge_two.ppu.master_accum = 0;
+    edge_two.bus.beginCpuInstruction();
+    edge_two.bus.setCpuReadSampleTiming(26);
+    edge_two.bus.setCpuAccessTiming(30);
+    try std.testing.expectEqual(@as(u16, 274), edge_two.bus.cpuReadSampleBeam().dot);
+    try std.testing.expectEqual(@as(u2, 2), edge_two.bus.cpuReadSampleBeam().master_residual);
+    try std.testing.expect(edge_two.bus.read(0, 0x4212) & 0x40 != 0);
 }

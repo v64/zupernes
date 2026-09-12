@@ -54,7 +54,7 @@ fn nextPeriodicAfter(now: u64, phase: u64, period: u64) u64 {
     return phase + ((now - phase) / period + 1) * period;
 }
 
-pub const CpuAccessBeam = struct {
+pub const CpuReadSampleBeam = struct {
     frame: u64,
     scanline: u16,
     dot: u16,
@@ -345,6 +345,9 @@ pub const Bus = struct {
     // state: root.zig always advances it to the committed beam before a step
     // returns, and beginCpuInstruction establishes the next horizon.
     interrupt_horizon_master: u64 = 0,
+    // Explicit mapped-read handler phase. This is earlier than the end of a
+    // CPU read and must remain separate when a stall falls after the sample.
+    cpu_read_sample_master: u64 = 0,
     irq_level_at_instruction_start: bool = false,
     irq_transitions: [max_irq_transitions]IrqTransition = undefined,
     irq_transition_count: u8 = 0,
@@ -359,6 +362,7 @@ pub const Bus = struct {
         self.ppu_write_timing_offset = self.ppu_cpu_timing_base;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
         self.interrupt_horizon_master = absolutePpuMaster(self.ppu);
+        self.cpu_read_sample_master = self.interrupt_horizon_master;
         self.irq_level_at_instruction_start = self.irq_flag;
         self.irq_transition_count = 0;
         self.nmi_edge_count = 0;
@@ -379,12 +383,19 @@ pub const Bus = struct {
         self.syncInterruptFlagsTo(absolutePpuMaster(self.ppu) + self.ppu_write_timing_offset);
     }
 
-    /// Beam position at the end of the current CPU bus access. CPU.step runs
-    /// before root.zig commits the instruction's clocks to Ppu.tick(), so
-    /// register reads that depend on the beam must use this projected horizon
-    /// rather than the PPU's instruction-start dot.
-    pub fn cpuAccessBeam(self: *const Bus) CpuAccessBeam {
-        const master = @max(self.interrupt_horizon_master, absolutePpuMaster(self.ppu));
+    /// Timestamp the handler phase of a CPU read independently from its end.
+    /// Mesen2 3b058f9f executes a read's leading clocks, calls the mapped
+    /// register handler, then executes four trailing master clocks. Keeping
+    /// this timestamp explicit avoids deriving the sample from a later trace
+    /// callback; a future refresh model can place stalls on either side.
+    pub fn setCpuReadSampleTiming(self: *Bus, instruction_masters: u32) void {
+        self.cpu_read_sample_master = absolutePpuMaster(self.ppu) +
+            self.ppu_cpu_timing_base + instruction_masters;
+    }
+
+    /// Beam position at the current CPU read's mapped-register handler phase.
+    pub fn cpuReadSampleBeam(self: *const Bus) CpuReadSampleBeam {
+        const master = self.cpu_read_sample_master;
         const in_frame = master % frame_masters;
         const in_line = in_frame % line_masters;
         return .{
@@ -915,7 +926,7 @@ pub const Bus = struct {
                 // 16 bits out of each controller. Well-behaved games wait for
                 // bit 0 to clear before reading $4218-$421F, so we model that
                 // busy window even though our latch is instantaneous.
-                const beam = self.cpuAccessBeam();
+                const beam = self.cpuReadSampleBeam();
                 var status: u8 = 0;
                 if (beam.scanline >= 225) status |= 0x80; // VBlank
                 const hclock = @as(u16, beam.dot) * @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT + beam.master_residual;

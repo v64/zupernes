@@ -380,7 +380,7 @@ pub const Cpu = struct {
     /// STA's cycles until after its write robs the DSP of ~3 instructions
     /// and the handshake slips a full station (the game overwrites each
     /// parameter before the microcode consumed it).
-    fn accountAccess(self: *Cpu, bank: u8, addr: u16) void {
+    fn accountAccess(self: *Cpu, bank: u8, addr: u16, is_read: bool) void {
         const speed = self.bus.memSpeed(bank, addr);
         // Internal (non-access) cycles elapsed since the last flush: total
         // counted cycles minus one per completed access minus what was
@@ -389,6 +389,12 @@ pub const Cpu = struct {
         const internal: u32 = @as(u32, self.cycles) - self.mem_accesses - self.internal_flushed;
         self.bus.tickDsp(internal * 6 + speed);
         self.internal_flushed += internal;
+        if (is_read) {
+            // Mesen2 3b058f9f samples mapped reads after the leading part of
+            // the bus cycle and before its final four master clocks.
+            const read_sample_masters = self.mem_masters + self.internal_flushed * 6 + speed - 4;
+            self.bus.setCpuReadSampleTiming(read_sample_masters);
+        }
         self.mem_masters += speed;
         self.mem_accesses +%= 1;
         self.last_access_masters = @intCast(speed);
@@ -396,7 +402,7 @@ pub const Cpu = struct {
     }
 
     fn fetchByte(self: *Cpu) u8 {
-        self.accountAccess(self.pbr, self.pc);
+        self.accountAccess(self.pbr, self.pc, true);
         const value = self.bus.read(self.pbr, self.pc);
         self.pc +%= 1;
         self.cycles += 1;
@@ -417,7 +423,7 @@ pub const Cpu = struct {
     }
 
     fn readByte(self: *Cpu, bank: u8, addr: u16) u8 {
-        self.accountAccess(bank, addr);
+        self.accountAccess(bank, addr, true);
         self.cycles += 1;
         return self.bus.read(bank, addr);
     }
@@ -429,7 +435,7 @@ pub const Cpu = struct {
     }
 
     fn writeByte(self: *Cpu, bank: u8, addr: u16, value: u8) void {
-        self.accountAccess(bank, addr);
+        self.accountAccess(bank, addr, false);
         self.cycles += 1;
         // Low-RAM watchpoint (see dbg.trace_watch): report which
         // instruction writes the watched address, in any of its mirrors.
@@ -455,7 +461,7 @@ pub const Cpu = struct {
     }
 
     fn pushByte(self: *Cpu, value: u8) void {
-        self.accountAccess(0, self.sp);
+        self.accountAccess(0, self.sp, false);
         self.bus.write(0, self.sp, value);
         self.sp -%= 1;
         if (self.emulation_mode) {
@@ -474,7 +480,7 @@ pub const Cpu = struct {
         if (self.emulation_mode) {
             self.sp = 0x0100 | (self.sp & 0xFF);
         }
-        self.accountAccess(0, self.sp);
+        self.accountAccess(0, self.sp, true);
         self.cycles += 1;
         return self.bus.read(0, self.sp);
     }
@@ -492,7 +498,7 @@ pub const Cpu = struct {
     // datasheet errata and Bruce Clark's 65816 notes). Original-6502
     // instructions (PHA/PLA/JSR/RTS/BRK/...) keep the page-1 wrap above.
     fn pushByteRaw(self: *Cpu, value: u8) void {
-        self.accountAccess(0, self.sp);
+        self.accountAccess(0, self.sp, false);
         self.bus.write(0, self.sp, value);
         self.sp -%= 1;
         self.cycles += 1;
@@ -505,7 +511,7 @@ pub const Cpu = struct {
 
     fn pullByteRaw(self: *Cpu) u8 {
         self.sp +%= 1;
-        self.accountAccess(0, self.sp);
+        self.accountAccess(0, self.sp, true);
         self.cycles += 1;
         return self.bus.read(0, self.sp);
     }

@@ -18,7 +18,7 @@ export function summarize(path) {
     if (row.kind === "read") {
       const start = pendingStarts.shift();
       if (!start || start.call !== row.call) throw new Error(`${path}: BIT/read pairing failed at call ${row.call}`);
-      reads.push({ start, access: row });
+      reads.push({ start, callback: row });
     }
   }
   if (pendingStarts.length !== 0) throw new Error(`${path}: ${pendingStarts.length} BIT starts have no read`);
@@ -34,26 +34,42 @@ export function summarize(path) {
     const expected = branch.address === 0x8033 ? (hblank ? 0x802e : 0x8035) : (hblank ? 0x803a : 0x8035);
     if (next.address !== expected) badBranchOutcomes++;
   }
-  const classifiedReads = reads.map(pair => ({
-    ...pair,
-    startHblank: pair.start.hclock < 4 || pair.start.hclock > 274 * 4,
-    accessHblank: (pair.access.value & 0x40) !== 0,
-  }));
-  const instructionStartDisagreements = classifiedReads.filter(pair => pair.startHblank !== pair.accessHblank);
+  // SnesMemoryManager::Read calls the mapped handler after the leading part
+  // of a read, then advances four masters before ProcessMemoryRead invokes
+  // the Lua callback. Limit callback-minus-four analysis to the event-free
+  // interval after DRAM refresh and before the H=276 HDMA event. This avoids
+  // assuming the same subtraction across a post-handler event stall.
+  const eventFreeReads = reads.filter(({ callback }) => callback.hclock >= 600 && callback.hclock <= 1102).map(pair => {
+    const handlerHclock = pair.callback.hclock - 4;
+    return {
+      ...pair,
+      handlerHclock,
+      startHblank: pair.start.hclock < 4 || pair.start.hclock > 274 * 4,
+      handlerHblank: handlerHclock < 4 || handlerHclock > 274 * 4,
+      returnedHblank: (pair.callback.value & 0x40) !== 0,
+    };
+  });
+  const instructionStartDisagreements = eventFreeReads.filter(pair => pair.startHblank !== pair.handlerHblank);
+  const handlerValueMismatches = eventFreeReads.filter(pair => pair.handlerHblank !== pair.returnedHblank);
+  const edgeZero = eventFreeReads.filter(pair => pair.handlerHclock === 274 * 4);
+  const edgeTwo = eventFreeReads.filter(pair => pair.handlerHclock === 274 * 4 + 2);
   return {
     calls: rows.filter(row => row.kind === "return").length,
     reads: reads.length,
-    read_latency_masters: [...new Set(reads.map(({ start, access }) => access.master - start.master))].sort((a, b) => a - b),
-    instruction_start_disagreements: instructionStartDisagreements.length,
-    active_to_hblank: instructionStartDisagreements.filter(pair => !pair.startHblank && pair.accessHblank).length,
-    hblank_to_active: instructionStartDisagreements.filter(pair => pair.startHblank && !pair.accessHblank).length,
+    callback_latency_masters: [...new Set(reads.map(({ start, callback }) => callback.master - start.master))].sort((a, b) => a - b),
+    event_free_handler_reads: eventFreeReads.length,
+    instruction_start_handler_disagreements: instructionStartDisagreements.length,
+    handler_value_mismatches: handlerValueMismatches.length,
+    h274_residual_0: { reads: edgeZero.length, hblank_returns: edgeZero.filter(pair => pair.returnedHblank).length },
+    h274_residual_2: { reads: edgeTwo.length, hblank_returns: edgeTwo.filter(pair => pair.returnedHblank).length },
     branch_outcomes: branchCount,
     bad_branch_outcomes: badBranchOutcomes,
-    first_disagreements: instructionStartDisagreements.slice(0, 5).map(({ start, access }) => ({
-      call: access.call,
+    first_disagreements: instructionStartDisagreements.slice(0, 5).map(({ start, callback, handlerHclock }) => ({
+      call: callback.call,
       start: `${start.scanline}:${start.hclock}`,
-      access: `${access.scanline}:${access.hclock}`,
-      value: access.value,
+      handler: `${callback.scanline}:${handlerHclock}`,
+      callback: `${callback.scanline}:${callback.hclock}`,
+      value: callback.value,
     })),
   };
 }
