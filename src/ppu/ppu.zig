@@ -1965,9 +1965,7 @@ pub const Ppu = struct {
         switch (mode) {
             0 => {
                 // Mode 0 ranks, front to back: BG1H=11 BG2H=10 BG1L=8 BG2L=7
-                // BG3H=5 BG4H=4 BG3L=2 BG4L=1 (Mesen RenderMode0). Stage 1
-                // (Mode 0 palette/priority) added this; modes 1-4 come with
-                // the subscreen priority milestone.
+                // BG3H=5 BG4H=4 BG3L=2 BG4L=1 (Mesen RenderMode0).
                 if ((self.ts & 0x01) != 0) {
                     if (bg_lines[0].pixel(x)) |c| {
                         color = c.color;
@@ -2003,20 +2001,31 @@ pub const Ppu = struct {
                 }
             },
             1 => {
-                // Mode 1: BG1/BG2 4bpp, BG3 2bpp
-                if ((self.ts & 0x04) != 0) {
-                    if (bg_lines[2].pixel(x)) |c| {
+                // Mode 1 ranks: BG1H=9 BG2H=8 BG1L=6 BG2L=5 3H(bit3)=11
+                // 3H=3 3L=1 (Mesen RenderMode1).
+                const bg3_h_rank: u8 = if ((self.bgmode & 0x08) != 0) 11 else 3;
+                if ((self.ts & 0x01) != 0) {
+                    if (bg_lines[0].pixel(x)) |c| {
                         color = c.color;
+                        rank = if (c.priority != 0) 9 else 6;
                     }
                 }
                 if ((self.ts & 0x02) != 0) {
                     if (bg_lines[1].pixel(x)) |c| {
-                        color = c.color;
+                        const r: u8 = if (c.priority != 0) 8 else 5;
+                        if (rank == 0 or r > rank) {
+                            color = c.color;
+                            rank = r;
+                        }
                     }
                 }
-                if ((self.ts & 0x01) != 0) {
-                    if (bg_lines[0].pixel(x)) |c| {
-                        color = c.color;
+                if ((self.ts & 0x04) != 0) {
+                    if (bg_lines[2].pixel(x)) |c| {
+                        const r: u8 = if (c.priority != 0) bg3_h_rank else 1;
+                        if (rank == 0 or r > rank) {
+                            color = c.color;
+                            rank = r;
+                        }
                     }
                 }
             },
