@@ -78,16 +78,24 @@ pub const Emulator = struct {
         // This is correct - APU reset would reinitialize them, not clear them
     }
 
-    pub fn loadRom(self: *Emulator, rom_data: []const u8) !void {
+    pub fn loadRomFilesystemFree(self: *Emulator, rom_data: []const u8) !void {
+        // Build the machine minus the HOST part of cartridge bring-up: no
+        // microcode dump lookup, no filesystem. The browser-theater WASM
+        // adapter (wasm32-freestanding, no std.fs) calls this so native and
+        // WASM construct the identical machine through one shared code path.
+        // dsp1_present stays false here; a native host layers the microcode
+        // on top in loadRom below. For a non-DSP cartridge this IS the whole
+        // bring-up (the DSP microcode was reset by reset()).
         try self.bus.loadCartridge(rom_data);
-
-        // If the cartridge header announces a DSP coprocessor, try to load
-        // the uPD77C25 microcode dump from disk. Nearly all DSP-1 games use
-        // the DSP-1B revision (Super Mario Kart included); plain DSP-1 is
-        // the fallback for the few early boards (original Pilotwings).
-        // Missing microcode is not fatal - the game just hangs at its DSP
-        // handshake exactly as it did before this feature existed.
         self.bus.dsp1_present = false;
+        self.reset();
+    }
+
+    pub fn loadRom(self: *Emulator, rom_data: []const u8) !void {
+        // The portable machine first (cartridge, reset, APU boot) - the same
+        // call the browser-theater WASM adapter uses - then the HOST-only
+        // step below. See loadRomFilesystemFree for the split's rationale.
+        try self.loadRomFilesystemFree(rom_data);
         if (self.bus.cartridge.?.has_dsp) {
             const candidates = [_][]const u8{
                 "test/dsp/dsp1b.rom",
@@ -111,8 +119,6 @@ pub const Emulator = struct {
                 );
             }
         }
-
-        self.reset();
     }
 
     /// Run one CPU instruction

@@ -1,0 +1,299 @@
+// ZuperNES browser-theater WASM adapter
+//
+// This is the freestanding wasm32 "host" around the REAL emulator core
+// (src/root.zig Emulator), published to the page as zupernes.wasm. It has
+// NO imports: the browser (and `node test/theater/wasm-check.mjs`, which
+// requires "a WASM instance ... from Node with no imports") instantiate it
+// bare. Everything it does is memory-only; the ONLY host-dependent piece of
+// the native code path - the DSP microcode dump lookup in the old
+// Emulator.loadRom - was hoisted out to Emulator.loadRomFilesystemFree so
+// native and WASM build the identical machine (see src/root.zig).
+//
+// CONTRACT (documented in test/theater/TASK.md, mirrored here):
+//   All pointers are wasm32 byte offsets into the exported linear memory.
+//   Status returns are 0 = success, nonzero = failure; the numeric error
+//   codes are the enum below (also printed by the page on failure paths).
+//
+//   zn_alloc(len)        -> ptr    Owned upload/output memory (positive ptr,
+//                                  0 on failure). Recycled by the caller
+//                                  with zn_free(ptr, len).
+//   zn_free(ptr, len)             Release a matching zn_alloc allocation.
+//   zn_load_rom(ptr,len) -> st    Clone/own the ROM bytes, build a FRESH
+//                                  machine, default FF SRAM. Atomic fail.
+//   zn_run_frame(btns)   -> st    Set controller 1, run EXACTLY one frame.
+//   zn_reset()           -> st    Cold boot of current ROM, SRAM preserved,
+//                                  pending audio discarded.
+//   zn_width/height()     = 256/224
+//   zn_framebuffer_ptr() -> 256x224 LE RGB15 u16 (live: do not cache views)
+//   zn_wram_ptr()        -> 128 KiB live WRAM (diagnostic surface)
+//   zn_sram_ptr/_len()   -> cartridge SRAM bytes and size (before running)
+//   zn_read_audio(ptr,max) -> n   Drain up to max stereo i16 pairs @32kHz.
+//
+// MOST IMPORTANT DESIGN RULES, from the TASK contract:
+//  - Own the ROM bytes for the cartridge lifetime: zn_load_rom CLONES the
+//    caller's upload, so the host may scribble/free its buffer immediately
+//    (wasm-check.mjs verifies exactly that by filling 0xcc after load).
+//  - The Emulator struct is large and self-referential; it lives at ONE
+//    stable global slot. zn_reset rebuilds the CPU/PPU/DMA state in place,
+//    exactly like a cold power cycle minus the ROM swap.
+//  - Never cache TypedArray views across memory growth or machine
+//    replacement: every zn_*_ptr()/read re-derives its slice from the
+//    current Emulator fields, so a memory.growth (allocation) invalidates
+//    nothing the host holds past the call that returned it.
+
+const std = @import("std");
+const zupernes = @import("zupernes");
+const Emulator = zupernes.Emulator;
+
+/// Documented numeric error codes (TASK.md: "Document numeric errors").
+/// 1 = no ROM loaded (operation requires a cartridge),
+/// 2 = the load itself failed (bad/short ROM - error.RomTooSmall etc.),
+/// 3 = allocation failure,
+/// 4 = bad arguments (null pointer / zero length where invalid, free-size
+///     mismatch - see allocOwnership below).
+pub const ZN_ERR_NO_ROM: i32 = 1;
+pub const ZN_ERR_LOAD: i32 = 2;
+pub const ZN_ERR_ALLOC: i32 = 3;
+pub const ZN_ERR_ARGS: i32 = 4;
+
+const wasm_alloc = std.mem.Allocator{
+    .ptr = undefined,
+    .vtable = &std.heap.WasmAllocator.vtable,
+};
+
+// ---------------------------------------------------------------------------
+// Ownership shadow: the cheap way to guarantee "the host actually owns
+// everything it handed out" and "zn_free releases a matching allocation".
+// Both zn_alloc arguments (ptr, len) are recorded; zn_free verifies the
+// pair matches the head of the LIFO and then returns the bytes to the WASM
+// allocator. A mismatch is a host bug: it fails loudly (ARGS) rather than
+// corrupting the freelist, because std.heap.WasmAllocator's free is only
+// safe on the exact (ptr,len) pair that was allocated.
+// ---------------------------------------------------------------------------
+var last_alloc_ptr: usize = 0;
+var last_alloc_len: usize = 0;
+var last_error: i32 = 0;
+
+// ---------------------------------------------------------------------------
+// Machine state. The Emulator is ~940 KB and self-referential, so it can
+// NEVER live on the wasm stack (a 1 MB default stack with a 940 KB frame is
+// an out-of-bounds trap before the first instruction runs). Instead the
+// machine is allocated ONCE from the wasm heap at first successful load and
+// NEVER moved: every interior pointer set up by Emulator.setup stays valid
+// for the whole cartridge lifetime, which is exactly the "stable address"
+// rule on Emulator.setup. zn_reset reloads the same ROM INTO that machine.
+// ---------------------------------------------------------------------------
+
+// The single machine; `rom_loaded` decides whether it holds a live
+// cartridge.
+var emulator: ?*Emulator = null;
+
+// The owned ROM clone. The Cartridge borrows this slice (rom: []const u8
+// with the copier header stripped), so it must outlive the machine. On
+// zn_reset (same-ROM cold boot) hardware maps the SAME cartridge, so the
+// bytes are reused; the battery SRAM inside the machine is explicitly
+// preserved across the reload (see zn_reset).
+var rom_bytes: ?[]u8 = null;
+
+export fn zn_alloc(len: usize) usize {
+    // Owned upload/output memory for the host. Every allocation is recorded
+    // (ptr, len) so zn_free can verify a matching release - WasmAllocator's
+    // free is only safe on the exact pair that was allocated.
+    if (len == 0) return 0;
+    const bytes = wasm_alloc.alloc(u8, len) catch {
+        last_error = ZN_ERR_ALLOC;
+        return 0;
+    };
+    last_alloc_ptr = @intFromPtr(bytes.ptr);
+    last_alloc_len = bytes.len;
+    return last_alloc_ptr;
+}
+
+export fn zn_free(ptr: usize, len: usize) void {
+    if (ptr == 0 or len == 0) return;
+    if (ptr != last_alloc_ptr or len != last_alloc_len) {
+        // Not the most recent zn_alloc pair: refuse to hand the WASM allocator
+        // a pair it cannot safely free. LIFO usage (the documented pattern and
+        // all this theater's code) means this only fires on a host bug.
+        last_error = ZN_ERR_ARGS;
+        return;
+    }
+    const bytes: [*]u8 = @ptrFromInt(ptr);
+    wasm_alloc.free(bytes[0..len]);
+    last_alloc_ptr = 0;
+    last_alloc_len = 0;
+}
+
+export fn zn_load_rom(ptr: usize, len: usize) i32 {
+    if (ptr == 0 or len < 0x8000) {
+        last_error = ZN_ERR_ARGS;
+        return ZN_ERR_ARGS;
+    }
+    // CLONE first: the caller's upload is temporary (it may be clobbered or
+    // freed as soon as this returns) and the cartridge must own its bytes.
+    const source: [*]const u8 = @ptrFromInt(ptr);
+    const rom_copy = wasm_alloc.alloc(u8, len) catch {
+        last_error = ZN_ERR_ALLOC;
+        return ZN_ERR_ALLOC;
+    };
+    @memcpy(rom_copy, source[0..len]);
+
+    // Validate BEFORE touching the previous session: a load failure (e.g. a
+    // 17-byte "ROM") must leave the previous game and its saves intact
+    // (TASK.md: atomic failure). Cartridge.init is the core's own validator.
+    _ = zupernes.Cartridge.init(rom_copy) catch {
+        wasm_alloc.free(rom_copy);
+        last_error = ZN_ERR_LOAD;
+        return ZN_ERR_LOAD;
+    };
+
+    // Build the FRESH machine. The first successful load allocates the
+    // ~940 KB Emulator slot from the wasm heap; later loads reuse the same
+    // stable address (the old machine is simply overwritten in place).
+    var machine: *Emulator = undefined;
+    if (emulator) |m| {
+        machine = m;
+    } else {
+        machine = wasm_alloc.create(Emulator) catch {
+            wasm_alloc.free(rom_copy);
+            last_error = ZN_ERR_ALLOC;
+            return ZN_ERR_ALLOC;
+        };
+    }
+    machine.* = Emulator.init();
+    machine.setup();
+    machine.loadRomFilesystemFree(rom_copy) catch {
+        // ROM rejected: nothing committed, the previous session survives.
+        wasm_alloc.free(rom_copy);
+        last_error = ZN_ERR_LOAD;
+        return ZN_ERR_LOAD;
+    };
+    // Commit: replace the old cartridge's owned bytes. No dangling core
+    // pointers exist by construction - `machine` IS the live machine and
+    // every interior pointer now points into the new cartridge.
+    if (rom_bytes) |old| wasm_alloc.free(old);
+    rom_bytes = rom_copy;
+    emulator = machine;
+    last_error = 0;
+    return 0;
+}
+
+export fn zn_reset() i32 {
+    if (emulator == null or rom_bytes == null) return ZN_ERR_NO_ROM;
+    const machine = emulator.?;
+    const cart = machine.bus.cartridge orelse return ZN_ERR_NO_ROM;
+    // COLD boot: rebuild the whole machine over the SAME ROM bytes at the
+    // same stable address, then RESTORE the battery SRAM - "a cold boot of
+    // the same ROM retaining battery SRAM" (TASK.md). Everything else
+    // (CPU, PPU, APU, DMA - and any DSP state) powers up fresh.
+    var sram: [32 * 1024]u8 = undefined;
+    const sram_size = cart.sram_size;
+    @memcpy(sram[0..sram_size], cart.sram[0..sram_size]);
+    machine.* = Emulator.init();
+    machine.setup();
+    machine.loadRomFilesystemFree(rom_bytes.?) catch {
+        last_error = ZN_ERR_LOAD;
+        return ZN_ERR_LOAD;
+    };
+    @memcpy(machine.bus.cartridge.?.sram[0..sram_size], sram[0..sram_size]);
+    // Pending audio from the dead machine is already gone with it: the DSP
+    // sample ring belongs to the discarded APU ("clear pending audio").
+    return 0;
+}
+
+export fn zn_run_frame(buttons: u16) i32 {
+    const machine = emulator orelse return ZN_ERR_NO_ROM;
+    // Set controller 1 then run exactly one frame (TASK.md). setJoypad
+    // masks to 0xFFF0 like the $4218/$4219 hardware layout.
+    machine.setJoypad(0, buttons);
+    machine.runFrame();
+    return 0;
+}
+
+export fn zn_width() u32 {
+    return 256;
+}
+
+export fn zn_height() u32 {
+    return 224;
+}
+
+export fn zn_framebuffer_ptr() usize {
+    const machine = emulator orelse return 0;
+    return @intFromPtr(machine.getFramebuffer().ptr);
+}
+
+export fn zn_wram_ptr() usize {
+    const machine = emulator orelse return 0;
+    return @intFromPtr(&machine.bus.wram);
+}
+
+export fn zn_sram_ptr() usize {
+    const machine = emulator orelse return 0;
+    // `orelse` on a value optional would COPY the payload to the stack and
+    // hand out a dangling pointer; capture a POINTER to the payload instead.
+    const cart = &(machine.bus.cartridge orelse return 0);
+    return @intFromPtr(&cart.sram);
+}
+
+export fn zn_sram_len() usize {
+    const machine = emulator orelse return 0;
+    const cart = &(machine.bus.cartridge orelse return 0);
+    return cart.sram_size;
+}
+
+export fn zn_read_audio(ptr: usize, max_frames: usize) i32 {
+    if (ptr == 0) return ZN_ERR_ARGS;
+    if (emulator == null) return 0;
+    if (max_frames == 0) return 0;
+    const machine = emulator.?;
+    // Drain up to max_frames stereo i16 pairs into the (zn_alloc'd) output
+    // buffer, never exceeding its capacity: the slice length IS the capacity
+    // readSamples will write.
+    const dst: [][2]i16 = @as([*][2]i16, @ptrFromInt(ptr))[0..max_frames];
+    var total: usize = 0;
+    while (total < max_frames) {
+        const n = machine.readAudioSamples(dst[total..]);
+        if (n == 0) break;
+        total += n;
+    }
+    return @intCast(total);
+}
+
+/// Adapter-level diagnostic for tests: the frame counter (0 with no ROM).
+export fn zn_frame_count() u64 {
+    const machine = emulator orelse return 0;
+    return machine.ppu.frame_count;
+}
+
+/// Adapter-level diagnostic: the last recorded error code (0 = none).
+export fn zn_last_error() i32 {
+    return last_error;
+}
+
+// ---------------------------------------------------------------------------
+// A freestanding wasm module is only a set of exported entry points; the
+// compiler analyzes exactly what the ROOT file references. Without an
+// explicit reference the export functions would not be semantically
+// analyzed, and wasm-ld garbage-collects functions that were never code-
+// generated - leaving a module that exports only `memory`. Referencing the
+// set here through comptime forces the exports to exist in the object
+// before linking, which is where the zn_* contract lives.
+// ---------------------------------------------------------------------------
+comptime {
+    _ = &zn_alloc;
+    _ = &zn_free;
+    _ = &zn_load_rom;
+    _ = &zn_run_frame;
+    _ = &zn_reset;
+    _ = &zn_width;
+    _ = &zn_height;
+    _ = &zn_framebuffer_ptr;
+    _ = &zn_wram_ptr;
+    _ = &zn_sram_ptr;
+    _ = &zn_sram_len;
+    _ = &zn_read_audio;
+    _ = &zn_frame_count;
+    _ = &zn_last_error;
+}
+
