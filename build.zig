@@ -264,10 +264,24 @@ pub fn build(b: *std.Build) void {
     // on the wasm shadow stack, so the default stack is far too small. 4 MB
     // covers construction plus the deepest emulator call paths.
     theater_wasm.stack_size = 4 * 1024 * 1024;
+    // STAGING: the page loads the artifact from src/theater/zupernes.wasm
+    // (the directory `python3 src/theater/serve.py` serves), but a custom
+    // InstallDir is still relative to zig-out - install alone can only
+    // produce zig-out/src/theater/zupernes.wasm, invisible to the server
+    // (and to a clean checkout with no zig-out). The copy into the source
+    // tree is therefore part of THE BUILD GRAPH: a Run step whose cwd is
+    // the build root copies the installed artifact from zig-out into
+    // src/theater/. Nothing is manual, and the artifact stays gitignored.
     const theater_step = b.step("theater", "Build the browser-theater WASM adapter");
-    theater_step.dependOn(&b.addInstallArtifact(theater_wasm, .{
+    const install_theater = b.addInstallArtifact(theater_wasm, .{
         .dest_dir = .{ .override = .{ .custom = "src/theater" } },
-    }).step);
+    });
+    const stage_theater = b.addSystemCommand(&.{ "cp", "-f" });
+    stage_theater.setCwd(.{ .cwd_relative = b.build_root.path orelse "." });
+    stage_theater.addFileArg(install_theater.emitted_bin.?);
+    stage_theater.addArg("src/theater/zupernes.wasm");
+    stage_theater.step.dependOn(&install_theater.step);
+    theater_step.dependOn(&stage_theater.step);
     const emu_tests = b.addTest(.{
         .root_module = emu_mod,
     });
