@@ -75,9 +75,13 @@ worker.onmessage = (ev) => {
     // otherwise land a tick later than a parallel readWram resolution.
     if (m.type === "frame" && m.framebuffer) {
       // The frame marker and the painted canvas must read as one instant
-      // (see comment above); one copy, painted before the reply resolves.
+      // (see comment above). ONE conversion per frame: the eager paint here
+      // populates lastFrameRgba, and the loop's .then reuses it instead of
+      // converting the RGB15 buffer a second time.
       lastFrameBytes = new Uint8Array(m.framebuffer).slice(0).buffer;
       lastFrameRgba = fbToRgba(m.framebuffer.slice(0));
+      frameAlreadyPainted = true;
+      alreadyPaintedRgba = lastFrameRgba;
       presentFrame(m.framebuffer.slice(0));
     }
     const p = pending.get(m.id);
@@ -557,6 +561,8 @@ function presentNow() {
   mode2d.drawImage(offscreen, 0, 0, W, H, 0, 0, canvas.width, canvas.height);
 }
 let lastFrameRgba = null;
+let frameAlreadyPainted = false; // set by the eager paint, cleared by the loop
+let alreadyPaintedRgba = null;
 
 // ---------------------------------------------------------------------------
 // main loop: rAF accumulator at the NTSC cadence, independent of display Hz.
@@ -589,7 +595,12 @@ function loop(t) {
       inFlight = false;
       if (m.generation !== session.gen || session.phase !== "running") return; // stale session
       session.frame++;
-      if (m.framebuffer) { lastFrameBytes = m.framebuffer.slice(0); lastFrameRgba = fbToRgba(m.framebuffer); presentFrame(m.framebuffer); }
+      if (m.framebuffer && !frameAlreadyPainted) {
+        lastFrameBytes = m.framebuffer.slice(0);
+        lastFrameRgba = fbToRgba(m.framebuffer);
+        presentFrame(m.framebuffer);
+      }
+      frameAlreadyPainted = false;
       if (m.pcm.byteLength) audio.push(m.pcm);
       scheduleSRamPoll();
     })
