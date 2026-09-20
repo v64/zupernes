@@ -49,6 +49,8 @@ function znCheck(status, what) {
   }
 }
 
+const TEST_HOOKS = new URLSearchParams(location.search).get("test") === "1";
+
 // One frame's DSP output at 32 kHz is ~534 stereo pairs; 2048 is plenty.
 const AUDIO_SCRATCH_FRAMES = 2048;
 
@@ -57,6 +59,13 @@ self.onmessage = async (ev) => {
   try {
     if (crashed && msg.op !== "boot") {
       throw new Error("emulation worker crashed; a page reload is required");
+    }
+    // Test-only crash injection (?test=1): exercises the page's real error
+    // plumbing against a worker that dies mid-session.
+    if (msg.op === "__crash" && TEST_HOOKS) {
+      crashed = true;
+      romLive = false;
+      throw new Error("injected crash (test)");
     }
     switch (msg.op) {
       case "boot": {

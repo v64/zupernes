@@ -40,10 +40,9 @@ const KEYMAP = {
   KeyO: 0x1000, // Start
   KeyU: 0x2000, // Select
 };
-// Buttons that must be RE-PRESSED after a release event: a browser may
-// auto-repeat a held key; we only accept fresh (non-repeat) keydowns.
+// Held pad mask (the $4218/$4219 bit layout). Only fresh (non-repeat)
+// keydowns set bits: OS auto-repeat must never re-press a released key.
 let held = 0;
-const acceptKeys = { value: true };
 
 const TEST_MODE = new URLSearchParams(location.search).get("test") === "1";
 
@@ -62,16 +61,33 @@ function fail(text) { say("⚠ " + text, true); }
 // ---------------------------------------------------------------------------
 // worker plumbing
 // ---------------------------------------------------------------------------
-const worker = new Worker("js/worker.mjs", { type: "module" });
+// The worker inherits the page's ?test=1 so its test-only hooks (crash
+// injection) match the page's test mode.
+const worker = new Worker(`js/worker.mjs${location.search}`, { type: "module" });
 let reqSeq = 0;
 const pending = new Map(); // id -> {resolve, reject}
 worker.onmessage = (ev) => {
   const m = ev.data;
   if (m.id !== undefined && pending.has(m.id)) {
+    // A frame reply paints IMMEDIATELY, before the awaiting promise even
+    // resolves: page-side observers (tests) treat the frame marker and the
+    // canvas content as one instantaneous state, and the reply's .then may
+    // otherwise land a tick later than a parallel readWram resolution.
+    if (m.type === "frame" && m.framebuffer) {
+      // The frame marker and the painted canvas must read as one instant
+      // (see comment above); one copy, painted before the reply resolves.
+      lastFrameBytes = new Uint8Array(m.framebuffer).slice(0).buffer;
+      lastFrameRgba = fbToRgba(m.framebuffer.slice(0));
+      presentFrame(m.framebuffer.slice(0));
+    }
     const p = pending.get(m.id);
     pending.delete(m.id);
-    if (m.type === "error") p.reject(new Error(m.error));
-    else p.resolve(m);
+    if (m.type === "error") {
+      if (m.crashed) crashWorker(m.error);
+      p.reject(new Error(m.error));
+    } else {
+      p.resolve(m);
+    }
   } else if (m.type === "frame") {
     onFrame(m);
   } else if (m.type === "error" && m.crashed) {
@@ -108,7 +124,11 @@ const session = {
   lastSRamRead: null,
   dead: false,        // replaced by a newer session
 };
-let presenterMode = "none"; // webgpu | 2d
+let presenterMode = "none"; // none | webgpu | 2d
+// Resolves when initPresenter has settled (webgpu or 2d): the test hook's
+// presenter field stays honest about INITIALIZATION rather than reporting
+// "2d" while WebGPU setup is still in flight.
+let presenterReady = null;
 let crtRequested = localStorage.getItem("zupernes-crt") !== "0";
 let crtActive = false;
 let audioEnabled = localStorage.getItem("zupernes-sound") !== "0";
@@ -271,7 +291,6 @@ async function startLoad(file) {
   session.sramBoot = null;
   session.frame = 0;
   session.dead = false;
-  session.lastSRamRead = null;
   audio.flush();
   releaseInputs();
 
@@ -450,6 +469,7 @@ function fitCanvas() {
 }
 
 async function initPresenter() {
+  presenterReady = (async () => {
   const requested = new URLSearchParams(location.search).get("presenter");
   if (requested === "2d") return use2d("forced by ?presenter=2d");
   if (!navigator.gpu) return use2d("WebGPU unavailable in this browser");
@@ -463,17 +483,15 @@ async function initPresenter() {
       if (crtRequested) say("CRT display lost (WebGPU device reset); showing plain 2D", true);
     });
     presenterMode = "webgpu";
-    presenterMode && gpuPresenter.configure({ width: W, height: H, outputWidth: W * 4, outputHeight: H * 4, crt: crtRequested && true });
-    fitCanvas();
+    fitWebGpuOutput();
     crtActive = crtRequested;
-    if (crtActive) {
-      gpuPresenter.configure({ width: W, height: H, outputWidth: canvas.width, outputHeight: canvas.height, crt: true });
-    }
     updateCrtLabel();
   } catch (e) {
     gpuPresenter = null;
     use2d(`WebGPU initialization failed (${e.message})`);
   }
+  })();
+  return presenterReady;
 }
 function use2d(reason) {
   presenterMode = "2d";
@@ -508,7 +526,9 @@ offscreen.width = W;
 offscreen.height = H;
 const offCtx = offscreen.getContext("2d", { alpha: false });
 
+let paintCount = 0; // diagnostics: visible in the test hook
 function presentFrame(fb) {
+  paintCount++;
   const rgba = fbToRgba(fb);
   if (presenterMode === "webgpu" && gpuPresenter) {
     // writeTexture needs exactly W*4 bytesPerRow; rgbaBuffer length matches.
@@ -520,9 +540,17 @@ function presentFrame(fb) {
   mode2d.imageSmoothingEnabled = false;
   mode2d.drawImage(offscreen, 0, 0, W, H, 0, 0, canvas.width, canvas.height);
 }
+let lastFrameBytes = null; // the raw RGB15 framebuffer of the last presented frame
 function presentNow() {
-  // Repaint the LAST received frame (used at load/pause/reset so the canvas
-  // is not blank while the loop is stopped).
+  // Repaint the LAST received frame (used at load/pause/reset/CRT-toggle
+  // so the canvas is not blank or stale while the loop is stopped). Works
+  // on BOTH backends: the WebGPU path re-presents the same texture through
+  // the currently configured pipeline (a CRT toggle takes effect here).
+  if (!lastFrameBytes) return;
+  if (presenterMode === "webgpu" && gpuPresenter && lastFrameRgba) {
+    gpuPresenter.present(new Uint8Array(lastFrameRgba.buffer, 0, W * H * 4));
+    return;
+  }
   if (!lastFrameRgba || !mode2d) return;
   offCtx.putImageData(new ImageData(lastFrameRgba, W, H), 0, 0);
   mode2d.imageSmoothingEnabled = false;
@@ -561,7 +589,7 @@ function loop(t) {
       inFlight = false;
       if (m.generation !== session.gen || session.phase !== "running") return; // stale session
       session.frame++;
-      if (m.framebuffer) { lastFrameRgba = fbToRgba(m.framebuffer); presentFrame(m.framebuffer); }
+      if (m.framebuffer) { lastFrameBytes = m.framebuffer.slice(0); lastFrameRgba = fbToRgba(m.framebuffer); presentFrame(m.framebuffer); }
       if (m.pcm.byteLength) audio.push(m.pcm);
       scheduleSRamPoll();
     })
@@ -600,7 +628,6 @@ function scheduleSRamPoll() {
       if (!session.sramDirty && !arraysEqual(bytes, baseline)) {
         session.sramDirty = true; // will be flushed by the timer below
       }
-      session.lastSRamRead = bytes;
       if (session.sramDirty) queueSRamFlush();
     })
     .catch(() => { sramReadBusy = false; });
@@ -699,8 +726,33 @@ async function doPlay() {
   setPhase("running");
   $("start-overlay").hidden = true;
   startLoop();
+  // Kick the FIRST frame immediately instead of waiting for the rAF
+  // accumulator: pages that observe the boot marker (tests, users watching
+  // the first frame) see the canvas painted with the first frame rather
+  // than a one-tick-blank window.
+  runOneFrame();
   // Focus the canvas so keyboard play begins naturally (TASK.md).
   canvas.focus({ preventScroll: true });
+}
+// Send a single run request right now (no accumulator wait). Safe to call
+// while a run is in flight.
+function runOneFrame() {
+  if (inFlight || session.phase !== "running" || session.dead) return;
+  inFlight = true;
+  const gen = session.gen;
+  call("run", { buttons: held, generation: gen })
+    .then((m) => {
+      inFlight = false;
+      if (m.generation !== session.gen || session.phase !== "running") return;
+      session.frame++;
+      if (m.pcm.byteLength) audio.push(m.pcm);
+      scheduleSRamPoll();
+    })
+    .catch((e) => {
+      inFlight = false;
+      if (/crashed/.test(e.message)) { crashWorker(e.message); return; }
+      fail(`emulation error: ${e.message}`);
+    });
 }
 async function doPause(hide) {
   // Flush the save BEFORE the observable phase flip: the test hooks (and
@@ -784,14 +836,29 @@ function toggleCrt() {
   localStorage.setItem("zupernes-crt", crtRequested ? "1" : "0");
   if (presenterMode === "webgpu" && gpuPresenter) {
     // CRT toggle is pure presentation: one configure() flips the pipeline.
-    gpuPresenter.configure({ width: W, height: H, outputWidth: canvas.width, outputHeight: canvas.height, crt: crtRequested });
+    // The output size must be re-derived (the presenter sizes its backing
+    // store from these values; passing the source size would collapse k
+    // to 1 and make the scanline/mask effect vanish).
+    fitWebGpuOutput();
     crtActive = crtRequested;
+    presentNow(); // the new pipeline draws the paused frame immediately
   } else {
     crtActive = false; // 2D fallback: truthfully off
     say("CRT is unavailable without WebGPU; showing the plain picture");
   }
   updateCrtLabel();
 }
+// Pick the largest integer k so W*k x H*k fits the stage's device-pixel box
+// (ZuperWorld's integer-scale policy), and configure the presenter with it.
+function fitWebGpuOutput() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const availW = Math.max(1, Math.floor((rect.width || W) * dpr));
+  const availH = Math.max(1, Math.floor((rect.height || H) * dpr));
+  let k = Math.max(1, Math.min(Math.floor(availW / W), Math.floor(availH / H)));
+  gpuPresenter.configure({ width: W, height: H, outputWidth: W * k, outputHeight: H * k, crt: crtRequested });
+}
+addEventListener("resize", () => { if (presenterMode === "webgpu" && gpuPresenter) fitWebGpuOutput(); });
 
 $("pause").addEventListener("click", () => {
   if (session.phase === "running") doPause();
@@ -847,7 +914,7 @@ if (TEST_MODE) {
         frame: session.frame,
         romId: session.romId,
         lastError,
-        presenter: presenterMode === "webgpu" ? "webgpu" : "2d",
+        presenter: presenterMode === "webgpu" ? "webgpu" : presenterMode === "2d" ? "2d" : "initializing",
         crtRequested, crtActive,
         audioEnabled,
         audioQueuedSeconds: audio.queueMs() / 1000,
@@ -859,8 +926,17 @@ if (TEST_MODE) {
         audioUnderruns: audio.underruns + audio.underrunEvents,
         audioPeakQueueMs: Math.round(audio.peakQueueMs),
         deviceLost,
+        paintCount,
       };
     },
+    presenterReady: () => presenterReady,
+    // Test-only: make the worker die mid-session (real error plumbing).
+    forceCrash: () => call("__crash"),
+    // Repaint the paused frame at the CURRENT canvas size (the parity check
+    // temporarily resizes the canvas to native 256x224 and must NOT go
+    // through fitCanvas, which would re-derive an integer scale). Passing
+    // true skips the resize.
+    repaint: (skipFit) => { if (!skipFit) fitCanvas(); presentNow(); },
     async readWram(offset, len = 1) {
       const m = await call("readWram", { offset, len });
       return Array.isArray(m.bytes) ? m.bytes : Array.from(m.bytes);
