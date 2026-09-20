@@ -1671,7 +1671,22 @@ pub const Ppu = struct {
             }
 
             const row = self.decodeTileRow(tile_data_addr, @intCast(py), bpp);
-            const palette_base: u16 = @as(u16, palette) * palette_shift;
+            // Mode 0 carves CGRAM into four 2bpp banks so every layer can
+            // pick from all 8 palette slots independently: BG1 owns colors
+            // 0-31, BG2 32-63, BG3 64-95, BG4 96-127 (each 2bpp palette is
+            // 4 entries). Later modes have fewer layers with wider palettes,
+            // so their layers all index from 0 (4bpp palettes are 16 entries
+            // apart; 8bpp layers use the whole 256-entry space).
+            // Hardware note: Mode 0 means BGMODE bits 0-2 == 0 AND every
+            // layer is 2bpp; the bpp==2 guard encodes that pairing so a
+            // mismatched caller (the randomized equivalence test) can't
+            // build an out-of-range CGRAM address.
+            //
+            // Source: Mesen SnesPpu.cpp RenderMode0() passes basePaletteOffset
+            // 0/32/64/96 to its four RenderTilemap calls, and GetRgbColor()
+            // indexes CGRAM as base + paletteIndex * (1 << bpp) + colorIndex.
+            const mode0_bank: u16 = if (bpp == 2 and (self.bgmode & 0x07) == 0) @as(u16, bg - 1) * 32 else 0;
+            const palette_base: u16 = mode0_bank + @as(u16, palette) * palette_shift;
 
             // ---- Emit the run ----
             // Walk the decoded row forward or backward depending on h_flip.
@@ -1889,8 +1904,14 @@ pub const Ppu = struct {
         // Color 0 is transparent
         if (pixel_color == 0) return null;
 
-        // Calculate palette offset based on bpp and BG
-        const palette_offset: u16 = switch (bpp) {
+        // Calculate palette offset based on bpp and BG. In Mode 0 every
+        // layer is 2bpp and gets its own 32-entry CGRAM bank (BG1 colors
+        // 0-31, BG2 32-63, BG3 64-95, BG4 96-127), giving each layer the
+        // full 8-palette range of 2bpp palettes. The bpp==2 guard encodes
+        // that pairing (see renderBgLine); see the matching comment there
+        // for the full derivation and Mesen reference.
+        const mode0_bank: u16 = if (bpp == 2 and (self.bgmode & 0x07) == 0) @as(u16, bg - 1) * 32 else 0;
+        const palette_offset: u16 = mode0_bank + switch (bpp) {
             2 => @as(u16, palette) * 4,
             4 => @as(u16, palette) * 16,
             8 => 0, // 8bpp uses full 256-color palette
@@ -3135,6 +3156,116 @@ test "getTilePixel decodes planar tiles via spread LUT" {
     ppu.vram[32] = 0b10000000; // bp4: pixel 0 gets bit 4
     ppu.vram[49] = 0b10000000; // bp7: pixel 0 gets bit 7
     try std.testing.expectEqual(@as(u8, 9 | 0x10 | 0x80), ppu.getTilePixel(0, 0, 0, 8));
+}
+
+test "Mode 0 reserves a 32-color CGRAM bank per background layer" {
+    // In Mode 0 each BG is 2bpp, and the hardware gives every layer its own
+    // 32-entry slice of CGRAM: BG1 entries 0-31, BG2 32-63, BG3 64-95, BG4
+    // 96-127 (Mesen RenderMode0: basePaletteOffset 0/32/64/96). A palette-N
+    // tile on BG2 therefore reads CGRAM 32 + N*4 + colorIndex, NOT N*4 +
+    // colorIndex - the same tilemap entry means different colors depending
+    // on which layer rendered it.
+    //
+    // This test programs the four same-index cells differently per layer
+    // (with distinct RGB values the rest of the palette never uses, and a
+    // non-default CHR bank/map per layer) so a wrong bank cannot alias to
+    // the right answer.
+    var ppu = Ppu.init();
+    ppu.inidisp = 0x0F;
+    ppu.bgmode = 0x00; // Mode 0: four 2bpp layers
+    ppu.tm = 0x0F; // BG1..BG4 on the main screen
+    // Non-default CHR bases and map bases per layer so a wrong-bank lookup
+    // cannot alias another layer's intended cell. (BGxSC bits 7:2 select the
+    // map in 2KB steps: (sc & 0xFC) << 9 bytes.)
+    ppu.bg12nba = 0x21; // BG1 CHR=$2000, BG2 CHR=$4000
+    ppu.bg34nba = 0x43; // BG3 CHR=$8000, BG4 CHR=$6000
+    ppu.bg1sc = 0x18; // BG1 map=(0x18&0xFC)<<9 = $3000
+    ppu.bg2sc = 0x30; // BG2 map=$6000
+    ppu.bg3sc = 0x48; // BG3 map=$9000
+    ppu.bg4sc = 0x60; // BG4 map=$C000
+
+    // One solid 2bpp tile of color index 3 at CHR tile 1 per layer.
+    // entry $0001 = tile 1, palette 0, low priority (palette field is bits
+    // 10-12, so $0001 is palette 0; the atlas-latched priority bit stays 0.)
+    const maps = [4]u32{ 0x3000, 0x6000, 0x9000, 0xC000 };
+    const chrs = [4]u32{ 0x2000, 0x4000, 0x8000, 0x6000 };
+    const entry: u16 = 0x0001;
+    for (0..4) |bg| {
+        const m = maps[bg];
+        ppu.vram[m] = @truncate(entry & 0xFF);
+        ppu.vram[m + 1] = @truncate(entry >> 8);
+    }
+    // CHR tile 1 sits 16 bytes into each layer's bank (2bpp tile = 16
+    // bytes); index 3 needs all four plane bytes set on every row.
+    for (0..4) |bg| {
+        const base = chrs[bg] + 16;
+        for (0..8) |row| {
+            ppu.vram[base + row * 2] = 0xFF; // bp0/bp1 rows
+            ppu.vram[base + row * 2 + 1] = 0xFF;
+            ppu.vram[base + 16 + row * 2] = 0xFF; // bp2/bp3 rows
+            ppu.vram[base + 16 + row * 2 + 1] = 0xFF;
+        }
+    }
+
+    // Distinct palette cells per layer, all at palette 0, color index 3 ->
+    // CGRAM bank + 0*4 + 3: entries 3, 35, 67, 99. Give them different RGB15
+    // values that no other case reuses, filling only the low/high bytes
+    // getColor() reads.
+    const cells = [4]u16{ 3, 35, 67, 99 };
+    const rgbs = [4]u16{ 0x2489, 0x56F2, 0x4214, 0x6B5A };
+    for (cells, rgbs) |cell, rgb| {
+        ppu.cgram[cell * 2] = @truncate(rgb & 0xFF);
+        ppu.cgram[cell * 2 + 1] = @truncate(rgb >> 8);
+    }
+
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x2489), ppu.framebuffer[4 * SCREEN_WIDTH]); // BG1 wins (front layer)
+    // BG2..BG4 must each resolve to THEIR OWN bank cell if picked; verify by
+    // masking single layers through TM.
+    ppu.tm = 0x02;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x56F2), ppu.framebuffer[4 * SCREEN_WIDTH]);
+    ppu.tm = 0x04;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x4214), ppu.framebuffer[4 * SCREEN_WIDTH]);
+    ppu.tm = 0x08;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x6B5A), ppu.framebuffer[4 * SCREEN_WIDTH]);
+
+    // Cross-render the same line through the per-pixel reference: both
+    // paths must apply the identical bank arithmetic (line-vs-pixel
+    // equivalence is asserted by the property test below; this pins the
+    // actual cells).
+    for (1..5) |bg| {
+        ppu.tm = @as(u8, 1) << @intCast(bg - 1);
+        ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+        const line_expected = ppu.framebuffer[4 * SCREEN_WIDTH];
+        const px = ppu.renderBgPixel(@intCast(bg), 0, 4, 2).?;
+        try std.testing.expectEqual(line_expected, px.color);
+    }
+
+    // Non-Mode-0 layers keep palette offsets from 0: in Mode 1 a palette-7
+    // 4bpp BG2 tile lands at entry 7*16 + colorIndex regardless of layer
+    // (no per-layer bank exists outside Mode 0 - the bank must not leak).
+    ppu.bgmode = 0x01;
+    ppu.tm = 0x02; // BG2 only, 4bpp
+    // BG2 tilemap lives at $6000 (bg2sc=0x30); BG2 CHR base is $4000
+    // (bg12nba=0x21 high nibble), tile 1 at base + 32.
+    ppu.vram[0x6000] = 0x01; // entry $1C01: tile 1, palette 7, low priority
+    ppu.vram[0x6001] = 0x1C;
+    const b2base = 0x4000 + 32;
+    for (0..8) |row| {
+        // 4bpp row layout: bp0/bp1 interleaved in the first 16 bytes,
+        // bp2/bp3 in the next 16. Index 7 = bp0,bp1,bp2 set / bp3 clear.
+        ppu.vram[b2base + row * 2] = 0xFF; // bp0 row
+        ppu.vram[b2base + row * 2 + 1] = 0xFF; // bp1 row
+        ppu.vram[b2base + 16 + row * 2] = 0xFF; // bp2 row
+        ppu.vram[b2base + 16 + row * 2 + 1] = 0x00; // bp3 row
+    }
+    ppu.cgram[(7 * 16 + 7) * 2] = 0x42; // entry 7*16+7 = 119
+    ppu.cgram[(7 * 16 + 7) * 2 + 1] = 0x15;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x1542), ppu.framebuffer[4 * SCREEN_WIDTH]);
 }
 
 test "Mode 1 BG3 priority bit puts BG3 high ahead of BG1 BG2 and OBJ3" {
