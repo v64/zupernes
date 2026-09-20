@@ -2030,16 +2030,22 @@ pub const Ppu = struct {
                 }
             },
             2, 3, 4, 5, 6 => {
-                // Modes 2-6 subscreen: mode 6 has no BG2 (depths are baked
-                // into the buffers by the line-buffer pass)
+                // Modes 2-6 ranks (Mesen RenderMode2-6): BG1H=7 BG1L=3
+                // BG2H=5 BG2L=1. Mode 6 has no BG2 (depths are baked into
+                // the buffers by the line-buffer pass).
                 if (mode != 6 and (self.ts & 0x02) != 0) {
                     if (bg_lines[1].pixel(x)) |c| {
                         color = c.color;
+                        rank = if (c.priority != 0) 5 else 1;
                     }
                 }
                 if ((self.ts & 0x01) != 0) {
                     if (bg_lines[0].pixel(x)) |c| {
-                        color = c.color;
+                        const r: u8 = if (c.priority != 0) 7 else 3;
+                        if (rank == 0 or r > rank) {
+                            color = c.color;
+                            rank = r;
+                        }
                     }
                 }
             },
