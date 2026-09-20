@@ -837,95 +837,77 @@ pub const Ppu = struct {
     // ==========================================================================
     // SPRITE-TO-BACKGROUND PRIORITY
     // ==========================================================================
-    // Determines whether a sprite pixel should appear in front of a BG pixel.
-    // The SNES has complex per-mode priority ordering. This function implements
-    // the correct layering for each mode.
+    // Determines whether a sprite pixel should appear in front of the BG
+    // pixel already selected for this dot.
     //
-    // Mode 1 standard priority order (front to back):
-    //   S3 → 1H → 2H → S2 → 1L → 2L → S1 → 3H → S0 → 3L
+    // The SNES assigns every drawable element an absolute priority rank per
+    // graphics mode; the sprite wins when its rank is strictly greater than
+    // the BG pixel's. Rank tables (Mesen SnesPpu.cpp RenderModeN):
     //
-    // Mode 1 with BG3 priority bit set (BGMODE bit 3 = 1):
-    //   3H → S3 → 1H → 2H → S2 → 1L → 2L → S1 → S0 → 3L
-    //   BG3 high priority tiles appear in front of EVERYTHING!
+    //   Mode 0: BG1 8/11  BG2 7/10  BG3 2/5  BG4 1/4   OBJ 3/6/9/12
+    //   Mode 1: BG1 6/9   BG2 5/8   BG3 1/3  (bit3: 3H=11)  OBJ 2/4/7/10
+    //   Modes 2-6: BG1 3/7  BG2 1/5                    OBJ 2/4/6/8
     //
-    // Where:
-    //   S0-S3 = Sprites with priority 0-3
-    //   1H/1L = BG1 high/low priority (tile priority bit)
-    //   2H/2L = BG2 high/low priority
-    //   3H/3L = BG3 high/low priority
+    // Mode 1's BG3-priority bit ($2105 bit 3) promotes BG3 HIGH-priority
+    // tiles ahead of every sprite level, so OBJ never wins there.
     // ==========================================================================
     fn spritePriorityWins(self: *Ppu, mode: u3, sprite_priority: u8, bg_layer: u8, bg_tile_priority: u8) bool {
         // If no BG pixel (backdrop only), sprite always wins
         if (bg_layer == 0) return true;
 
         switch (mode) {
-            1 => {
-                // Mode 1 has a special "BG3 priority" bit in BGMODE (bit 3).
-                // When this bit is SET, BG3 high-priority tiles go to the FRONT
-                // of the entire priority list - in front of even sprite priority 3!
-                //
-                // Standard Mode 1 priority (BGMODE bit 3 = 0):
-                //   S3 → 1H → 2H → S2 → 1L → 2L → S1 → 3H → S0 → 3L
-                //
-                // Mode 1 with BG3 priority (BGMODE bit 3 = 1):
-                //   3H → S3 → 1H → 2H → S2 → 1L → 2L → S1 → S0 → 3L
-                //
-                // This is used by SMW's title screen (BGMODE=$09) to make the
-                // logo appear in front of Mario who is jumping behind it.
-                const bg3_priority_bit = (self.bgmode & 0x08) != 0;
-
-                // Special case: BG3 high priority with BG3 priority bit wins over ALL sprites
-                if (bg3_priority_bit and bg_layer == 3 and bg_tile_priority == 1) {
-                    return false; // Sprite does NOT win - BG3 high priority is in front
-                }
-
-                // Standard Mode 1 priority values (higher = more in front)
-                const sprite_eff: u8 = switch (sprite_priority) {
-                    3 => 10, // S3 - front
-                    2 => 7, // S2
-                    1 => 4, // S1
-                    else => 2, // S0
-                };
-
-                // Note: 3H is lower in standard mode, but handled above when bg3_priority_bit is set
-                const bg_eff: u8 = switch (bg_layer) {
-                    1 => if (bg_tile_priority == 1) 9 else 6, // 1H=9, 1L=6
-                    2 => if (bg_tile_priority == 1) 8 else 5, // 2H=8, 2L=5
-                    3 => if (bg_tile_priority == 1) 3 else 1, // 3H=3, 3L=1
-                    else => 0,
-                };
-
-                return sprite_eff > bg_eff;
-            },
             0 => {
-                // Mode 0 - simplified: treat similar to Mode 1 for now
-                // TODO: Implement proper Mode 0 priority if needed
-                const sprite_eff: u8 = switch (sprite_priority) {
+                const obj_rank: u8 = switch (sprite_priority) {
+                    3 => 12,
+                    2 => 9,
+                    1 => 6,
+                    else => 3,
+                };
+                const bg_rank: u8 = switch (bg_layer) {
+                    1 => if (bg_tile_priority != 0) 11 else 8,
+                    2 => if (bg_tile_priority != 0) 10 else 7,
+                    3 => if (bg_tile_priority != 0) 5 else 2,
+                    else => if (bg_tile_priority != 0) 4 else 1,
+                };
+                return obj_rank > bg_rank;
+            },
+            1 => {
+                // BGMODE bit 3 promotes BG3 high-priority tiles ahead of
+                // even sprite priority 3 (SMW title screen). The BG
+                // composite loop applies the same promotion, so both sides
+                // of the comparison must agree.
+                if ((self.bgmode & 0x08) != 0 and bg_layer == 3 and bg_tile_priority != 0) {
+                    return false;
+                }
+                const obj_rank: u8 = switch (sprite_priority) {
                     3 => 10,
                     2 => 7,
                     1 => 4,
                     else => 2,
                 };
-                const bg_eff: u8 = if (bg_tile_priority == 1) 8 else 5;
-                return sprite_eff > bg_eff;
+                const bg_rank: u8 = switch (bg_layer) {
+                    1 => if (bg_tile_priority != 0) 9 else 6,
+                    2 => if (bg_tile_priority != 0) 8 else 5,
+                    else => if (bg_tile_priority != 0) 3 else 1,
+                };
+                return obj_rank > bg_rank;
             },
             else => {
-                // Other modes - use simple comparison for now
-                // Sprite priority 3 always wins, otherwise compare directly
-                if (sprite_priority == 3) return true;
-                if (bg_tile_priority == 1) return false; // High priority BG wins
-                return sprite_priority >= 1; // Low priority BG loses to sprite 1+
+                const obj_rank: u8 = switch (sprite_priority) {
+                    3 => 8,
+                    2 => 6,
+                    1 => 4,
+                    else => 2,
+                };
+                const bg_rank: u8 = if (bg_layer == 1)
+                    (if (bg_tile_priority != 0) @as(u8, 7) else 3)
+                else
+                    (if (bg_tile_priority != 0) @as(u8, 5) else 1);
+                return obj_rank > bg_rank;
             },
         }
     }
 
-    /// Returns whether a Mode 1 candidate BG pixel is in front of the BG
-    /// pixel already selected for this dot. The tile priority bit is not a
-    /// global z value: BG1/2 low priority still precede BG3 high priority in
-    /// ordinary Mode 1. BGMODE's bit 3 promotes only BG3 high priority.
-    ///
-    /// Source: fullsnes, "PPU Priority", Mode 1 chart and the $2105
-    /// BGMODE description: https://problemkaputt.de/fullsnes.htm#snesppubgmode
     fn mode1BgPixelWins(self: *const Ppu, current_layer: u8, current_priority: u8, candidate_layer: u8, candidate_priority: u8) bool {
         const rank = struct {
             fn get(bg3_priority: bool, layer: u8, tile_priority: u8) u8 {
@@ -1036,106 +1018,132 @@ pub const Ppu = struct {
         // Render each pixel in this constant-register span.
         for (x_begin..x_end) |x| {
             var color: u16 = backdrop;
-            var bg_priority: u8 = 0;
+            var bg_priority: u8 = 0; // absolute per-mode rank of the winning BG pixel (0 = backdrop)
+            var bg_tile_prio: u8 = 0; // tilemap priority bit of the winning BG pixel
             var bg_layer: u8 = 0; // Track which BG layer produced this pixel (0 = backdrop)
 
             // Render BG layers (back to front based on priority)
             switch (mode) {
                 0 => {
-                    // Mode 0: 4 BG layers, 2bpp each (4 colors per BG)
-                    // Apply window masking per layer
+                    // Mode 0: 4 BG layers, 2bpp each. Priority is NOT the
+                    // tilemap priority bit here: the hardware assigns each
+                    // layer an absolute rank from (layer, tile-priority-bit)
+                    // per mode (Mode 0 table, back to front):
+                    //   BG4L=1 BG4H=4 BG3L=2 BG3H=5 BG2L=7 BG2H=10 BG1L=8 BG1H=11
+                    // so BG1 low-priority tiles sit in FRONT of BG2 high even
+                    // though the tilemap priority bit is 0. Each screen keeps
+                    // the pixel with the strictly greatest rank; equal ranks
+                    // lose to the already-drawn (earlier/backward) pixel.
+                    // Source: Mesen SnesPpu.cpp RenderMode0()'s RenderTilemap
+                    // priority template arguments, and its per-screen
+                    // "current flags < priority" draw condition.
                     const x8: u8 = @intCast(x);
-                    if ((self.tm & 0x08) != 0 and !self.isWindowMasked(3, x8)) {
-                        if (bg_lines[3].pixel(x)) |c| {
+                    // Front-to-back walk mirrors the rank ordering: the first
+                    // opaque layer wins outright, later layers need a greater
+                    // rank (never true at equal rank) and can be skipped.
+                    if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
+                        if (bg_lines[0].pixel(x)) |c| {
                             color = c.color;
-                            bg_priority = c.priority;
-                            bg_layer = 4;
-                        }
-                    }
-                    if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
-                        if (bg_lines[2].pixel(x)) |c| {
-                            if (c.priority >= bg_priority) {
-                                color = c.color;
-                                bg_priority = c.priority;
-                                bg_layer = 3;
-                            }
+                            bg_priority = if (c.priority != 0) 11 else 8;
+                            bg_tile_prio = c.priority;
+                            bg_layer = 1;
                         }
                     }
                     if ((self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
                         if (bg_lines[1].pixel(x)) |c| {
-                            if (c.priority >= bg_priority) {
+                            const rank: u8 = if (c.priority != 0) 10 else 7;
+                            if (bg_layer == 0 or rank > bg_priority) {
                                 color = c.color;
-                                bg_priority = c.priority;
+                                bg_priority = rank;
+                                bg_tile_prio = c.priority;
                                 bg_layer = 2;
                             }
                         }
                     }
-                    if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
-                        if (bg_lines[0].pixel(x)) |c| {
-                            if (c.priority >= bg_priority) {
+                    if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
+                        if (bg_lines[2].pixel(x)) |c| {
+                            const rank: u8 = if (c.priority != 0) 5 else 2;
+                            if (bg_layer == 0 or rank > bg_priority) {
                                 color = c.color;
-                                bg_priority = c.priority;
-                                bg_layer = 1;
+                                bg_priority = rank;
+                                bg_tile_prio = c.priority;
+                                bg_layer = 3;
+                            }
+                        }
+                    }
+                    if ((self.tm & 0x08) != 0 and !self.isWindowMasked(3, x8)) {
+                        if (bg_lines[3].pixel(x)) |c| {
+                            const rank: u8 = if (c.priority != 0) 4 else 1;
+                            if (bg_layer == 0 or rank > bg_priority) {
+                                color = c.color;
+                                bg_priority = rank;
+                                bg_tile_prio = c.priority;
+                                bg_layer = 4;
                             }
                         }
                     }
                 },
                 1 => {
-                    // Mode 1: BG1/BG2 4bpp (16 colors), BG3 2bpp (4 colors)
-                    // Fullsnes's Mode 1 chart is ordered 1H, 2H, 1L, 2L,
-                    // 3H, 3L; when BGMODE bit 3 is set, 3H moves to the
-                    // very front.  `mode1BgPixelWins` keeps that ordering
-                    // instead of treating tile priority as a global z value.
-                    // Apply window masking per layer
+                    // Mode 1: BG1/BG2 4bpp, BG3 2bpp. Ranks (Mesen
+                    // RenderMode1): BG1L=6 BG2L=5 BG3L=1, high +3
+                    // (BG1H=9 BG2H=8 BG3H=3); with BGMODE bit 3 set, BG3
+                    // high jumps to 11, ahead of every BG and OBJ level.
+                    // $2105 bit 3 only promotes BG3's HIGH-priority tiles,
+                    // never its low-priority ones.
                     const x8: u8 = @intCast(x);
-                    if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
-                        if (bg_lines[2].pixel(x)) |c| {
+                    const bg3_h_rank: u8 = if ((self.bgmode & 0x08) != 0) 11 else 3;
+                    if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
+                        if (bg_lines[0].pixel(x)) |c| {
                             color = c.color;
-                            bg_priority = c.priority;
-                            bg_layer = 3;
+                            bg_priority = if (c.priority != 0) 9 else 6;
+                            bg_tile_prio = c.priority;
+                            bg_layer = 1;
                         }
                     }
                     if ((self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
                         if (bg_lines[1].pixel(x)) |c| {
-                            if (self.mode1BgPixelWins(bg_layer, bg_priority, 2, c.priority)) {
+                            const rank: u8 = if (c.priority != 0) 8 else 5;
+                            if (bg_layer == 0 or rank > bg_priority) {
                                 color = c.color;
-                                bg_priority = c.priority;
+                                bg_priority = rank;
+                                bg_tile_prio = c.priority;
                                 bg_layer = 2;
                             }
                         }
                     }
-                    if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
-                        if (bg_lines[0].pixel(x)) |c| {
-                            if (self.mode1BgPixelWins(bg_layer, bg_priority, 1, c.priority)) {
+                    if ((self.tm & 0x04) != 0 and !self.isWindowMasked(2, x8)) {
+                        if (bg_lines[2].pixel(x)) |c| {
+                            const rank: u8 = if (c.priority != 0) bg3_h_rank else 1;
+                            if (bg_layer == 0 or rank > bg_priority) {
                                 color = c.color;
-                                bg_priority = c.priority;
-                                bg_layer = 1;
+                                bg_priority = rank;
+                                bg_tile_prio = c.priority;
+                                bg_layer = 3;
                             }
                         }
                     }
                 },
                 2, 3, 4, 5, 6 => {
-                    // Modes 2-6: two BG layers with mode-specific depths.
-                    //   Mode 2: BG1 4bpp, BG2 4bpp (+ offset-per-tile, TODO)
-                    //   Mode 3: BG1 8bpp, BG2 4bpp
-                    //   Mode 4: BG1 8bpp, BG2 2bpp (+ offset-per-tile, TODO)
-                    //   Mode 5: BG1 4bpp, BG2 2bpp (hires - drawn lo-res here)
-                    //   Mode 6: BG1 4bpp only   (hires + offset-per-tile)
-                    // Render back-to-front: BG2 first, then BG1 on top when
-                    // its pixel is opaque and priority allows.
+                    // Modes 2-6: two BG layers with mode-specific depths (see
+                    // the line-buffer pass for the per-mode table). Ranks
+                    // (Mesen RenderMode2/3/4/5/6: all use BG1L=3 BG2L=1 with
+                    // high +4 / +4): BG1L=3 BG2L=1, BG1H=7 BG2H=5.
                     const x8: u8 = @intCast(x);
                     if (mode != 6 and (self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
                         if (bg_lines[1].pixel(x)) |c| {
                             color = c.color;
-                            bg_priority = c.priority;
+                            bg_priority = if (c.priority != 0) 5 else 1;
+                            bg_tile_prio = c.priority;
                             bg_layer = 2;
                         }
                     }
                     if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
                         if (bg_lines[0].pixel(x)) |c| {
-                            if (c.priority >= bg_priority or bg_layer == 0) {
+                            const rank: u8 = if (c.priority != 0) 7 else 3;
+                            if (bg_layer == 0 or rank > bg_priority) {
                                 color = c.color;
-                                bg_priority = c.priority;
+                                bg_priority = rank;
+                                bg_tile_prio = c.priority;
                                 bg_layer = 1;
                             }
                         }
@@ -1166,7 +1174,7 @@ pub const Ppu = struct {
             var obj_math_eligible = false;
 
             if (sprite_buffer[x]) |sprite| {
-                const sprite_wins = self.spritePriorityWins(mode, sprite.priority, bg_layer, bg_priority);
+                const sprite_wins = self.spritePriorityWins(mode, sprite.priority, bg_layer, bg_tile_prio);
 
                 // Debug: trace sprite priority decisions at frame 700
                 if (comptime dbg.enabled) {
@@ -1946,31 +1954,51 @@ pub const Ppu = struct {
     /// instead of TM, so one buffer pass serves both screens.
     fn renderSubscreenPixel(self: *Ppu, bg_lines: *const [4]BgLine, x: u16, y: u16, mode: u3) ?u16 {
         var color: ?u16 = null;
+        // Absolute priority rank of the winning subscreen pixel; mirrors the
+        // main-screen composite loop but driven by TS ($212D) instead of TM.
+        // The tile priority bit alone is not a z value (see renderScanlineRange).
+        var rank: u8 = 0;
 
         // Note: Subscreen doesn't use window masking for layer enable
         // (though the color window affects where color math applies)
 
         switch (mode) {
             0 => {
-                // Mode 0: 4 BG layers, 2bpp each
-                if ((self.ts & 0x08) != 0) {
-                    if (bg_lines[3].pixel(x)) |c| {
+                // Mode 0 ranks, front to back: BG1H=11 BG2H=10 BG1L=8 BG2L=7
+                // BG3H=5 BG4H=4 BG3L=2 BG4L=1 (Mesen RenderMode0). Stage 1
+                // (Mode 0 palette/priority) added this; modes 1-4 come with
+                // the subscreen priority milestone.
+                if ((self.ts & 0x01) != 0) {
+                    if (bg_lines[0].pixel(x)) |c| {
                         color = c.color;
-                    }
-                }
-                if ((self.ts & 0x04) != 0) {
-                    if (bg_lines[2].pixel(x)) |c| {
-                        color = c.color;
+                        rank = if (c.priority != 0) 11 else 8;
                     }
                 }
                 if ((self.ts & 0x02) != 0) {
                     if (bg_lines[1].pixel(x)) |c| {
-                        color = c.color;
+                        const r: u8 = if (c.priority != 0) 10 else 7;
+                        if (rank == 0 or r > rank) {
+                            color = c.color;
+                            rank = r;
+                        }
                     }
                 }
-                if ((self.ts & 0x01) != 0) {
-                    if (bg_lines[0].pixel(x)) |c| {
-                        color = c.color;
+                if ((self.ts & 0x04) != 0) {
+                    if (bg_lines[2].pixel(x)) |c| {
+                        const r: u8 = if (c.priority != 0) 5 else 2;
+                        if (rank == 0 or r > rank) {
+                            color = c.color;
+                            rank = r;
+                        }
+                    }
+                }
+                if ((self.ts & 0x08) != 0) {
+                    if (bg_lines[3].pixel(x)) |c| {
+                        const r: u8 = if (c.priority != 0) 4 else 1;
+                        if (rank == 0 or r > rank) {
+                            color = c.color;
+                            rank = r;
+                        }
                     }
                 }
             },
