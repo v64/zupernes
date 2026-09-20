@@ -16,3 +16,6 @@ caps/
 
 # Coprocessor microcode dumps (copyrighted; fetch snesdsp archive from caitsith2.com/snes/dsp/)
 test/dsp/
+
+# Local Git worktrees
+/.worktrees/
