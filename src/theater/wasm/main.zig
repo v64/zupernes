@@ -62,17 +62,42 @@ const wasm_alloc = std.mem.Allocator{
 };
 
 // ---------------------------------------------------------------------------
-// Ownership shadow: the cheap way to guarantee "the host actually owns
-// everything it handed out" and "zn_free releases a matching allocation".
-// Both zn_alloc arguments (ptr, len) are recorded; zn_free verifies the
-// pair matches the head of the LIFO and then returns the bytes to the WASM
-// allocator. A mismatch is a host bug: it fails loudly (ARGS) rather than
-// corrupting the freelist, because std.heap.WasmAllocator's free is only
-// safe on the exact (ptr,len) pair that was allocated.
+// Allocation registry. TASK.md's contract is plain: zn_alloc hands out
+// OWNED memory, zn_free "releases a matching allocation" - nothing limits
+// the host to one live allocation. The registry records every live
+// (ptr,len) pair; zn_free verifies the pair is one of them (WasmAllocator's
+// free is only safe on the exact pair that was allocated) and removes it.
+// A pair that was never allocated (or already freed) is refused with ARGS
+// instead of corrupting the freelist. The registry is a fixed table of
+// MAX_ALLOCATIONS slots, reused as a free list, so the bookkeeping itself
+// never allocates.
 // ---------------------------------------------------------------------------
-var last_alloc_ptr: usize = 0;
-var last_alloc_len: usize = 0;
+const MAX_ALLOCATIONS = 256;
+var alloc_ptrs: [MAX_ALLOCATIONS]usize = @splat(0);
+var alloc_lens: [MAX_ALLOCATIONS]usize = @splat(0);
 var last_error: i32 = 0;
+
+fn registryInsert(ptr: usize, len: usize) bool {
+    for (&alloc_ptrs, &alloc_lens) |*slot, *slot_len| {
+        if (slot.* == 0) {
+            slot.* = ptr;
+            slot_len.* = len;
+            return true;
+        }
+    }
+    return false; // table full: refuse rather than track a free we cannot verify
+}
+fn registryRemove(ptr: usize, len: usize) bool {
+    for (&alloc_ptrs, &alloc_lens) |*slot, *slot_len| {
+        if (slot.* == ptr) {
+            if (slot_len.* != len) return false; // not a matching pair
+            slot.* = 0;
+            slot_len.* = 0;
+            return true;
+        }
+    }
+    return false; // not a live allocation
+}
 
 // ---------------------------------------------------------------------------
 // Machine state. The Emulator is ~940 KB and self-referential, so it can
@@ -96,32 +121,35 @@ var emulator: ?*Emulator = null;
 var rom_bytes: ?[]u8 = null;
 
 export fn zn_alloc(len: usize) usize {
-    // Owned upload/output memory for the host. Every allocation is recorded
-    // (ptr, len) so zn_free can verify a matching release - WasmAllocator's
-    // free is only safe on the exact pair that was allocated.
+    // Owned upload/output memory for the host, recorded in the registry so
+    // a matching zn_free can be verified later (any order, many live at
+    // once - the TASK.md contract, no single-slot LIFO invention).
     if (len == 0) return 0;
     const bytes = wasm_alloc.alloc(u8, len) catch {
         last_error = ZN_ERR_ALLOC;
         return 0;
     };
-    last_alloc_ptr = @intFromPtr(bytes.ptr);
-    last_alloc_len = bytes.len;
-    return last_alloc_ptr;
+    const ptr = @intFromPtr(bytes.ptr);
+    if (!registryInsert(ptr, bytes.len)) {
+        // Registry full: free immediately and fail so the host never sees
+        // an allocation it cannot release.
+        wasm_alloc.free(bytes);
+        last_error = ZN_ERR_ALLOC;
+        return 0;
+    }
+    return ptr;
 }
 
 export fn zn_free(ptr: usize, len: usize) void {
     if (ptr == 0 or len == 0) return;
-    if (ptr != last_alloc_ptr or len != last_alloc_len) {
-        // Not the most recent zn_alloc pair: refuse to hand the WASM allocator
-        // a pair it cannot safely free. LIFO usage (the documented pattern and
-        // all this theater's code) means this only fires on a host bug.
+    if (!registryRemove(ptr, len)) {
+        // Not a live (ptr,len) pair from zn_alloc: refuse rather than
+        // corrupt the allocator freelist with an unverifiable pointer.
         last_error = ZN_ERR_ARGS;
         return;
     }
     const bytes: [*]u8 = @ptrFromInt(ptr);
     wasm_alloc.free(bytes[0..len]);
-    last_alloc_ptr = 0;
-    last_alloc_len = 0;
 }
 
 export fn zn_load_rom(ptr: usize, len: usize) i32 {
