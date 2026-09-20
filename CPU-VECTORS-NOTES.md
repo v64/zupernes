@@ -43,11 +43,21 @@ mismatches tallied as telemetry; see OPTIMIZATIONS.md roadmap).
 8. **DL=0 direct-page wrap in e-mode** (fixed 2026-07-03): dp,X / dp,Y
    ADDRESS computation wraps within the page (8-bit add) when the
    direct-page register's low byte is 0 - 6502 zero-page indexing.
-   Crucially the pointer FETCHES of (dp)/(dp,X)/(dp),Y do NOT wrap
-   (no 6502 ($FF)-bug reproduction): proven by vector "e1 e 8669"
-   (D=$F400, pointer at $F4FF reads its high byte from $F500). An
-   initial implementation that wrapped the pointer fetch passed
-   5,119,999/5,120,000 - one vector in five million caught it.
+   Pointer FETCHES: updated 2026-09-20. The original claim that
+   (dp)/(dp,X)/(dp),Y pointer fetches "do NOT wrap (proven by vector
+   'e1 e 8669')" was overstated - the evidence is CONFLICTING, not
+   proven. Vector "e1 e 8669" (E=1, D=$F400, pointer low byte at
+   $F4FF) really reads its high byte from $F500 (no wrap) and an
+   initial wrapping implementation failed exactly that one vector
+   (5,119,999/5,120,000). But the pinned-Mesen comparison ROM
+   (test/mesen/dp-indirect.md) shows E=1/DL=0 pointer fetches DO wrap
+   within D's page, matching Mesen's GetDirectAddress and ares'
+   readDirect - the two suites flatly disagree on this quirk and
+   neither constitutes physical-hardware evidence. Since this repo
+   targets 5A22/Mesen compatibility, the pointer fetch now follows
+   Mesen (wrapping, see addrDirectIndirect in src/cpu/cpu.zig); that
+   one SingleStepTests vector is a KNOWN failure of this core and its
+   vector-clean percentage is one test lower than stated below.
 
 Games verified pixel-identical after all fixes (SMW 2000-frame capture
 byte-for-byte vs pre-fix). SMW runs in native mode, so these were mostly
