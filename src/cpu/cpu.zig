@@ -3200,8 +3200,8 @@ test "adc 8-bit overflow" {
 
 /// Run one opcode at $0800 with the given operand byte and verify the
 /// opcode/operand landed before executing. Tests use a 16 MiB flat-memory
-/// Bus (the same mode as the SingleStepTests harness), so EVERY byte of
-/// the 24-bit address space is real writable RAM - notably the decoy
+/// Bus (the same mode as the SingleStepTests CPU harness), so EVERY byte
+/// of the 24-bit address space is real writable RAM - notably the decoy
 /// addresses in bank $00/$7E below, which the simplified Bus mapping
 /// would otherwise ignore (banks $40-$6F/$C0-$FF etc. are not WRAM).
 fn runOneOp(cpu: *Cpu, opcode: u8, operand: u8) void {
@@ -3217,21 +3217,29 @@ fn runOneOp(cpu: *Cpu, opcode: u8, operand: u8) void {
 /// "what the old linear fetch would read" addresses must be real RAM, or
 /// an ignored write would silently turn the decoys into $FF and weaken
 /// the assertion. The 16 MiB backing lives in static storage (16 MiB on
-/// a test thread's stack overflows it).
+/// a test thread's stack overflows it). The caller owns both `bus` and
+/// `cpu` storage; the CPU is constructed only AFTER the bus sits at its
+/// final address so `cpu.bus` points at the caller's Bus, never at a
+/// moved temporary (the previous helper returned Bus+Cpu by value, which
+/// copied the Bus but left `cpu.bus` pointing into the expired helper
+/// frame).
 var dp_test_flat: [16 * 1024 * 1024]u8 = undefined;
 
-fn flatTestCpu() struct { bus: Bus, cpu: Cpu } {
-    const flat = &dp_test_flat;
-    @memset(flat, 0);
-    var bus = Bus.init(undefined); // no PPU in flat mode
-    bus.flat_mem = flat[0..];
-    const cpu = Cpu.init(&bus);
-    return .{ .bus = bus, .cpu = cpu };
+fn flatTestCpu(bus: *Bus, cpu: *Cpu) void {
+    @memset(&dp_test_flat, 0);
+    bus.* = Bus.init(undefined); // no PPU in flat mode
+    bus.flat_mem = dp_test_flat[0..];
+    cpu.* = Cpu.init(bus); // after bus has its final stable address
 }
 
 test "cmp (dp,X) e-mode DL=0 wraps pointer high byte to D page" {
-    var t = flatTestCpu();
-    const cpu = &t.cpu;
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
     cpu.emulation_mode = true; // E=1, D.l=0
     cpu.dp = 0x0200;
     cpu.p.m = true; // 8-bit A
@@ -3248,20 +3256,26 @@ test "cmp (dp,X) e-mode DL=0 wraps pointer high byte to D page" {
     cpu.bus.write(0, 0x0300, 0x56); // decoy: what a linear fetch would read
     cpu.bus.write(0, 0x1234, 0x99); // data at the wrapped pointer target
     cpu.bus.write(0, 0x5634, 0xEE); // what the linear fetch would compare
-    // Setup verification: every seed byte (and the decoy) must be real RAM.
+    // Setup verification: each seed byte is read back through the bus
+    // (load-bearing pointer/data/decoy bytes).
     try std.testing.expectEqual(@as(u8, 0x34), cpu.bus.read(0, 0x02FF));
     try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0200));
     try std.testing.expectEqual(@as(u8, 0x56), cpu.bus.read(0, 0x0300));
     try std.testing.expectEqual(@as(u8, 0x99), cpu.bus.read(0, 0x1234));
     try std.testing.expectEqual(@as(u8, 0xEE), cpu.bus.read(0, 0x5634));
-    runOneOp(cpu, 0xC1, 0x06); // CMP (dp,X)
+    runOneOp(&cpu, 0xC1, 0x06); // CMP (dp,X)
     try std.testing.expect(cpu.p.z);
     try std.testing.expect(cpu.p.c);
 }
 
 test "lda (dp) e-mode DL=0 wraps pointer high byte to D page" {
-    var t = flatTestCpu();
-    const cpu = &t.cpu;
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
     cpu.emulation_mode = true;
     cpu.dp = 0x0200;
     cpu.p.m = true;
@@ -3279,13 +3293,18 @@ test "lda (dp) e-mode DL=0 wraps pointer high byte to D page" {
     try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0200));
     try std.testing.expectEqual(@as(u8, 0x5A), cpu.bus.read(0, 0x1234));
     try std.testing.expectEqual(@as(u8, 0xEE), cpu.bus.read(0, 0x5634));
-    runOneOp(cpu, 0xB2, 0xFF); // LDA (dp)
+    runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
     try std.testing.expectEqual(@as(u16, 0x5A), cpu.a & 0xFF);
 }
 
 test "lda (dp),y e-mode DL=0 wraps pointer high byte before Y add" {
-    var t = flatTestCpu();
-    const cpu = &t.cpu;
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
     cpu.emulation_mode = true;
     cpu.dp = 0x0200;
     cpu.p.m = true;
@@ -3301,13 +3320,18 @@ test "lda (dp),y e-mode DL=0 wraps pointer high byte before Y add" {
     cpu.bus.write(0, 0x5644, 0xEE);
     try std.testing.expectEqual(@as(u8, 0x7E), cpu.bus.read(0, 0x1244));
     try std.testing.expectEqual(@as(u8, 0xEE), cpu.bus.read(0, 0x5644));
-    runOneOp(cpu, 0xB1, 0xFF); // LDA (dp),Y
+    runOneOp(&cpu, 0xB1, 0xFF); // LDA (dp),Y
     try std.testing.expectEqual(@as(u16, 0x7E), cpu.a & 0xFF);
 }
 
 test "lda (dp) e-mode DL!=0 fetches pointer linearly" {
-    var t = flatTestCpu();
-    const cpu = &t.cpu;
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
     cpu.emulation_mode = true;
     cpu.dp = 0x0201; // D.l != 0: no page merging at all
     cpu.p.m = true;
@@ -3319,13 +3343,18 @@ test "lda (dp) e-mode DL!=0 fetches pointer linearly" {
     try std.testing.expectEqual(@as(u8, 0x34), cpu.bus.read(0, 0x0300));
     try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0301));
     try std.testing.expectEqual(@as(u8, 0xAB), cpu.bus.read(0, 0x1234));
-    runOneOp(cpu, 0xB2, 0xFF); // LDA (dp)
+    runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
     try std.testing.expectEqual(@as(u16, 0xAB), cpu.a & 0xFF);
 }
 
 test "lda (dp) native mode fetches pointer linearly across page" {
-    var t = flatTestCpu();
-    const cpu = &t.cpu;
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
     cpu.emulation_mode = false;
     cpu.dp = 0x0200;
     cpu.p.m = true;
@@ -3336,6 +3365,6 @@ test "lda (dp) native mode fetches pointer linearly across page" {
     cpu.bus.write(0, 0x1234, 0xCD);
     try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0300));
     try std.testing.expectEqual(@as(u8, 0xCD), cpu.bus.read(0, 0x1234));
-    runOneOp(cpu, 0xB2, 0xFF); // LDA (dp)
+    runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
     try std.testing.expectEqual(@as(u16, 0xCD), cpu.a & 0xFF);
 }
