@@ -3198,19 +3198,40 @@ test "adc 8-bit overflow" {
 // pointers $037E/$03FF, X=3): these use D=$0200, operand $FF/$06+$F9.
 // ---------------------------------------------------------------------------
 
-/// Run one opcode at $0800 with the given operand byte; code lives in the
-/// LowRAM mirror so the default Bus mapping reaches it.
+/// Run one opcode at $0800 with the given operand byte and verify the
+/// opcode/operand landed before executing. Tests use a 16 MiB flat-memory
+/// Bus (the same mode as the SingleStepTests harness), so EVERY byte of
+/// the 24-bit address space is real writable RAM - notably the decoy
+/// addresses in bank $00/$7E below, which the simplified Bus mapping
+/// would otherwise ignore (banks $40-$6F/$C0-$FF etc. are not WRAM).
 fn runOneOp(cpu: *Cpu, opcode: u8, operand: u8) void {
     cpu.pc = 0x0800;
     cpu.bus.write(0, 0x0800, opcode);
     cpu.bus.write(0, 0x0801, operand);
+    if (cpu.bus.read(0, 0x0800) != opcode) @panic("test setup: opcode write ignored");
+    if (cpu.bus.read(0, 0x0801) != operand) @panic("test setup: operand write ignored");
     _ = cpu.step();
 }
 
+/// Flat-memory Bus for the DP-wrap tests: the decoy bytes written at
+/// "what the old linear fetch would read" addresses must be real RAM, or
+/// an ignored write would silently turn the decoys into $FF and weaken
+/// the assertion. The 16 MiB backing lives in static storage (16 MiB on
+/// a test thread's stack overflows it).
+var dp_test_flat: [16 * 1024 * 1024]u8 = undefined;
+
+fn flatTestCpu() struct { bus: Bus, cpu: Cpu } {
+    const flat = &dp_test_flat;
+    @memset(flat, 0);
+    var bus = Bus.init(undefined); // no PPU in flat mode
+    bus.flat_mem = flat[0..];
+    const cpu = Cpu.init(&bus);
+    return .{ .bus = bus, .cpu = cpu };
+}
+
 test "cmp (dp,X) e-mode DL=0 wraps pointer high byte to D page" {
-    var ppu = @import("../ppu/ppu.zig").Ppu.init();
-    var bus = Bus.init(&ppu);
-    var cpu = Cpu.init(&bus);
+    var t = flatTestCpu();
+    const cpu = &t.cpu;
     cpu.emulation_mode = true; // E=1, D.l=0
     cpu.dp = 0x0200;
     cpu.p.m = true; // 8-bit A
@@ -3220,84 +3241,101 @@ test "cmp (dp,X) e-mode DL=0 wraps pointer high byte to D page" {
     // addrDirectX DL=0 rule). The pointer's HIGH byte then wraps back to
     // $0200 instead of reading $0300, giving pointer $1234 and data $99:
     // CMP yields Z=1/C=1. A linear high-byte fetch would read $0300,
-    // form pointer $5634, miss the data and clear Z.
+    // form pointer $5634, find $EE there and clear Z.
     cpu.x = 0xF9;
-    bus.write(0, 0x02FF, 0x34); // pointer low byte (at $02FF)
-    bus.write(0, 0x0200, 0x12); // pointer high byte (wrapped from $0300)
-    bus.write(0, 0x0300, 0x56); // decoy: what a linear fetch would read
-    bus.write(0, 0x1234, 0x99); // data at the wrapped pointer target
-    runOneOp(&cpu, 0xC1, 0x06); // CMP (dp,X)
+    cpu.bus.write(0, 0x02FF, 0x34); // pointer low byte (at $02FF)
+    cpu.bus.write(0, 0x0200, 0x12); // pointer high byte (wrapped from $0300)
+    cpu.bus.write(0, 0x0300, 0x56); // decoy: what a linear fetch would read
+    cpu.bus.write(0, 0x1234, 0x99); // data at the wrapped pointer target
+    cpu.bus.write(0, 0x5634, 0xEE); // what the linear fetch would compare
+    // Setup verification: every seed byte (and the decoy) must be real RAM.
+    try std.testing.expectEqual(@as(u8, 0x34), cpu.bus.read(0, 0x02FF));
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0200));
+    try std.testing.expectEqual(@as(u8, 0x56), cpu.bus.read(0, 0x0300));
+    try std.testing.expectEqual(@as(u8, 0x99), cpu.bus.read(0, 0x1234));
+    try std.testing.expectEqual(@as(u8, 0xEE), cpu.bus.read(0, 0x5634));
+    runOneOp(cpu, 0xC1, 0x06); // CMP (dp,X)
     try std.testing.expect(cpu.p.z);
     try std.testing.expect(cpu.p.c);
 }
 
 test "lda (dp) e-mode DL=0 wraps pointer high byte to D page" {
-    var ppu = @import("../ppu/ppu.zig").Ppu.init();
-    var bus = Bus.init(&ppu);
-    var cpu = Cpu.init(&bus);
+    var t = flatTestCpu();
+    const cpu = &t.cpu;
     cpu.emulation_mode = true;
     cpu.dp = 0x0200;
     cpu.p.m = true;
 
     // Operand $FF puts the pointer's low byte at $02FF; the high byte must
-    // wrap to $0200, forming pointer $1234 and loading $5A.
-    bus.write(0, 0x02FF, 0x34);
-    bus.write(0, 0x0200, 0x12);
-    bus.write(0, 0x0300, 0x56); // decoy for the linear (old) fetch
-    bus.write(0, 0x1234, 0x5A);
-    bus.write(0, 0x5634, 0xEE); // what the linear fetch would load
-    runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
+    // wrap to $0200, forming pointer $1234 and loading $5A. The linear
+    // (old) fetch would read the decoy at $0300, form pointer $5634 and
+    // load its real RAM content $EE instead.
+    cpu.bus.write(0, 0x02FF, 0x34);
+    cpu.bus.write(0, 0x0200, 0x12);
+    cpu.bus.write(0, 0x0300, 0x56);
+    cpu.bus.write(0, 0x1234, 0x5A);
+    cpu.bus.write(0, 0x5634, 0xEE);
+    try std.testing.expectEqual(@as(u8, 0x34), cpu.bus.read(0, 0x02FF));
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0200));
+    try std.testing.expectEqual(@as(u8, 0x5A), cpu.bus.read(0, 0x1234));
+    try std.testing.expectEqual(@as(u8, 0xEE), cpu.bus.read(0, 0x5634));
+    runOneOp(cpu, 0xB2, 0xFF); // LDA (dp)
     try std.testing.expectEqual(@as(u16, 0x5A), cpu.a & 0xFF);
 }
 
 test "lda (dp),y e-mode DL=0 wraps pointer high byte before Y add" {
-    var ppu = @import("../ppu/ppu.zig").Ppu.init();
-    var bus = Bus.init(&ppu);
-    var cpu = Cpu.init(&bus);
+    var t = flatTestCpu();
+    const cpu = &t.cpu;
     cpu.emulation_mode = true;
     cpu.dp = 0x0200;
     cpu.p.m = true;
     cpu.y = 0x10;
 
     // Same DL=0 pointer wrap, through the (dp),Y helper: base $1234 plus
-    // Y=$10 reads $7E from $1244.
-    bus.write(0, 0x02FF, 0x34);
-    bus.write(0, 0x0200, 0x12);
-    bus.write(0, 0x0300, 0x56);
-    bus.write(0, 0x1244, 0x7E);
-    bus.write(0, 0x5644, 0xEE);
-    runOneOp(&cpu, 0xB1, 0xFF); // LDA (dp),Y
+    // Y=$10 reads $7E from $1244. The linear fetch would read decoy $0300
+    // as the high byte and load from $5644 instead.
+    cpu.bus.write(0, 0x02FF, 0x34);
+    cpu.bus.write(0, 0x0200, 0x12);
+    cpu.bus.write(0, 0x0300, 0x56);
+    cpu.bus.write(0, 0x1244, 0x7E);
+    cpu.bus.write(0, 0x5644, 0xEE);
+    try std.testing.expectEqual(@as(u8, 0x7E), cpu.bus.read(0, 0x1244));
+    try std.testing.expectEqual(@as(u8, 0xEE), cpu.bus.read(0, 0x5644));
+    runOneOp(cpu, 0xB1, 0xFF); // LDA (dp),Y
     try std.testing.expectEqual(@as(u16, 0x7E), cpu.a & 0xFF);
 }
 
 test "lda (dp) e-mode DL!=0 fetches pointer linearly" {
-    var ppu = @import("../ppu/ppu.zig").Ppu.init();
-    var bus = Bus.init(&ppu);
-    var cpu = Cpu.init(&bus);
+    var t = flatTestCpu();
+    const cpu = &t.cpu;
     cpu.emulation_mode = true;
     cpu.dp = 0x0201; // D.l != 0: no page merging at all
     cpu.p.m = true;
 
     // D+operand = $0300; the high byte continues linearly to $0301.
-    bus.write(0, 0x0300, 0x34);
-    bus.write(0, 0x0301, 0x12);
-    bus.write(0, 0x1234, 0xAB);
-    runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
+    cpu.bus.write(0, 0x0300, 0x34);
+    cpu.bus.write(0, 0x0301, 0x12);
+    cpu.bus.write(0, 0x1234, 0xAB);
+    try std.testing.expectEqual(@as(u8, 0x34), cpu.bus.read(0, 0x0300));
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0301));
+    try std.testing.expectEqual(@as(u8, 0xAB), cpu.bus.read(0, 0x1234));
+    runOneOp(cpu, 0xB2, 0xFF); // LDA (dp)
     try std.testing.expectEqual(@as(u16, 0xAB), cpu.a & 0xFF);
 }
 
 test "lda (dp) native mode fetches pointer linearly across page" {
-    var ppu = @import("../ppu/ppu.zig").Ppu.init();
-    var bus = Bus.init(&ppu);
-    var cpu = Cpu.init(&bus);
+    var t = flatTestCpu();
+    const cpu = &t.cpu;
     cpu.emulation_mode = false;
     cpu.dp = 0x0200;
     cpu.p.m = true;
 
     // Native mode: pointer high byte reads $0300 even with D.l=0.
-    bus.write(0, 0x02FF, 0x34);
-    bus.write(0, 0x0300, 0x12);
-    bus.write(0, 0x1234, 0xCD);
-    runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
+    cpu.bus.write(0, 0x02FF, 0x34);
+    cpu.bus.write(0, 0x0300, 0x12);
+    cpu.bus.write(0, 0x1234, 0xCD);
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0300));
+    try std.testing.expectEqual(@as(u8, 0xCD), cpu.bus.read(0, 0x1234));
+    runOneOp(cpu, 0xB2, 0xFF); // LDA (dp)
     try std.testing.expectEqual(@as(u16, 0xCD), cpu.a & 0xFF);
 }
