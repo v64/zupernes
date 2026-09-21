@@ -61,9 +61,11 @@ for(const [name,rom] of [['lorom',f.lorom],['hirom',f.hirom]]){
   const f1=(await state()).frame;
   const dt=(t1-t0)/1000;
   // Toolbar response DURING emulation (measured after the clean window so
-  // it cannot pollute the speed number).
-  await page.locator('#pause').click();
+  // it cannot pollute the speed number). The clock starts BEFORE the click
+  // is dispatched - Playwright's own actionability/dispatch time is part of
+  // what a user experiences, not an invisible constant.
   const clickT=Date.now();
+  await page.locator('#pause').click();
   let pausedAt=null;
   for(;;){ if((await state()).phase==='paused'){pausedAt=Date.now();break;} if(Date.now()-clickT>5000)break; }
   const flipLatency=pausedAt?pausedAt-clickT:null;
