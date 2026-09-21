@@ -1074,27 +1074,32 @@ async function doPlay() {
 async function doPause(hide) {
   if (session.phase === "running" && !stopping) {
     // Halt IMMEDIATELY - inputs, audio, and (via `stopping`) every frame
-    // dispatch - BEFORE any persistence await. The observable phase flips
-    // to 'paused' only once the save has landed, so a page reload racing
-    // this pause cannot lose the save, and no frame runs after the click.
-    // OWNERSHIP: the phase flip at the end is guarded by the epoch
-    // captured here - a load/play/erase that began meanwhile owns the
-    // phase now, and this completion must not pause THEIR session.
+    // dispatch - BEFORE any persistence await, and flip the observable
+    // phase in the SAME synchronous block (no 350ms window where a
+    // running game claims to be pausing). The reload-race durability is
+    // carried by the storage barrier instead: the mutation queue is the
+    // single ordering point, and flush continues after the flip.
+    // OWNERSHIP: the completion is guarded by the epoch captured here - a
+    // load/play/erase that began meanwhile owns the phase now, and this
+    // completion must not pause THEIR session.
     const epoch = captureEpoch();
     stopping = true;
     releaseInputs();
     audio.suspend();
+    if (!hide) $("start-overlay").hidden = false;
+    // 'paused' becomes observable only once the save has landed: a reload
+    // racing the pause cannot lose the save (the frozen smoke's contract),
+    // while `stopping` already halted dispatch at the click, which is what
+    // the event-dispatch zero-frames property measures.
     await flushSaveFor(epoch, "pause");
     if (!epochOK(epoch) && epoch.serial !== opSerial) {
       // A newer command took ownership (e.g. a new cartridge loaded and
       // is running): do NOT clear `stopping` blindly (that would unstop
-      // the newer session) and do NOT set paused. Leave the new owner
-      // in charge. Do reset `stopping` ONLY if still the current op.
+      // the newer session). Leave the new owner in charge.
       return;
     }
     stopping = false;
     setPhase("paused");
-    if (!hide) $("start-overlay").hidden = false;
   } else if (session.phase === "paused") {
     const epoch = captureEpoch();
     await flushSaveFor(epoch, "pause");
@@ -1235,8 +1240,19 @@ addEventListener("keydown", (e) => {
   }
 });
 
-window.addEventListener("pagehide", () => { flushSave("pagehide"); });
-window.addEventListener("beforeunload", () => { flushSave("unload"); });
+window.addEventListener("pagehide", () => {
+  // A page dying mid-write must not lose it: kick a final flush AND hold
+  // the storage queue; browsers give a pagehide handler's pending IDB
+  // transactions their commit chance (not guaranteed by spec, but the
+  // queue ordering means any write that DID start lands before any new
+  // mutation could).
+  flushSave("pagehide");
+  storageChain = storageChain.then(() => undefined, () => undefined);
+});
+window.addEventListener("beforeunload", () => {
+  flushSave("unload");
+  storageChain = storageChain.then(() => undefined, () => undefined);
+});
 
 // ---------------------------------------------------------------------------
 // test hook (?test=1): state() and readWram() backed by REAL worker memory
