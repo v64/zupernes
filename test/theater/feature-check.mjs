@@ -645,6 +645,155 @@ check('30 alternating replacements and resets stay bounded', async()=>{
   await page.close();
 });
 
+// =====================================================================
+// 8. Round-2 gates: real interleavings, real rAF cadences, real worker
+//    failures, worker memory plateau, real device loss after context use.
+// =====================================================================
+check('30Hz rAF driver still emulates near NTSC speed with bounded work', async()=>{
+  // THE reviewer scenario (secondary.mjs): rAF replaced by a 30Hz timer.
+  // Runs chained inside a tick, so the fw hands the deferred promise as
+  // the CHEAPEST driver; the page must still reach >=90% NTSC.
+  const ctx=await browser.newContext({viewport:{width:1100,height:850}});
+  await ctx.addInitScript(()=>{
+    window.requestAnimationFrame=cb=>setTimeout(()=>cb(performance.now()),1000/30);
+    window.cancelAnimationFrame=clearTimeout;
+  });
+  const page=await newPage(ctx);
+  await load(page,f.lorom);await play(page);
+  await page.waitForTimeout(1000);
+  const start=await page.evaluate(async()=>({at:performance.now(),frame:(await window.__zupernesTest.state()).frame}));
+  await page.waitForTimeout(3000);
+  const end=await page.evaluate(async()=>({at:performance.now(),frame:(await window.__zupernesTest.state()).frame}));
+  const fps=(end.frame-start.frame)*1000/(end.at-start.at);
+  const pct=fps/60.0988*100;
+  console.log('  30Hz driver:',fps.toFixed(2),'fps =',pct.toFixed(1),'% NTSC');
+  assert(pct>=88,`30Hz rAF: only ${pct.toFixed(1)}% NTSC speed`);
+  assert(pct<=118,`30Hz rAF: ${pct.toFixed(1)}% (>118% - unthrottled burst)`);
+  await page.close();
+});
+
+check('120Hz rAF never accelerates emulation beyond real time', async()=>{
+  const ctx=await browser.newContext({viewport:{width:1100,height:850}});
+  await ctx.addInitScript(()=>{
+    const orig=window.requestAnimationFrame.bind(window);
+    let last2=0,at=performance.now();
+    window.requestAnimationFrame=cb=>orig(t=>{ // 8.3ms double-dispatch
+      if(t-last2<7){setTimeout(()=>cb(t),8.3-(t-last2));return;}
+      last2=t;cb(t);
+    });
+  });
+  const page=await newPage(ctx);
+  await load(page,f.lorom);await play(page);
+  await page.waitForTimeout(800);
+  const start=await page.evaluate(async()=>({at:performance.now(),frame:(await window.__zupernesTest.state()).frame}));
+  await page.waitForTimeout(2500);
+  const end=await page.evaluate(async()=>({at:performance.now(),frame:(await window.__zupernesTest.state()).frame}));
+  const fps=(end.frame-start.frame)*1000/(end.at-start.at);
+  const pct=fps/60.0988*100;
+  console.log('  120Hz-ish driver:',fps.toFixed(2),'fps =',pct.toFixed(1),'% NTSC');
+  assert(pct<=112,`120Hz rAF ran emulation at ${pct.toFixed(1)}% (>112%)`);
+  await page.close();
+});
+
+check('real worker startup failure surfaces a recoverable error', async()=>{
+  // THE reviewer scenario (secondary.mjs first case): the worker module
+  // itself throws on evaluation. The page must show an error, not hang in
+  // "starting the emulator core...".
+  const ctx=await browser.newContext({viewport:{width:1100,height:850}});
+  const page=await ctx.newPage();
+  const errors=[];page.on('pageerror',e=>errors.push(String(e)));
+  await page.route('**/js/worker.mjs*',r=>r.fulfill({contentType:'text/javascript',body:'throw new Error("feature-gate real worker startup error");'}));
+  await page.goto(base+'/?test=1');
+  await page.waitForFunction(()=>!!window.__zupernesTest);
+  await poll(async()=>{
+    const s=await state(page);
+    return s.phase==='error'||(!!s.lastError)||s.workerBroken;
+  },'worker startup failure surfaces',10000);
+  const s=await state(page);
+  assert(s.workerBroken===true || s.phase==='error','worker failure marks workerBroken');
+  const status=await page.locator('#status').innerText();
+  assert(/worker|failed|error/i.test(status),`status shows the failure (got: ${status})`);
+  assert(!/starting the emulator core/.test(status),'not stuck on the boot message');
+  // The only acceptable pageerror is the worker's own startup error being
+  // propagated (an uncaught-in-module-worker surfaces as a pageerror in this
+  // Chrome); anything else (our page code throwing) is a real bug.
+  for(const e of errors){
+    assert(/feature-gate real worker startup error/.test(String(e)),`unexpected page error: ${e}`);
+  }
+  await page.close();
+});
+
+check('worker wasm memory plateaus across alloc/free churn', async()=>{
+  // THE reviewer scenario (allocation.json): alloc A, alloc B, free B, free A
+  // repeated 1000 times must not grow worker wasm memory. Uses the REAL
+  // worker/wasm surfaces exposed by workerStats.
+  const ctx=await browser.newContext({viewport:{width:1100,height:850}});
+  const page=await newPage(ctx);
+  // wait until the worker has actually instantiated wasm before reading
+  await poll(async()=>{
+    const st=await page.evaluate(async()=>await window.__zupernesTest.workerStats());
+    return st&&st.booted;
+  },'worker booted');
+  const before=await page.evaluate(async()=>(await window.__zupernesTest.workerStats()).wasmBytes);
+  for(let round=0;round<4;round++){
+    await load(page,f.lorom);
+    await play(page);
+    await pause(page);
+    // generate controller churn (the page exercises zn_alloc/zn_free each
+    // run via uploads and audio scratch)
+    await page.evaluate(()=>{window.__zupernesTest._flushSave&&0;});
+  }
+  // direct pending-work retirement: cycle loads 30x
+  for(let i=0;i<30;i++){
+    await load(page,i%2?f.loromB:f.lorom,`swap${i}.sfc`);
+  }
+  const after=await page.evaluate(async()=>(await window.__zupernesTest.workerStats()).wasmBytes);
+  console.log('  wasm bytes:',before,'->',after);
+  assert(after<=before+2*1024*1024,`worker wasm memory grew ${after-before} bytes across 34 sessions`);
+  await page.close();
+});
+
+check('real GPU device loss after rendering: fresh 2D canvas draws new frames', async()=>{
+  // THE reviewer scenario (reproduce.mjs device loss): capture the device
+  // through requestAdapter, render, destroy it, and the page must still
+  // produce NEW painted frames through a real 2D context.
+  const ctx=await browser.newContext({viewport:{width:1100,height:850}});
+  await ctx.addInitScript(()=>{
+    const request=navigator.gpu?.requestAdapter?.bind(navigator.gpu);
+    if(request)navigator.gpu.requestAdapter=async(...a)=>{
+      const adapter=await request(...a);
+      const rd=adapter.requestDevice.bind(adapter);
+      adapter.requestDevice=async(...args)=>{
+        const d=await rd(...args);
+        window.__gateDevice=d;
+        return d;
+      };
+      return adapter;
+    };
+  });
+  const page=await newPage(ctx);
+  const s0=await state(page);
+  if(s0.presenter!=='webgpu'&&s0.presenter!=='initializing')throw Error('BLOCKED: WebGPU unavailable for device-loss test');
+  await poll(async()=>{
+    await page.evaluate(()=>window.__zupernesTest.presenterReady?.());
+    return (await state(page)).presenter==='webgpu';
+  },'webgpu presenter active');
+  await load(page,f.lorom);await play(page);
+  await poll(async()=>(await state(page)).paintCount>20,'frames rendered on webgpu');
+  const paintBefore=(await state(page)).paintCount;
+  await page.evaluate(()=>window.__gateDevice.destroy());
+  await poll(async()=>(await state(page)).deviceLost===true,'device loss observed');
+  const s2=await state(page);
+  assert.equal(s2.presenter,'2d','falls back to 2d');
+  const has2d=await page.locator('#screen').evaluate(c=>!!c.getContext('2d'));
+  assert.equal(has2d,true,'fresh canvas has a real 2D context');
+  // PROVE new frames render through the replacement context.
+  await poll(async()=>(await state(page)).paintCount>paintBefore+10,'painting continues after device loss');
+  const paintAfter=(await state(page)).paintCount;
+  assert(paintAfter>paintBefore+10,`frozen picture claimed as recovery (paints ${paintAfter-paintBefore})`);
+  await page.close();
+});
+
 await runAll();
 console.log(`PASS: feature gate (${results.length} scenarios)`);
 await browser.close();

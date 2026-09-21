@@ -156,9 +156,14 @@ const res = await fetch(new URL("../zupernes.wasm", import.meta.url), { cache: "
       case "stats": {
         // Real worker observability for the test hooks: actual WASM
         // committed memory (not a page-side JS heap reading) and the
-        // worker/generation counters.
+        // worker/generation counters. If boot has not completed yet, report
+        // that honestly instead of dereferencing a null module.
+        if (!wasm) {
+          postMessage({ type: "stats", id: msg.id, booted: false, wasmBytes: 0, generation, romLive, crashed });
+          return;
+        }
         postMessage({
-          type: "stats", id: msg.id,
+          type: "stats", id: msg.id, booted: true,
           wasmBytes: exports.memory.buffer.byteLength,
           generation, romLive, crashed,
         });
