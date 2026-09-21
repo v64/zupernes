@@ -112,21 +112,30 @@ const res = await fetch(new URL("../zupernes.wasm", import.meta.url), { cache: "
       }
       case "importSram": {
         if (!romLive) throw new Error("no cartridge");
+        if (msg.generation !== undefined && msg.generation !== generation) {
+          throw new Error(`stale importSram for generation ${msg.generation} (machine holds ${generation})`);
+        }
         const bytes = new Uint8Array(msg.bytes);
         const len = exports.zn_sram_len();
         if (bytes.length !== len) throw new Error(`save size ${bytes.length} does not match cartridge (${len})`);
         new Uint8Array(exports.memory.buffer, exports.zn_sram_ptr(), len).set(bytes);
-        postMessage({ type: "sramImported", id: msg.id });
+        postMessage({ type: "sramImported", id: msg.id, generation });
         return;
       }
       case "reset": {
         if (!romLive) throw new Error("no cartridge");
+        if (msg.generation !== undefined && msg.generation !== generation) {
+          throw new Error(`stale reset for generation ${msg.generation} (machine holds ${generation})`);
+        }
         znCheck(exports.zn_reset(), "reset");
         postMessage({ type: "reset", id: msg.id, generation });
         return;
       }
       case "run": {
         if (!romLive) throw new Error("no cartridge");
+        if (msg.generation !== undefined && msg.generation !== generation) {
+          throw new Error(`stale run for generation ${msg.generation} (machine holds ${generation})`);
+        }
         znCheck(exports.zn_run_frame(msg.buttons | 0), "run frame");
         // Drain this frame's PCM into a transferable copy. The scratch is
         // zn_alloc'd (LIFO) and freed immediately after the copy.
@@ -169,11 +178,36 @@ const res = await fetch(new URL("../zupernes.wasm", import.meta.url), { cache: "
         });
         return;
       }
+      case "__allocChurn": {
+        // Test-only (?test=1): the reviewer's allocation scenario against
+        // the REAL provider: N iterations of alloc A, alloc B, free B,
+        // free A (valid cross-order matching frees). Returns the worker's
+        // wasm memory size before/after so the test can assert the
+        // plateau without page-side JS heap readings.
+        if (!TEST_HOOKS || !wasm) throw new Error("churn requires test mode and a booted worker");
+        const iters = Number(msg.iterations) || 1000;
+        const size = Number(msg.size) || 4096;
+        let fails = 0;
+        const beforeBytes = exports.memory.buffer.byteLength;
+        for (let i = 0; i < iters; i++) {
+          const a = exports.zn_alloc(size);
+          const b = exports.zn_alloc(size);
+          if (!a || !b) { fails++; continue; }
+          exports.zn_free(b, size); // cross order
+          exports.zn_free(a, size);
+        }
+        const afterBytes = exports.memory.buffer.byteLength;
+        postMessage({ type: "churn", id: msg.id, fails, beforeBytes, afterBytes });
+        return;
+      }
       case "readSram": {
         if (!romLive) throw new Error("no cartridge");
+        if (msg.generation !== undefined && msg.generation !== generation) {
+          throw new Error(`stale readSram for generation ${msg.generation} (machine holds ${generation})`);
+        }
         const len = exports.zn_sram_len();
         const bytes = new Uint8Array(exports.memory.buffer, exports.zn_sram_ptr(), len).slice();
-        postMessage({ type: "sram", id: msg.id, bytes });
+        postMessage({ type: "sram", id: msg.id, bytes, generation });
         return;
       }
       case "readWram": {

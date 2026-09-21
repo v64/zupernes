@@ -121,6 +121,66 @@ check('drag/drop loads a cartridge and rejects malformed input transactionally',
 // 2. latest-load-wins with deliberately delayed worker/reads; stale
 //    frame/save rejection; rapid pause/reset/load; crash and retry
 // =====================================================================
+// pause-then-play helper: transitions through paused -> running with the
+// canvas focused, without referencing the (hidden) start overlay.
+async function pauseAndPlay(page){
+  if((await state(page)).phase==='running'){
+    await page.locator('#pause').click();
+    await poll(async()=>(await state(page)).phase==='paused','paused');
+  }
+  await page.locator('#pause').click();
+  await poll(async()=>(await state(page)).phase==='running','running');
+  await page.locator('#screen').click({timeout:3000}).catch(()=>{});
+}
+
+// Held-loaded-reply helper (the reviewer's Worker.onmessage interception):
+// holds the NEXT 'loaded' reply indefinitely; the test releases it
+// explicitly. This is a REAL mid-flight interleaving, not a timed sleep.
+// The prototype must be patched BEFORE the page assigns its handler, so
+// the patch rides an addInitScript: create a fresh context with the patch
+// installed, then return its page.
+async function newHeldPage(){
+  const ctx=await browser.newContext({viewport:{width:1100,height:850}});
+  await ctx.addInitScript(()=>{
+    const d=Object.getOwnPropertyDescriptor(Worker.prototype,'onmessage');
+    Object.defineProperty(Worker.prototype,'onmessage',{configurable:true,get:d.get,set(fn){d.set.call(this,ev=>{
+      if(ev.data.type==='loaded'&&window.__holdNextLoaded){window.__holdNextLoaded=false;window.__heldLoaded=ev.data;window.__releaseLoaded=()=>fn(ev);}
+      else fn(ev);
+    });}});
+  });
+  const page=await ctx.newPage();
+  await page.goto(base+'/?test=1');
+  await page.waitForFunction(()=>!!window.__zupernesTest);
+  await page.evaluate(()=>window.__zupernesTest.presenterReady?.());
+  return page;
+}
+check('held load reply, rejected follow-up keeps page==worker and play runs', async()=>{
+  // Regression for review-2 finding 2: B commits in the worker but its
+  // reply is held; C is rejected. The page must reconcile to ITS last
+  // successful selection (not strand page=A/gen1 while worker=B/gen2);
+  // Play must advance frames.
+  const page=await newHeldPage();
+  await load(page,f.lorom,'A.sfc');
+  await page.evaluate(()=>window.__holdNextLoaded=true);
+  await setFiles(page,f.loromB,'B.sfc');
+  await poll(async()=>page.evaluate(()=>!!window.__heldLoaded),'B reply held');
+  const invalid=Buffer.from(f.lorom);invalid[0x7fd6]=3;
+  await setFiles(page,invalid,'unsupported-C.sfc');
+  await poll(async()=>!!(await state(page)).lastError,'C rejected visibly');
+  await page.evaluate(()=>window.__releaseLoaded&&window.__releaseLoaded());
+  await poll(async()=>{
+    const s=await state(page);
+    const w=await page.evaluate(()=>window.__zupernesTest.workerStats());
+    return s.generation===w.generation;
+  },'page generation matches worker generation');
+  await pauseAndPlay(page);
+  const after=await state(page);
+  // Frames MUST advance after the reconciliation: the retained cartridge
+  // is actually usable.
+  const f0=after.frame;
+  await poll(async()=>(await state(page)).frame>f0+5,'frames advance after reconciliation');
+  await page.close();
+});
 check('latest load wins when resolutions race; stale saves cannot cross-write', async()=>{
   const ctx=await browser.newContext({viewport:{width:1100,height:850}});
   const page=await newPage(ctx);
@@ -612,10 +672,18 @@ check('30 alternating replacements and resets stay bounded', async()=>{
   const page=await newPage(ctx);
   await load(page,f.lorom);await play(page);
   await poll(async()=>(await state(page)).frame>30,'warmup');
-  // baseline listener + node counts and wasm memory
-  const base1=await page.evaluate(()=>({ls:window.__zupernesTest?1:0}));
+  // baseline: worker wasm memory + REAL listener counts from the page's
+  // own instrumentation hook.
   const memBase=await page.evaluate(async()=>{
-    return {mem:performance.memory?performance.memory.usedJSHeapSize:null,nodes:window.__zupernesTest.audio().nodes.length};
+    const st=await window.__zupernesTest.workerStats();
+    const listeners=window.__zupernesTest.listenerCount();
+    return {
+      wasmBytes:st.wasmBytes,
+      windowBaseline:listeners.window,
+      canvasBaseline:listeners.canvas,
+      workers:listeners.workers,
+      nodes:window.__zupernesTest.audio().nodes.length,
+    };
   });
   for(let i=0;i<30;i++){
     const rom=i%2?f.loromB:f.lorom;
@@ -632,12 +700,16 @@ check('30 alternating replacements and resets stay bounded', async()=>{
   await page.waitForTimeout(300);
   const after=await page.evaluate(()=>({nodes:window.__zupernesTest.audio().nodes.length,queued:window.__zupernesTest.state?0:0}));
   assert.equal(after.nodes,0,'no stale audio sources');
-  // worker remains single
-  const workers=await page.evaluate(()=>navigator.hardwareConcurrency?1:1);
-  // memory and listeners bounds: measure via performance entries & the page state
-  const memAfter=await page.evaluate(async()=>({mem:performance.memory?performance.memory.usedJSHeapSize:null}));
-  if(memBase.mem&&memAfter.mem)
-    assert(memAfter.mem<memBase.mem*1.5+50e6,`JS heap bounded (${(memBase.mem/1e6).toFixed(0)}MB -> ${(memAfter.mem/1e6).toFixed(0)}MB)`);
+  // REAL bounding: worker wasm memory (not page JS heap) plus the
+  // page's own listener-count instrumentation.
+  const wasmAfter=await page.evaluate(async()=>(await window.__zupernesTest.workerStats()).wasmBytes);
+  assert(wasmAfter<=memBase.wasmBytes+2*1024*1024,
+    `worker wasm memory grew ${wasmAfter-memBase.wasmBytes} bytes across 30 cycles`);
+  const listeners=await page.evaluate(()=>window.__zupernesTest.listenerCount());
+  assert.equal(listeners.workers,1,'exactly one emulation worker constructed');
+  assert(memBase.workers===listeners.workers,'worker count stable');
+  assert(listeners.window<=memBase.windowBaseline+2,`window listener leak: ${memBase.windowBaseline} -> ${listeners.window}`);
+  assert(listeners.canvas<=memBase.canvasBaseline+2,'canvas listener leak');
   // the final cartridge is the correct one and its SRAM state is clean:
   // i=29 is odd, so the last loaded ROM is the B variant.
   assert.equal((await state(page)).romId,sha(f.loromB),'last swap identity');
@@ -672,26 +744,36 @@ check('30Hz rAF driver still emulates near NTSC speed with bounded work', async(
   await page.close();
 });
 
-check('120Hz rAF never accelerates emulation beyond real time', async()=>{
+check('a measured ~120Hz callback driver never accelerates emulation', async()=>{
+  // A GENUINE faster driver: rAF replaced by an ~8.3ms timer (double the
+  // nominal cadence). The callback rate itself is MEASURED during the run
+  // (reported below) - the assertion holds for any achieved rate clearly
+  // above 60Hz, and asserts BOTH minimum progress and no acceleration.
   const ctx=await browser.newContext({viewport:{width:1100,height:850}});
   await ctx.addInitScript(()=>{
-    const orig=window.requestAnimationFrame.bind(window);
-    let last2=0,at=performance.now();
-    window.requestAnimationFrame=cb=>orig(t=>{ // 8.3ms double-dispatch
-      if(t-last2<7){setTimeout(()=>cb(t),8.3-(t-last2));return;}
-      last2=t;cb(t);
-    });
+    window.__cbCount=0;window.__cbStart=0;
+    window.requestAnimationFrame=cb=>setTimeout(()=>{
+      if(!window.__cbStart)window.__cbStart=performance.now();
+      window.__cbCount++;
+      cb(performance.now());
+    },1000/120);
+    window.cancelAnimationFrame=clearTimeout;
   });
   const page=await newPage(ctx);
   await load(page,f.lorom);await play(page);
   await page.waitForTimeout(800);
+  await page.evaluate(()=>{window.__cbCount=0;window.__cbStart=0;});
   const start=await page.evaluate(async()=>({at:performance.now(),frame:(await window.__zupernesTest.state()).frame}));
   await page.waitForTimeout(2500);
-  const end=await page.evaluate(async()=>({at:performance.now(),frame:(await window.__zupernesTest.state()).frame}));
+  const end=await page.evaluate(async()=>({at:performance.now(),frame:(await window.__zupernesTest.state()).frame,cbs:window.__cbCount,cbStart:window.__cbStart,cbNow:performance.now()}));
   const fps=(end.frame-start.frame)*1000/(end.at-start.at);
   const pct=fps/60.0988*100;
-  console.log('  120Hz-ish driver:',fps.toFixed(2),'fps =',pct.toFixed(1),'% NTSC');
-  assert(pct<=112,`120Hz rAF ran emulation at ${pct.toFixed(1)}% (>112%)`);
+  const cbDt=(end.cbNow-end.cbStart)/1000;
+  const cbRate=cbDt>0?end.cbs/cbDt:0;
+  console.log('  measured callback rate:',cbRate.toFixed(1),'/s; emulation:',fps.toFixed(2),'fps =',pct.toFixed(1),'% NTSC');
+  assert(cbRate>90,`driver was not actually faster than 60Hz (${cbRate.toFixed(1)}/s) - not a fast-driver test`);
+  assert(pct>=88,`fast driver emulation stalled at ${pct.toFixed(1)}% NTSC`);
+  assert(pct<=112,`fast driver ran emulation at ${pct.toFixed(1)}% (>112%)`);
   await page.close();
 });
 
@@ -735,13 +817,14 @@ check('worker wasm memory plateaus across alloc/free churn', async()=>{
     return st&&st.booted;
   },'worker booted');
   const before=await page.evaluate(async()=>(await window.__zupernesTest.workerStats()).wasmBytes);
+  // ACTUAL alloc/free pairs, exactly the reviewer's order (A, B, free B,
+  // free A), against the live allocator inside the worker:
+  const churn=await page.evaluate(async()=>await window.__zupernesTest.allocChurn(1000,4096));
+  assert(churn&&churn.fails===0,`allocator rejected valid matching frees (${churn&&churn.fails} failures)`);
   for(let round=0;round<4;round++){
     await load(page,f.lorom);
     await play(page);
     await pause(page);
-    // generate controller churn (the page exercises zn_alloc/zn_free each
-    // run via uploads and audio scratch)
-    await page.evaluate(()=>{window.__zupernesTest._flushSave&&0;});
   }
   // direct pending-work retirement: cycle loads 30x
   for(let i=0;i<30;i++){

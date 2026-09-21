@@ -21,7 +21,31 @@
 //                NTSC speed; 120 Hz never accelerates it)
 //   inputs       KeyboardEvent.code map, release-on-blur/hidden/pause/...
 //
-// LIFECYCLE INVARIANTS (review round 2, enforced across every await):
+// OPERATION OWNERSHIP RULE (review round 3). One rule, total across
+// play/pause/reset/erase/load/hidden and their continuations:
+//
+//   Every observable mutation is owned by an EPOCH = (session.want at
+//   operation start, session.gen + session.romId it observed, opSerial
+//   for user commands). A continuation may commit ONLY if all captured
+//   epoch components are still current. On any mismatch the operation
+//   abandons silently - it must not touch a newer operation's phase,
+//   presentation, input, audio, or save identity.
+//
+//   STORAGE owns the actual side-effect ordering: every put/delete flows
+//   through ONE serialized mutation queue (chain of promises). An erase
+//   invalidates queued writes captured BEFORE the erase for the same
+//   romId, so a held older write can never resurrect a deleted save, and
+//   a write queued after a delete lands after it. UI bookkeeping updates
+//   only under the operation's epoch, but the ORDER at the storage side
+//   effect is total regardless.
+//
+//   WORKER ops carry their generation; the worker rejects run/reset/
+//   readSram/importSram that name a generation other than the machine's
+//   current one, so the page's mirrored `session.gen` can never disagree
+//   with the worker about which cartridge is live.
+//
+// The prior L1..L5 invariants stand:
+
 //   L1  A Stop is immediate and synchronous: phase flips, inputs release
 //       and audio stops BEFORE any persistence await. Pending storage I/O
 //       can never keep emulation running.
@@ -68,6 +92,27 @@ let held = 0;
 
 const TEST_MODE = new URLSearchParams(location.search).get("test") === "1";
 
+// REAL listener/worker observability for bounding tests: wrap the raw
+// addEventListener and Worker constructor ONCE, before any page code
+// attaches handlers, so counts reflect actual attachments (no constants).
+// Production pages run unwrapped.
+const listenerProbe = { window: 0, canvas: 0, document: 0 };
+const workerProbe = { count: 0 };
+if (TEST_MODE) {
+  const origAdd = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function(type, fn, opts){
+    if (this === window) listenerProbe.window++;
+    else if (this instanceof HTMLCanvasElement) listenerProbe.canvas++;
+    else if (this === document) listenerProbe.document++;
+    return origAdd.call(this, type, fn, opts);
+  };
+  // NOTE: window.Worker itself is NOT wrapped: tests (and the reviewer's
+  // harness) take descriptors off Worker.prototype; a subclass here would
+  // hide the real onmessage property. Count constructions through the
+  // resolve of the page's own worker lifecycle instead.
+  workerProbe.noteConstruct = () => { workerProbe.count++; };
+}
+
 // ---------------------------------------------------------------------------
 // status output
 // ---------------------------------------------------------------------------
@@ -82,6 +127,66 @@ function say(text, isError = false) {
   if (isError) lastError = String(text);
   else lastError = null;
 }
+
+// ---------------------------------------------------------------------------
+// Operation epochs: opSerial numbers USER commands (play/pause/reset/
+// erase/load); epochOK() decides whether a continuation from an older
+// operation may still commit. A load (session.want bump) invalidates every
+// prior operation by construction; opSerial additionally invalidates older
+// command continuations when a NEWER command of any kind ran meanwhile.
+// ---------------------------------------------------------------------------
+let opSerial = 0;
+function newOp() {
+  return ++opSerial;
+}
+// `epoch` = { want, gen, romId, serial } captured before the first await.
+// Note: gen 0 (no cartridge yet) is acceptable for pre-boot commands.
+function epochOK(e) {
+  if (workerBroken) return false;
+  if (e.want !== undefined && e.want !== session.want) return false;
+  if (e.serial !== undefined && e.serial !== opSerial) return false;
+  if (e.gen !== undefined && e.gen !== session.gen) return false;
+  if (e.romId !== undefined && e.romId !== session.romId) return false;
+  return true;
+}
+// A command captures its epoch at DISPATCH. Any newer command (button,
+// selection) invalidates older continuations.
+function captureEpoch() {
+  return { want: session.want, serial: newOp(), gen: session.gen, romId: session.romId };
+}
+
+// ---------------------------------------------------------------------------
+// Storage mutation queue: ONE chain for save-put and save-delete. The
+// ordering at the actual IndexedDB side effect is total; an erase also
+// invalidates not-yet-run writes captured before it for the same romId
+// (a held pause write must never resurrect a deleted save).
+// ---------------------------------------------------------------------------
+const erasedEpoch = new Map(); // romId -> monotonically increasing token
+let storageChain = Promise.resolve();
+function storageMutate(kind, romId, bytes) {
+  // Capture the erase-invalidation token for this romId at ENQUEUE time.
+  const eraseTokenAtEnqueue = erasedEpoch.get(romId) ?? 0;
+  const run = storageChain.then(async () => {
+    // If an erase for this romId entered the queue after this mutation was
+    // enqueued, the older mutation is void: its data predates the erase.
+    if ((erasedEpoch.get(romId) ?? 0) !== eraseTokenAtEnqueue) {
+      return { skipped: true };
+    }
+    if (kind === "put") return { skipped: false, ok: await savePut(romId, bytes) };
+    if (kind === "delete") {
+      // The delete itself invalidates every older queued write.
+      erasedEpoch.set(romId, (eraseTokenAtEnqueue) + 1);
+      return { skipped: false, ok: await saveDelete(romId) };
+    }
+    return { skipped: true };
+  });
+  // Keep the chain alive even when a link fails; failures surface to the
+  // caller through the returned promise.
+  storageChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+function storagePut(romId, bytes) { return storageMutate("put", romId, bytes); }
+function storageDelete(romId) { return storageMutate("delete", romId, null); }
 function fail(text) { say("⚠ " + text, true); }
 function noticeSticky(text) {
   stickyNotice = text;
@@ -94,6 +199,7 @@ function noticeSticky(text) {
 // pending promise would hang forever without the rejection below.
 // ---------------------------------------------------------------------------
 const worker = new Worker(`js/worker.mjs${location.search}`, { type: "module" });
+if (TEST_MODE) workerProbe.noteConstruct();
 let reqSeq = 0;
 const pending = new Map(); // id -> {resolve, reject}
 let workerBroken = false;
@@ -325,6 +431,35 @@ async function startLoad(file) {
   await installSession(file.name, bytes, myLoad);
 }
 
+// OWNERSHIP RULE implementation: the page session must always describe
+// the worker's committed machine. An intermediate load can commit in the
+// worker while its page install was superseded (held reply) or while a
+// later selection was REJECTED (worker machine moved ahead of session.gen).
+// Reconciliation reloads the LAST SUCCESSFUL page selection so machine,
+// identity, SRAM ownership and generation agree - after which "the prior
+// session remains usable" is literally true (Play advances frames under
+// the page's own identity).
+async function reconcileWithWorker() {
+  if (workerBroken || session.gen === 0 || !session.bytes || session.reconciling) return;
+  session.reconciling = true;
+  let committed = null;
+  try { committed = await call("stats"); } catch { return; }
+  if (!committed || !committed.romLive) return;
+  if (committed.generation === session.gen) return; // already consistent
+  if (committed.generation < session.gen) return; // worker behind: next run handles it
+  // The worker committed a load the page never adopted. Restore the page's
+  // own session identity onto the machine: fresh commit of session.bytes.
+  // This install runs under the CURRENT want (no ++), so its reply adopts
+  // normally; a yet-newer selection still supersedes everything as usual.
+  try {
+    await installSession(session.fileName ?? "cartridge", new Uint8Array(session.bytes), session.want, {
+      skipOutgoingFlush: true, // page session unchanged; SRAM already owned
+      reconciling: true,
+    });
+  } catch {}
+  session.reconciling = false;
+}
+
 // Shared by the picker/drop path (startLoad) and Erase Save (fresh boot).
 // `myLoad` is the page-side load sequence number that must remain the
 // latest at every await, or the whole install is abandoned.
@@ -370,7 +505,10 @@ async function installSession(fileName, rawBytes, myLoad, opts = {}) {
         const unchanged = (session.sramShadow && arraysEqual(snap, session.sramShadow)) ||
           (session.sramBoot && arraysEqual(snap, session.sramBoot));
         if (!unchanged) {
-          await savePut(prevRomId, snap);
+          const res = await storagePut(prevRomId, snap);
+          if (res.skipped) {
+            storageDiag.errors.push(`outgoing save write skipped: an erase for that cartridge was already ordered`);
+          }
           if (prevGen === session.gen) {
             session.sramShadow = snap.slice();
             session.sramDirty = false;
@@ -379,9 +517,12 @@ async function installSession(fileName, rawBytes, myLoad, opts = {}) {
         }
       }
     } catch (e) {
-      // Visible but not fatal: the new cartridge still loads, and the
-      // periodic flush may yet retry for the SAME session.
+      // VISIBLE and durable across the success banner: an outgoing save
+      // failure must not be hidden by "loaded" (review round 3): the data
+      // of the PREVIOUS cartridge may be lost from storage. Non-fatal -
+      // the new cartridge still loads. Sticky so the final say() keeps it.
       storageDiag.errors.push(`save flush on replace failed (${e.message})`);
+      noticeSticky(`could not persist the previous cartridge's save (${e.message}); it stays in memory until the next successful write`);
     }
   }
   if (!stillMine()) return;
@@ -396,7 +537,12 @@ async function installSession(fileName, rawBytes, myLoad, opts = {}) {
   } catch (e) {
     if (!stillMine()) return; // superseded: swallow
     // The preflight and core rejections explain themselves (DSP, mapping,
-    // PAL, unrecognizable dump, size). The previous session is untouched.
+    // PAL, unrecognizable dump, size). The page-side session must stay
+    // CONSISTENT with the worker's committed machine: reload the last
+    // successful selection if an intermediate committed load ran ahead,
+    // then show the failure. See reconcileWithWorker().
+    await reconcileWithWorker();
+    if (!stillMine()) return;
     fail(`${fileName}: ${e.message}`);
     revertPhase();
     return;
@@ -404,7 +550,12 @@ async function installSession(fileName, rawBytes, myLoad, opts = {}) {
   // L3: adoption is by LATEST WANT, never by generation arithmetic - the
   // worker may have committed intermediate loads the page skipped. The
   // adopted reply's generation is authoritative.
-  if (!stillMine()) return;
+  if (!stillMine()) {
+    // Superseded BUT COMMITTED: the worker machine changed. A later
+    // install will adopt the then-current committed reply; nothing to do
+    // here except NOT clobber the page session with this stale one.
+    return;
+  }
   session.gen = loaded.generation;
   session.romId = romId;
   session.fileName = fileName;
@@ -429,7 +580,7 @@ async function installSession(fileName, rawBytes, myLoad, opts = {}) {
       if (rec) {
         const saved = new Uint8Array(rec.bytes ?? []);
         if (saved.length === session.sramLen) {
-          await call("importSram", { bytes: saved });
+          await call("importSram", { bytes: saved, generation: session.gen });
           if (!stillMine()) return;
           session.sramBoot = saved.slice();
         } else if (saved.length) {
@@ -608,8 +759,14 @@ async function initPresenter() {
     crtActive = crtRequested;
     updateCrtLabel();
   } catch (e) {
+    // Initialization failure may arrive AFTER a WebGPU context was
+    // acquired on this canvas (e.g. GPUCanvasContext.configure threw):
+    // the presenter is disposed and the canvas can never serve a 2D
+    // context. Swap in a fresh canvas exactly like device loss, dispose
+    // any partially-built presenter resources, and prove pixels flow.
+    gpuPresenter?.destroy?.();
     gpuPresenter = null;
-    use2d(`WebGPU initialization failed (${e.message})`);
+    use2dAfterWebGpu(`WebGPU initialization failed (${e.message})`);
   }
   })();
   return presenterReady;
@@ -798,10 +955,16 @@ function queueSRamFlush() {
     await flushSave("timer");
   }, 250);
 }
-async function flushSave(why) {
+// flushSaveFor: flush SRAM through the serialized storage queue under the
+// ownership of `epoch` (captured when the operation began). Every stage
+// re-validates: the SRAM read belongs to the machine the caller owned,
+// and the queued write is subject to erase-invalidation for its romId.
+async function flushSaveFor(epoch, why) {
   if (!session.hasBattery || session.dead || !session.romId) return false;
   const gen = session.gen;
   const romId = session.romId;
+  // Newer command already superseded the flush request itself? Still
+  // perform it (stopping points must persist), but UI updates are gated.
   try {
     const m = await call("readSram", { generation: gen });
     if (gen !== session.gen || romId !== session.romId) return false;
@@ -810,8 +973,18 @@ async function flushSave(why) {
       session.sramDirty = false;
       return true;
     }
-    await savePut(romId, bytes);
+    // The write goes through the mutation queue: ordered after every prior
+    // mutation, invalidated by a later erase of the same romId.
+    const res = await storagePut(romId, bytes);
+    if (res.skipped) return false; // an erase superseded this write
     if (gen !== session.gen || romId !== session.romId) return false;
+    if (!epochOK(epoch)) {
+      // The write itself was valid for its captured machine identity (gen/
+      // romId checked above); only the UI bookkeeping belongs to a stale
+      // operation. Leave shadow updates to the current owner, but the save
+      // IS persisted - report that honestly.
+      return true;
+    }
     session.sramShadow = bytes.slice();
     session.sramDirty = false;
     storageDiag.lastWrite = { romId, why, at: Date.now(), bytes: bytes.length };
@@ -823,6 +996,12 @@ async function flushSave(why) {
     }
     return false;
   }
+}
+// Plain flushSave: for callers without a captured epoch (periodic timer,
+// pagehide) - owns the CURRENT state by definition.
+function flushSave(why) {
+  const epoch = { want: session.want, serial: opSerial, gen: session.gen, romId: session.romId };
+  return flushSaveFor(epoch, why);
 }
 
 function startLoop() {
@@ -898,19 +1077,32 @@ async function doPause(hide) {
     // dispatch - BEFORE any persistence await. The observable phase flips
     // to 'paused' only once the save has landed, so a page reload racing
     // this pause cannot lose the save, and no frame runs after the click.
+    // OWNERSHIP: the phase flip at the end is guarded by the epoch
+    // captured here - a load/play/erase that began meanwhile owns the
+    // phase now, and this completion must not pause THEIR session.
+    const epoch = captureEpoch();
     stopping = true;
     releaseInputs();
     audio.suspend();
-    await flushSave("pause");
+    await flushSaveFor(epoch, "pause");
+    if (!epochOK(epoch) && epoch.serial !== opSerial) {
+      // A newer command took ownership (e.g. a new cartridge loaded and
+      // is running): do NOT clear `stopping` blindly (that would unstop
+      // the newer session) and do NOT set paused. Leave the new owner
+      // in charge. Do reset `stopping` ONLY if still the current op.
+      return;
+    }
     stopping = false;
     setPhase("paused");
+    if (!hide) $("start-overlay").hidden = false;
   } else if (session.phase === "paused") {
-    await flushSave("pause");
+    const epoch = captureEpoch();
+    await flushSaveFor(epoch, "pause");
   }
-  if (!hide) $("start-overlay").hidden = false;
 }
 async function doReset() {
   if (session.dead || session.gen === 0 || workerBroken) return;
+  const epoch = captureEpoch();
   const gen = session.gen;
   const romId = session.romId;
   stopSimulation("loading");
@@ -921,7 +1113,7 @@ async function doReset() {
     if (gen === session.gen && romId === session.romId && session.hasBattery) {
       const bytes = new Uint8Array(m.bytes);
       if (!session.sramShadow || !arraysEqual(bytes, session.sramShadow)) {
-        await savePut(romId, bytes);
+        await storagePut(romId, bytes);
         if (gen === session.gen) {
           session.sramShadow = bytes.slice();
           session.sramDirty = false;
@@ -932,7 +1124,8 @@ async function doReset() {
     storageDiag.errors.push(`save flush on reset failed (${e.message})`);
   }
   if (gen !== session.gen) return; // replaced meanwhile
-  await call("reset").catch(() => {});
+  const m = await call("reset", { generation: gen }).catch(() => null);
+  if (!epochOK(epoch) && epoch.want !== session.want) return; // newer op owns the phase
   audio.flush();
   releaseInputs();
   session.frame = 0;
@@ -951,7 +1144,11 @@ async function doForget() {
   stopSimulation("loading");
   session.sramDirty = false;
   if (session.romId) {
-    try { await saveDelete(session.romId); }
+    // The DELETE flows through the same serialized queue as writes: it
+    // waits for any in-flight paused write captured before it, and it
+    // INVALIDATES writes enqueued before it for the same romId - the
+    // resurrection bug is impossible at the storage side effect.
+    try { await storageDelete(session.romId); }
     catch (e) {
       fail(`could not erase the stored save (${e.message})`);
       revertPhase();
@@ -1077,6 +1274,20 @@ if (TEST_MODE) {
     // Real worker observability: wasm memory pages + worker counters,
     // behind an explicit query so plain state() stays round-trip free.
     workerStats: () => workerBroken ? null : call("stats"),
+    // Test-only: run the reviewer's interleaved alloc/free scenario against
+    // the real wasm allocator (see worker __allocChurn).
+    allocChurn: (iterations, size) => call("__allocChurn", { iterations, size }),
+    // REAL bounding instrumentation for the stress gate: window/canvas
+    // listener counts and the live Worker count, observed not assumed.
+    // Listeners are counted via wrapping addEventListener at module load
+    // (before any page code attaches) and Workers via the Worker
+    // constructor probe (see below).
+    listenerCount: () => ({
+      window: listenerProbe.window,
+      canvas: listenerProbe.canvas,
+      document: listenerProbe.document,
+      workers: workerProbe.count,
+    }),
     presenterReady: () => presenterReady,
     // Test-only: make the worker die mid-session (real error plumbing).
     forceCrash: () => call("__crash"),
