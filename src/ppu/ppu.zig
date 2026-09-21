@@ -838,7 +838,11 @@ pub const Ppu = struct {
     // SPRITE-TO-BACKGROUND PRIORITY
     // ==========================================================================
     // Determines whether a sprite pixel should appear in front of the BG
-    // pixel already selected for this dot.
+    // pixel already selected for this dot, by comparing per-mode absolute
+    // ranks. Mode 6 uses different OBJ ranks than modes 2-5 (Mesen
+    // RenderMode6: BG1 1/5, OBJ 2/3/4/6); it is outside the modes 0-4
+    // campaign scope and remains a documented inaccuracy of the modes 2-6
+    // arms below, not a silently shared table.
     //
     // The SNES assigns every drawable element an absolute priority rank per
     // graphics mode; the sprite wins when its rank is strictly greater than
@@ -846,10 +850,16 @@ pub const Ppu = struct {
     //
     //   Mode 0: BG1 8/11  BG2 7/10  BG3 2/5  BG4 1/4   OBJ 3/6/9/12
     //   Mode 1: BG1 6/9   BG2 5/8   BG3 1/3  (bit3: 3H=11)  OBJ 2/4/7/10
-    //   Modes 2-6: BG1 3/7  BG2 1/5                    OBJ 2/4/6/8
+    //   Modes 2-5: BG1 3/7  BG2 1/5                   OBJ 2/4/6/8
+    //   Mode 6: BG1 1/5                               OBJ 2/3/4/6
     //
     // Mode 1's BG3-priority bit ($2105 bit 3) promotes BG3 HIGH-priority
     // tiles ahead of every sprite level, so OBJ never wins there.
+    //
+    // The `else` arm below implements the modes 2-5 table only. Mode 6's
+    // OBJ0-vs-BG1L tie-break differs (OBJ 2 vs BG1L 1 there, but 2 vs 3
+    // here would let BG1L win - a pre-existing inaccuracy outside the
+    // modes 0-4 campaign scope) and Mode 7 has its own composite path.
     // ==========================================================================
     fn spritePriorityWins(self: *Ppu, mode: u3, sprite_priority: u8, bg_layer: u8, bg_tile_priority: u8) bool {
         // If no BG pixel (backdrop only), sprite always wins
@@ -1030,17 +1040,18 @@ pub const Ppu = struct {
                     // layer an absolute rank from (layer, tile-priority-bit)
                     // per mode (Mode 0 table, back to front):
                     //   BG4L=1 BG4H=4 BG3L=2 BG3H=5 BG2L=7 BG2H=10 BG1L=8 BG1H=11
-                    // so BG1 low-priority tiles sit in FRONT of BG2 high even
-                    // though the tilemap priority bit is 0. Each screen keeps
-                    // the pixel with the strictly greatest rank; equal ranks
-                    // lose to the already-drawn (earlier/backward) pixel.
+                    // e.g. BG2 high-priority tiles cover BG1 low-priority
+                    // ones (10 > 8) even though both tiled with a single
+                    // priority bit flip. Each screen keeps the pixel with
+                    // the strictly greatest rank; equal ranks lose to the
+                    // already-drawn (earlier/backward) pixel.
                     // Source: Mesen SnesPpu.cpp RenderMode0()'s RenderTilemap
                     // priority template arguments, and its per-screen
                     // "current flags < priority" draw condition.
                     const x8: u8 = @intCast(x);
-                    // Front-to-back walk mirrors the rank ordering: the first
-                    // opaque layer wins outright, later layers need a greater
-                    // rank (never true at equal rank) and can be skipped.
+                    // Layer-ID walk with rank compares: the first opaque
+                    // layer wins outright; later layers must beat the
+                    // current rank strictly to take over.
                     if ((self.tm & 0x01) != 0 and !self.isWindowMasked(0, x8)) {
                         if (bg_lines[0].pixel(x)) |c| {
                             color = c.color;
@@ -1125,9 +1136,11 @@ pub const Ppu = struct {
                 },
                 2, 3, 4, 5, 6 => {
                     // Modes 2-6: two BG layers with mode-specific depths (see
-                    // the line-buffer pass for the per-mode table). Ranks
-                    // (Mesen RenderMode2/3/4/5/6: all use BG1L=3 BG2L=1 with
-                    // high +4 / +4): BG1L=3 BG2L=1, BG1H=7 BG2H=5.
+                    // the line-buffer pass for the per-mode table). Ranks for
+                    // modes 2-5 (Mesen RenderMode2/3/4/5): BG1 3/7, BG2 1/5.
+                    // Mode 6 differs (RenderMode6: BG1 1/5, no BG2) and is
+                    // NOT corrected here - a documented limitation outside
+                    // the modes 0-4 campaign scope.
                     const x8: u8 = @intCast(x);
                     if (mode != 6 and (self.tm & 0x02) != 0 and !self.isWindowMasked(1, x8)) {
                         if (bg_lines[1].pixel(x)) |c| {
@@ -2030,9 +2043,10 @@ pub const Ppu = struct {
                 }
             },
             2, 3, 4, 5, 6 => {
-                // Modes 2-6 ranks (Mesen RenderMode2-6): BG1H=7 BG1L=3
-                // BG2H=5 BG2L=1. Mode 6 has no BG2 (depths are baked into
-                // the buffers by the line-buffer pass).
+                // Modes 2-5 ranks (Mesen RenderMode2-5): BG1H=7 BG1L=3
+                // BG2H=5 BG2L=1. Mode 6 has different BG1 ranks (RenderMode6:
+                // BG1 1/5, no BG2) and is not corrected here - a documented
+                // limitation outside the modes 0-4 campaign scope.
                 if (mode != 6 and (self.ts & 0x02) != 0) {
                     if (bg_lines[1].pixel(x)) |c| {
                         color = c.color;
@@ -3219,35 +3233,36 @@ test "Mode 0 reserves a 32-color CGRAM bank per background layer" {
     ppu.tm = 0x0F; // BG1..BG4 on the main screen
     // Non-default CHR bases and map bases per layer so a wrong-bank lookup
     // cannot alias another layer's intended cell. (BGxSC bits 7:2 select the
-    // map in 2KB steps: (sc & 0xFC) << 9 bytes.)
-    ppu.bg12nba = 0x21; // BG1 CHR=$2000, BG2 CHR=$4000
-    ppu.bg34nba = 0x43; // BG3 CHR=$8000, BG4 CHR=$6000
+    // map in 2KB steps: (sc & 0xFC) << 9 bytes. BG12NBA/BG34NBA nibbles:
+    // low nibble -> first-listed BG, high nibble -> second.)
+    ppu.bg12nba = 0x21; // BG1 CHR=1<<13=$2000, BG2 CHR=2<<13=$4000
+    ppu.bg34nba = 0x43; // BG3 CHR=4<<13=$8000, BG4 CHR=3<<13=$6000
     ppu.bg1sc = 0x18; // BG1 map=(0x18&0xFC)<<9 = $3000
-    ppu.bg2sc = 0x30; // BG2 map=$6000
-    ppu.bg3sc = 0x48; // BG3 map=$9000
-    ppu.bg4sc = 0x60; // BG4 map=$C000
+    ppu.bg2sc = 0x30; // BG2 map=(0x30&0xFC)<<9 = $6000
+    ppu.bg3sc = 0x48; // BG3 map=(0x48&0xFC)<<9 = $9000
+    ppu.bg4sc = 0x60; // BG4 map=(0x60&0xFC)<<9 = $C000
 
     // One solid 2bpp tile of color index 3 at CHR tile 1 per layer.
     // entry $0001 = tile 1, palette 0, low priority (palette field is bits
     // 10-12, so $0001 is palette 0; the atlas-latched priority bit stays 0.)
     const maps = [4]u32{ 0x3000, 0x6000, 0x9000, 0xC000 };
-    const chrs = [4]u32{ 0x2000, 0x4000, 0x8000, 0x6000 };
+    const chrs = [4]u32{ 0x2000, 0x4000, 0x8000, 0x6000 }; // matches the NBA values above
     const entry: u16 = 0x0001;
     for (0..4) |bg| {
         const m = maps[bg];
         ppu.vram[m] = @truncate(entry & 0xFF);
         ppu.vram[m + 1] = @truncate(entry >> 8);
     }
-    // CHR tile 1 sits 16 bytes into each layer's bank (2bpp tile = 16
-    // bytes); index 3 needs all four plane bytes set on every row.
+    // CHR tile 1 sits 16 bytes into each layer's bank (a 2bpp tile is 8 rows
+    // x 2 bytes). Byte layout per 8 rows: offset 0,2,4..14 are the bp0 row
+    // bytes and 1,3,..15 the bp1 row bytes. A 2bpp tile has only that one
+    // 16-byte plane-pair block; color index 3 sets bit 0 of both planes.
     for (0..4) |bg| {
         const base = chrs[bg] + 16;
-        for (0..8) |row| {
-            ppu.vram[base + row * 2] = 0xFF; // bp0/bp1 rows
-            ppu.vram[base + row * 2 + 1] = 0xFF;
-            ppu.vram[base + 16 + row * 2] = 0xFF; // bp2/bp3 rows
-            ppu.vram[base + 16 + row * 2 + 1] = 0xFF;
-        }
+        // A 2bpp tile consists of exactly one 16-byte plane-pair block:
+        // even offsets are bp0 row bytes, odd offsets bp1. 0xFF sets bit 7
+        // (leftmost pixel) through bit 0, so every pixel gets index 3.
+        for (0..16) |off| ppu.vram[base + off] = 0xFF;
     }
 
     // Distinct palette cells per layer, all at palette 0, color index 3 ->
@@ -3344,6 +3359,254 @@ test "Mode 1 BG3 priority bit puts BG3 high ahead of BG1 BG2 and OBJ3" {
     ppu.renderScanlineRange(0, 0, SCREEN_WIDTH);
     try std.testing.expectEqual(@as(u16, 0x7C00), ppu.framebuffer[0]);
     try std.testing.expect(!ppu.spritePriorityWins(1, 3, 3, 1));
+}
+
+// ---------------------------------------------------------------------------
+// Shared fixture for the priority regression tests below. Each participating
+// layer gets its own tilemap base (BGxSC), its own CHR bank (nibbles of
+// BG12NBA/BG34NBA), an opaque tile of color index 1, and a distinct palette
+// cell so the winning layer is observable in the rendered RGB15 value.
+// Sprite CHR/palette use the explicit OAM+OBJCHR setup instead.
+//
+// BGxSC bits 7:2 -> map base (sc & 0xFC) << 9 bytes; BG12NBA nibbles ->
+// BG1/BG2 CHR base nibble << 13 bytes (BG34NBA -> BG3/BG4).
+//
+// Mesen source tables: SnesPpu.cpp RenderMode0/1/2/3/4() RenderTilemap
+// priority template args and RenderSprites(spritePriorities) - the sprite
+// wins iff its per-mode rank is strictly greater than the BG rank.
+// ---------------------------------------------------------------------------
+const PriorityFixture = struct {
+    const Entry = struct {
+        map: u8, // BGxSC register value
+        chr_nibble: u4, // CHR bank selector for this layer
+        tile_prio: u8, // tilemap priority bit (0/1)
+        palette: u8, // tilemap palette field (2 bits in Mode 0, 3 bits above)
+        cell: u16, // CGRAM entry this layer resolves to
+        rgb: u16, // value programmed into that entry
+    };
+
+    fn setNba(ppu: *Ppu, bg: usize, nibble: u4) void {
+        if (bg < 2) {
+            const shift: u3 = @intCast(bg * 4);
+            const mask: u8 = @as(u8, 0x0F) << shift;
+            ppu.bg12nba = (ppu.bg12nba & ~mask) | (@as(u8, nibble) << shift);
+        } else {
+            const shift: u3 = @intCast((bg - 2) * 4);
+            const mask: u8 = @as(u8, 0x0F) << shift;
+            ppu.bg34nba = (ppu.bg34nba & ~mask) | (@as(u8, nibble) << shift);
+        }
+    }
+
+    /// Program BG `bg` (0-based) to render a solid color-1 tile of `bpp`
+    /// depth at tile 0 of its map/CHR base, with the given priority bit and
+    /// palette field. The tile is plain planar data: row bytes interleave
+    /// bitplane pairs (2bpp tile = 16 bytes of bp0/bp1 rows; 4bpp adds 16
+    /// bytes of bp2/bp3, 8bpp adds two more 16-byte plane-pair blocks).
+    fn programBg(ppu: *Ppu, comptime bpp: u8, bg: usize, e: Entry) void {
+        setNba(ppu, bg, e.chr_nibble);
+        const sc_regs = [_]*u8{ &ppu.bg1sc, &ppu.bg2sc, &ppu.bg3sc, &ppu.bg4sc };
+        sc_regs[bg].* = e.map;
+        const map_base: u32 = @as(u32, e.map & 0xFC) << 9;
+        const chr_base: u32 = @as(u32, e.chr_nibble) << 13;
+        // Entry: tile 0, given palette + priority, color index 1. (Low 10
+        // bits are the tile number, so no | 0x0001 - that would select
+        // tile 1 and miss the CHR data below.)
+        const entry: u16 = (@as(u16, e.palette) << 10) | (@as(u16, e.tile_prio) << 13);
+        ppu.vram[map_base] = @truncate(entry & 0xFF);
+        ppu.vram[map_base + 1] = @truncate(entry >> 8);
+        // Solid color-1 tile at CHR tile 0. Tile layout: 16-byte blocks of
+        // interleaved plane-pair rows; block 0 holds bp0 (even offsets) and
+        // bp1 (odd), block 1 bp2/bp3, and so on for 4/8bpp. Bitplane bit 7
+        // is the LEFTMOST pixel, so bp0 row bytes of 0xFF give every pixel
+        // index 1 - higher bitplanes 0x00 keep index 1 for any depth.
+        const tile_size: u32 = @as(u32, bpp) * 8;
+        for (0..tile_size) |off| {
+            ppu.vram[(chr_base + off) & 0xFFFF] = if (off / 16 == 0 and off % 2 == 0) 0xFF else 0x00;
+        }
+        // Distinct palette cell for (palette field, index 1).
+        const mode0_bank: bool = bpp == 2 and (ppu.bgmode & 0x07) == 0;
+        const bank: u16 = if (mode0_bank) @as(u16, @intCast(bg)) * 32 else @as(u16, e.palette) * (@as(u16, 1) << bpp);
+        const cell: u16 = bank + 1;
+        ppu.cgram[cell * 2] = @truncate(e.rgb & 0xFF);
+        ppu.cgram[cell * 2 + 1] = @truncate(e.rgb >> 8);
+    }
+
+    /// Program OBJ: one 8x8 4bpp color-7 sprite of OAM priority
+    /// `obj_prio` at screen (8, 3), palette 8 (colors at CGRAM 128+).
+    fn programObj(ppu: *Ppu, obj_prio: u8, rgb: u16) void {
+        ppu.tm |= 0x10;
+        ppu.oam[0] = 0; // X: overlap the BG tile at x=0..7
+        ppu.oam[1] = 3; // Y (first visible row is scanline Y+1)
+        ppu.oam[2] = 1; // tile 1 (away from the BG tile-0 data)
+        ppu.oam[3] = (obj_prio << 4) | (0 << 1); // priority, palette 8
+        for (0..128) |i| {
+            if (i != 0 and ppu.oam[i * 4] == 0 and ppu.oam[i * 4 + 1] == 0) break;
+        }
+        // Hide the rest (Y = $F0 per the hide convention).
+        for (1..128) |i| ppu.oam[i * 4 + 1] = 0xF0;
+        // OBJ CHR base: OBSEL 0 -> name base $0000 * 8KB... tile 1 at $0020.
+        // 4bpp color 7: bp0/bp1/bp2 set, bp3 clear, every row.
+        const base: u32 = 0x0020;
+        for (0..8) |row| {
+            ppu.vram[base + row * 2] = 0xFF; // bp0
+            ppu.vram[base + row * 2 + 1] = 0xFF; // bp1
+            ppu.vram[base + 16 + row * 2] = 0xFF; // bp2
+            ppu.vram[base + 16 + row * 2 + 1] = 0x00; // bp3
+        }
+        const cell: u16 = 128 + 0 * 16 + 7;
+        ppu.cgram[cell * 2] = @truncate(rgb & 0xFF);
+        ppu.cgram[cell * 2 + 1] = @truncate(rgb >> 8);
+    }
+};
+
+test "Mode 0 OBJ priority beats BG by rank not tile bit" {
+    // Mesen RenderMode0: BG1 8/11 BG2 7/10 BG3 2/5 BG4 1/4, OBJ 3/6/9/12.
+    // sprites win strictly: pr0(3) loses to BG3H(5) but beats BG4H(4);
+    // pr1(6) beats them all. The old pre-campaign code guessed Mode 1
+    // tables for Mode 0 (S0=2, BGH=5) and got these backwards.
+    var ppu = Ppu.init();
+    ppu.inidisp = 0x0F;
+    ppu.bgmode = 0x00;
+
+    // BG3 high (rank 5, red) vs BG4 high (rank 4, green).
+    PriorityFixture.programBg(&ppu, 2, 2, .{ .map = 0x48, .chr_nibble = 2, .tile_prio = 1, .palette = 0, .cell = 65, .rgb = 0x001F });
+    PriorityFixture.programBg(&ppu, 2, 3, .{ .map = 0x60, .chr_nibble = 7, .tile_prio = 1, .palette = 0, .cell = 97, .rgb = 0x03E0 });
+    ppu.tm = 0x0C;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x001F), ppu.framebuffer[4 * SCREEN_WIDTH]); // BG3H in front of BG4H
+
+    // OBJ priority 0 (rank 3) over BG4 high (4) loses, even alone (BG3 masked):
+    PriorityFixture.programObj(&ppu, 0, 0x7C00);
+    ppu.tm = 0x0C | 0x10;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x001F), ppu.framebuffer[4 * SCREEN_WIDTH]);
+    ppu.tm = 0x08 | 0x10;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x03E0), ppu.framebuffer[4 * SCREEN_WIDTH]); // BG4H still in front
+    // OBJ priority 0 wins over BG3 LOW (rank 2) when BG4 is masked:
+    PriorityFixture.programBg(&ppu, 2, 2, .{ .map = 0x48, .chr_nibble = 2, .tile_prio = 0, .palette = 0, .cell = 65, .rgb = 0x4527 });
+    ppu.tm = 0x04 | 0x10;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x7C00), ppu.framebuffer[4 * SCREEN_WIDTH]); // OBJ pr0 in front (sprite covers x=8..15)
+
+    // OBJ priority 1 (rank 6) beats BG3 high.
+    PriorityFixture.programObj(&ppu, 1, 0x0218);
+    ppu.tm = 0x0C | 0x10;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x0218), ppu.framebuffer[4 * SCREEN_WIDTH]);
+
+    // Transparent control: OBJ tile far off screen and both BGs disabled
+    // leavesblack.
+    PriorityFixture.programBg(&ppu, 2, 2, .{ .map = 0x48, .chr_nibble = 2, .tile_prio = 1, .palette = 0, .cell = 65, .rgb = 0x001F });
+    ppu.tm = 0x10;
+    for (1..128) |i| ppu.oam[i * 4 + 1] = 0xF0;
+    ppu.oam[0] = 200; // move the OBJ mostly off screen
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x0000), ppu.framebuffer[4 * SCREEN_WIDTH]); // backdrop
+}
+
+test "Mode 1 BG low sits behind BG2 high and modes 2-4 OBJ use 2/4/6/8" {
+    // Mode 1 (Mesen RenderMode1): BG1 6/9, BG2 5/8 - so BG1 LOW (6) sits
+    // BEHIND BG2 HIGH (8) despite the tile-priority bit. Modes 2-4
+    // (RenderMode2/3/4): BG1 3/7, BG2 1/5, OBJ 2/4/6/8 - OBJ pr2 (6) beats
+    // BG1 low (3) and BG2 high (5) but loses to BG1 high (7).
+    var ppu = Ppu.init();
+    ppu.inidisp = 0x0F;
+
+    // --- Mode 1: BG1 low vs BG2 high ---
+    ppu.bgmode = 0x01;
+    PriorityFixture.programBg(&ppu, 4, 0, .{ .map = 0x18, .chr_nibble = 1, .tile_prio = 0, .palette = 0, .cell = 1, .rgb = 0x001F });
+    PriorityFixture.programBg(&ppu, 4, 1, .{ .map = 0x30, .chr_nibble = 5, .tile_prio = 1, .palette = 1, .cell = 17, .rgb = 0x03E0 });
+    ppu.tm = 0x03;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x03E0), ppu.framebuffer[4 * SCREEN_WIDTH]); // BG2H wins
+
+    // Same layers under Mode 2: still BG2H (rank 5) over BG1L (rank 3) -
+    // the layer walk recomputes ranks for the new mode.
+    ppu.bgmode = 0x02;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x03E0), ppu.framebuffer[4 * SCREEN_WIDTH]);
+
+    // --- Modes 2/3/4 OBJ ordering, one rank pair at a time ---
+    // BG1 low (rank 3, cyan) plus OBJ pr2 (rank 6, magenta): OBJ wins...
+    ppu.bgmode = 0x02;
+    PriorityFixture.programBg(&ppu, 4, 0, .{ .map = 0x18, .chr_nibble = 1, .tile_prio = 0, .palette = 0, .cell = 1, .rgb = 0x0218 });
+    PriorityFixture.programObj(&ppu, 2, 0x5A3A);
+    ppu.tm = 0x01 | 0x10;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x5A3A), ppu.framebuffer[4 * SCREEN_WIDTH]);
+
+    // ...and the same pair under Mode 3 (8bpp BG1) and Mode 4 (8bpp BG1).
+    ppu.bgmode = 0x03;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x5A3A), ppu.framebuffer[4 * SCREEN_WIDTH]);
+    ppu.bgmode = 0x04;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x5A3A), ppu.framebuffer[4 * SCREEN_WIDTH]);
+
+    // BG2 high (rank 5, palette 1 -> cell 17+1) also loses to OBJ pr2 (6):
+    ppu.bgmode = 0x02;
+    PriorityFixture.programBg(&ppu, 4, 1, .{ .map = 0x30, .chr_nibble = 5, .tile_prio = 1, .palette = 1, .cell = 18, .rgb = 0x4567 });
+    ppu.tm = 0x02 | 0x10;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x5A3A), ppu.framebuffer[4 * SCREEN_WIDTH]);
+
+    // Losing control: OBJ pr1 (rank 4) vs BG1 HIGH (rank 7) - BG1 high wins.
+    PriorityFixture.programBg(&ppu, 4, 0, .{ .map = 0x18, .chr_nibble = 1, .tile_prio = 1, .palette = 0, .cell = 1, .rgb = 0x0218 });
+    PriorityFixture.programObj(&ppu, 1, 0x1234);
+    ppu.tm = 0x01 | 0x10;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x0218), ppu.framebuffer[4 * SCREEN_WIDTH]); // BG1H wins
+}
+
+test "subscreen BG priority drives color math on modes 1-4" {
+    // The subscreen is a full priority composite driven by TS ($212D);
+    // renderSubscreenPixel must apply the same rank tables as the main
+    // screen - the pre-campaign code took the last-drawn opaque layer.
+    // Subscreen setup: black main backdrop, add-subscreen color math on
+    // the backdrop (the atlas technique), so the blended value exposes
+    // the subscreen pixel exactly: backdrop + sub, i.e. 2x the sub color
+    // for a full-brightness entry below saturation.
+    var ppu = Ppu.init();
+    ppu.inidisp = 0x0F;
+    ppu.cgwsel = 0x02; // blend with subscreen
+    ppu.cgadsub = 0x20; // backdrop participates, add mode
+    ppu.tm = 0x00; // main screen shows the black backdrop
+    ppu.coldata = 0;
+
+    // --- Mode 1: BG2 high (rank 8) must cover BG1 low (rank 6) ---
+    ppu.bgmode = 0x01;
+    PriorityFixture.programBg(&ppu, 4, 0, .{ .map = 0x18, .chr_nibble = 1, .tile_prio = 0, .palette = 0, .cell = 1, .rgb = 0x0083 });
+    PriorityFixture.programBg(&ppu, 4, 1, .{ .map = 0x30, .chr_nibble = 5, .tile_prio = 1, .palette = 1, .cell = 17, .rgb = 0x7A00 });
+    ppu.ts = 0x03;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x7A00), ppu.framebuffer[4 * SCREEN_WIDTH]); // sub=BG2H blue (0x0083 would mean BG1 low won)
+
+    // --- Mode 9 ($2105 bit 3): BG3 high promotes to rank 11 ---
+    ppu.bgmode = 0x09;
+    PriorityFixture.programBg(&ppu, 2, 2, .{ .map = 0x48, .chr_nibble = 2, .tile_prio = 1, .palette = 2, .cell = 33, .rgb = 0x03A0 });
+    ppu.ts = 0x07;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x03A0), ppu.framebuffer[4 * SCREEN_WIDTH]); // promoted BG3H covers BG2H (0x7A00 would mean BG2H won)
+
+    // Without the promotion bit, BG2 high (8) beats BG3 high (3).
+    ppu.bgmode = 0x01;
+    ppu.ts = 0x07;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x7A00), ppu.framebuffer[4 * SCREEN_WIDTH]);
+
+    // --- Mode 2: BG1 high (7) covers BG2 high (5) on the subscreen ---
+    ppu.bgmode = 0x02;
+    PriorityFixture.programBg(&ppu, 4, 0, .{ .map = 0x18, .chr_nibble = 1, .tile_prio = 1, .palette = 0, .cell = 1, .rgb = 0x0083 });
+    ppu.ts = 0x03;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x0083), ppu.framebuffer[4 * SCREEN_WIDTH]);
+
+    // Transparent control: TS = 0 leaves the subscreen empty, so the math
+    // falls back to the fixed color (also 0 here): backdrop stays black.
+    ppu.ts = 0x00;
+    ppu.renderScanlineRange(4, 0, SCREEN_WIDTH);
+    try std.testing.expectEqual(@as(u16, 0x0000), ppu.framebuffer[4 * SCREEN_WIDTH]);
 }
 
 test "lower OAM index wins overlapping OBJ pixels" {
