@@ -41,6 +41,10 @@ const ZN_ERRORS = {
   2: "cartridge rejected by the emulator",
   3: "wasm allocation failure",
   4: "invalid argument to the emulator",
+  5: "this cartridge uses a coprocessor (DSP etc.) this browser build cannot support; use an ordinary LoROM/HiROM game",
+  6: "unsupported cartridge mapping (ExHiROM-style); only ordinary LoROM and HiROM are supported",
+  7: "PAL or unsupported region cartridge; only NTSC games are supported",
+  8: "not a recognizable SNES cartridge (no plausible internal header)",
 };
 
 function znCheck(status, what) {
@@ -147,6 +151,17 @@ const res = await fetch(new URL("../zupernes.wasm", import.meta.url), { cache: "
           type: "frame", id: msg.id, generation,
           framebuffer: fb.buffer, pcm, wramHead: wramHead.buffer,
         }, [fb.buffer, pcm, wramHead.buffer]);
+        return;
+      }
+      case "stats": {
+        // Real worker observability for the test hooks: actual WASM
+        // committed memory (not a page-side JS heap reading) and the
+        // worker/generation counters.
+        postMessage({
+          type: "stats", id: msg.id,
+          wasmBytes: exports.memory.buffer.byteLength,
+          generation, romLive, crashed,
+        });
         return;
       }
       case "readSram": {

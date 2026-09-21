@@ -16,8 +16,27 @@
 //   audio        AudioContext at native rate; 32 kHz stereo sources
 //   presentation WebGPU CRT (ZuperWorld presenter, copied verbatim) or
 //                visible 2D fallback; CRT-off is a true pipeline bypass
-//   loop         rAF accumulator at 60.0988 fps, drop-backlog catch-up
+//   loop         NTSC-cadence accumulator; chained runs decouple emulation
+//                speed from display refresh (30 Hz rAF still emulates at
+//                NTSC speed; 120 Hz never accelerates it)
 //   inputs       KeyboardEvent.code map, release-on-blur/hidden/pause/...
+//
+// LIFECYCLE INVARIANTS (review round 2, enforced across every await):
+//   L1  A Stop is immediate and synchronous: phase flips, inputs release
+//       and audio stops BEFORE any persistence await. Pending storage I/O
+//       can never keep emulation running.
+//   L2  Replacing a cartridge flushes the OUTGOING session's SRAM under
+//       its own identity BEFORE the worker machine is replaced (A->B->A
+//       keeps A's unpaused last-second save).
+//   L3  A load is adopted only if it is still the LATEST page-side
+//       selection (by request id), no matter how many worker commits or
+//       held replies happened in between. The worker's generation number
+//       is authoritative and adopted from the reply, never predicted.
+//   L4  Worker failures - script error, unserializable message, failed
+//       postMessage - reject every pending request, stop playback and put
+//       the page in a visible, recoverable error state.
+//   L5  Every frame reply is checked for generation AND phase before it
+//       may paint, count, or schedule audio (including the eager paint).
 
 import { createWebGpuPresenter } from "./webgpu-presenter.mjs";
 
@@ -25,7 +44,10 @@ const $ = (id) => document.getElementById(id);
 const statusEl = $("status");
 const titleEl = $("title");
 const fileEl = $("file");
-const canvas = $("screen");
+// `canvas` may be REPLACED (a canvas that once held a WebGPU context can
+// never acquire a 2D one) - it is a `let`, and use2dAfterWebGpu swaps the
+// element while preserving id and DOM position.
+let canvas = $("screen");
 
 const W = 256, H = 224;
 const FRAME_MS = 1000 / 60.0988; // NTSC SNES field rate
@@ -50,6 +72,10 @@ const TEST_MODE = new URLSearchParams(location.search).get("test") === "1";
 // status output
 // ---------------------------------------------------------------------------
 let lastError = null;
+// A "sticky notice" survives the final `loaded` say(): storage read
+// failures and wrong-size saves must stay visible, not be cleared by the
+// success banner of the same load.
+let stickyNotice = null;
 function say(text, isError = false) {
   statusEl.textContent = text;
   statusEl.classList.toggle("error", isError);
@@ -57,67 +83,100 @@ function say(text, isError = false) {
   else lastError = null;
 }
 function fail(text) { say("⚠ " + text, true); }
+function noticeSticky(text) {
+  stickyNotice = text;
+  say(text, true);
+}
 
 // ---------------------------------------------------------------------------
-// worker plumbing
+// worker plumbing. onerror/onmessageerror are the REAL failure surfaces:
+// a worker script that throws on evaluation never answers `boot`, and the
+// pending promise would hang forever without the rejection below.
 // ---------------------------------------------------------------------------
-// The worker inherits the page's ?test=1 so its test-only hooks (crash
-// injection) match the page's test mode.
 const worker = new Worker(`js/worker.mjs${location.search}`, { type: "module" });
 let reqSeq = 0;
 const pending = new Map(); // id -> {resolve, reject}
+let workerBroken = false;
+
+function killWorker(message) {
+  if (workerBroken) return;
+  workerBroken = true;
+  // Reject everything still outstanding so no caller hangs; the loop's
+  // catch path turns this into a visible error state.
+  const err = new Error(message);
+  for (const p of pending.values()) {
+    try { p.reject(err); } catch {}
+  }
+  pending.clear();
+  setPhase("error");
+  fail(`${message}. Unsaved progress since the last periodic save may be lost - reload the page to recover.`);
+}
+worker.onerror = (ev) => {
+  killWorker(`emulation worker failed (${ev.message || "script error"})`);
+};
+worker.onmessageerror = () => {
+  killWorker("emulation worker received an unserializable message");
+};
+
 worker.onmessage = (ev) => {
   const m = ev.data;
   if (m.id !== undefined && pending.has(m.id)) {
-    // A frame reply paints IMMEDIATELY, before the awaiting promise even
-    // resolves: page-side observers (tests) treat the frame marker and the
-    // canvas content as one instantaneous state, and the reply's .then may
-    // otherwise land a tick later than a parallel readWram resolution.
-    if (m.type === "frame" && m.framebuffer) {
-      // The frame marker and the painted canvas must read as one instant
-      // (see comment above). ONE conversion per frame: the eager paint here
-      // populates lastFrameRgba, and the loop's .then reuses it instead of
-      // converting the RGB15 buffer a second time.
+    // L5: a frame reply is validated BEFORE it may paint, count, or
+    // schedule audio. The frame marker and the painted canvas must read
+    // as one instant, but staleness (superseded session, paused machine)
+    // disqualifies the frame entirely.
+    if (m.type === "frame" &&
+        m.generation === session.gen &&
+        session.phase === "running" &&
+        m.framebuffer) {
       lastFrameBytes = new Uint8Array(m.framebuffer).slice(0).buffer;
       lastFrameRgba = fbToRgba(m.framebuffer.slice(0));
-      frameAlreadyPainted = true;
-      alreadyPaintedRgba = lastFrameRgba;
-      presentFrame(m.framebuffer.slice(0));
+      paintCount++;
+      presentFrame(new Uint8Array(lastFrameRgba.buffer.slice(0), 0, W * H * 4));
+      framePaintedByMessage = true;
     }
     const p = pending.get(m.id);
     pending.delete(m.id);
     if (m.type === "error") {
-      if (m.crashed) crashWorker(m.error);
+      if (m.crashed) crashWorkerState(m.error);
       p.reject(new Error(m.error));
     } else {
       p.resolve(m);
     }
-  } else if (m.type === "frame") {
-    onFrame(m);
   } else if (m.type === "error" && m.crashed) {
-    crashWorker(m.error);
+    crashWorkerState(m.error);
   }
 };
 function call(op, extra = {}) {
   const id = ++reqSeq;
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
-    worker.postMessage({ op, id, ...extra });
+    try {
+      worker.postMessage({ op, id, ...extra });
+    } catch (e) {
+      // A failed postMessage leaves the request unanswered forever:
+      // reject it here instead of leaking the pending entry.
+      pending.delete(id);
+      killWorker(`worker communication failed (${e.message || e})`);
+      reject(e);
+    }
   });
 }
 
 // ---------------------------------------------------------------------------
-// session: exactly one live cartridge. `gen` is the monotonic session id
-// (`generation` in state()); every async continuation re-checks it before
-// committing anything (says, UI phase flips) so loads that resolve out of
-// order cannot revive a discarded session or cross-write saves.
+// session: exactly one live cartridge.
+//   want   page-side load sequence (increments on every selection attempt)
+//   gen    worker-observed generation of the ADOPTED session (0 = none)
+// Adopting a load requires being the LATEST want; the worker's own
+// generation (which counts every commit, even intermediate ones the page
+// skipped) is taken from the adopted reply, never predicted.
 // ---------------------------------------------------------------------------
 const session = {
-  gen: 0,             // worker-side generation of THIS session (0 = none)
-  want: 0,            // latest load attempt ( monotonic by page)
-  romId: null,        // normalized SHA-256 hex
+  gen: 0,
+  want: 0,
+  romId: null,
   fileName: null,
-  bytes: null,        // normalized ROM bytes (header stripped by caller? NO: normalized = raw file with 512-byte copier header stripped)
+  bytes: null,
   sramLen: 0,
   phase: "empty",     // empty | loading | running | paused | error
   frame: 0,
@@ -125,13 +184,10 @@ const session = {
   hasBattery: false,
   sramDirty: false,
   sramShadow: null,   // Uint8Array last persisted
-  lastSRamRead: null,
-  dead: false,        // replaced by a newer session
+  sramBoot: null,     // Uint8Array baseline at boot/restore (dirty check)
+  dead: false,
 };
 let presenterMode = "none"; // none | webgpu | 2d
-// Resolves when initPresenter has settled (webgpu or 2d): the test hook's
-// presenter field stays honest about INITIALIZATION rather than reporting
-// "2d" while WebGPU setup is still in flight.
 let presenterReady = null;
 let crtRequested = localStorage.getItem("zupernes-crt") !== "0";
 let crtActive = false;
@@ -146,10 +202,18 @@ function updatePauseLabel() {
   $("pause").setAttribute("aria-label", session.phase === "running" ? "Pause emulation" : "Resume emulation");
 }
 
+// L1: immediate, synchronous stop. Halts the dispatch loop via the phase,
+// releases inputs and stops audio NOW; persistence continues afterwards.
+function stopSimulation(nextPhase) {
+  releaseInputs();
+  audio.suspend(); // stops every live node; freezes the cursor
+  setPhase(nextPhase);
+}
+
 // ---------------------------------------------------------------------------
 // persistence: IndexedDB, keyed by romId (SHA-256 of NORMALIZED bytes).
-// Headered/unheadered variants of the same cartridge share the save;
-// different bytes with the same filename do not.
+// Connections are closed when their work is done (a long-lived handle
+// keeps a version pin and leaks file descriptors in some profiles).
 // ---------------------------------------------------------------------------
 const DB_NAME = "zupernes-theater", DB_STORE = "saves";
 function db() {
@@ -162,40 +226,47 @@ function db() {
 }
 async function saveGet(romId) {
   const d = await db();
-  return new Promise((resolve, reject) => {
-    const tx = d.transaction(DB_STORE, "readonly");
-    const req = tx.objectStore(DB_STORE).get(romId);
-    req.onsuccess = () => resolve(req.result ?? null); // {bytes} or null
-    req.onerror = () => reject(req.error);
-  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = d.transaction(DB_STORE, "readonly");
+      const req = tx.objectStore(DB_STORE).get(romId);
+      req.onsuccess = () => resolve(req.result ?? null); // {bytes} or null
+      req.onerror = () => reject(req.error);
+    });
+  } finally {
+    d.close();
+  }
 }
 async function savePut(romId, bytes) {
   const d = await db();
-  return new Promise((resolve, reject) => {
-    const tx = d.transaction(DB_STORE, "readwrite");
-    tx.objectStore(DB_STORE).put({ bytes, at: Date.now() }, romId);
-    tx.oncomplete = () => resolve(true);
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = d.transaction(DB_STORE, "readwrite");
+      tx.objectStore(DB_STORE).put({ bytes, at: Date.now() }, romId);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally {
+    d.close();
+  }
 }
 async function saveDelete(romId) {
   const d = await db();
-  return new Promise((resolve, reject) => {
-    const tx = d.transaction(DB_STORE, "readwrite");
-    tx.objectStore(DB_STORE).delete(romId);
-    tx.oncomplete = () => resolve(true);
-    tx.onerror = () => reject(tx.error);
-  });
+  try {
+    return await new Promise((resolve, reject) => {
+      const tx = d.transaction(DB_STORE, "readwrite");
+      tx.objectStore(DB_STORE).delete(romId);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => reject(tx.error);
+    });
+  } finally {
+    d.close();
+  }
 }
 
-// Diagnostics the tests can read: never claim persistence before it lands.
 const storageDiag = { lastWrite: null, errors: [] };
 
-// Battery presence is decided from the cartridge header exactly like the
-// native frontends (src/main.zig setupBatterySave). Offsets are relative to
-// the internal header at 0x7FC0 (LoROM) / 0xFFC0 (HiROM) of the normalized
-// (copier-header-stripped) bytes.
 function batteryInfo(rom) {
   const hirom = detectType(rom) === "HiROM";
   const h = hirom ? 0xffc0 : 0x7fc0;
@@ -206,9 +277,6 @@ function batteryInfo(rom) {
   return { hasBattery, sramShift };
 }
 function detectType(rom) {
-  // Mirror of the core's scoring (src/cartridge.zig scoreHeader), good
-  // enough to find the header for battery metadata only - the wasm does the
-  // authoritative mapping.
   const score = (base, expectHi) => {
     if (rom.length < base + 0x40) return -1;
     let s = 0;
@@ -225,8 +293,8 @@ function detectType(rom) {
 }
 function normalizeRom(bytes) {
   // 512-byte copier header iff size is N*32KB+512 - identical rule to the
-  // core (Cartridge.init). The stripped bytes are the identity: headered and
-  // unheadered dumps of one cartridge share a save.
+  // core (Cartridge.init). The stripped bytes are the identity: headered
+  // and unheadered dumps of one cartridge share a save.
   return bytes.length % 0x8000 === 512 ? bytes.subarray(512) : bytes;
 }
 async function sha256hex(bytes) {
@@ -235,12 +303,15 @@ async function sha256hex(bytes) {
 }
 
 // ---------------------------------------------------------------------------
-// ROM loading: transactional, latest-wins.
+// ROM loading: transactional, latest-wins, with pre-replacement flushing.
 // ---------------------------------------------------------------------------
 async function startLoad(file) {
-  const forGen = ++session.want;
-  setPhase("loading");
+  const myLoad = ++session.want;
+  // L1: a selection attempt stops the current game immediately; the L2
+  // flush below is what makes the stop durable.
+  stopSimulation("loading");
   say(`reading ${file.name}…`);
+  stickyNotice = null;
   let bytes;
   try {
     bytes = new Uint8Array(await file.arrayBuffer());
@@ -249,47 +320,88 @@ async function startLoad(file) {
     revertPhase();
     return;
   }
-  // The winning load is decided by `session.want` at every await boundary.
-  if (forGen !== session.want || session.dead) { return; }
-  const norm = normalizeRom(bytes);
+  if (myLoad !== session.want || session.dead || workerBroken) return;
+  await installSession(file.name, bytes, myLoad);
+}
+
+// Shared by the picker/drop path (startLoad) and Erase Save (fresh boot).
+// `myLoad` is the page-side load sequence number that must remain the
+// latest at every await, or the whole install is abandoned.
+async function installSession(fileName, rawBytes, myLoad) {
+  const stillMine = () => myLoad === session.want && !session.dead && !workerBroken;
+  const norm = normalizeRom(rawBytes);
   if (norm.length < 0x8000) {
-    fail(`${file.name} is too small for a SNES cartridge (need at least 32 KiB after a 512-byte copier header)`);
+    fail(`${fileName} is too small for a SNES cartridge (need at least 32 KiB after a 512-byte copier header)`);
     revertPhase();
     return;
   }
   if (norm.length > 16 * 1024 * 1024) {
-    fail(`${file.name} is too large (over 16 MiB; not an ordinary LoROM/HiROM cartridge)`);
+    fail(`${fileName} is too large (over 16 MiB; not an ordinary LoROM/HiROM cartridge)`);
     revertPhase();
     return;
   }
+
+  // L2: SNAPSHOT AND FLUSH THE OUTGOING SESSION under its own identity,
+  // before the worker machine is replaced. This is what keeps A->B->A
+  // from losing A's unpaused save: the snapshot is read from A's machine
+  // (the worker serializes requests, so this read completes before the
+  // load below commits) and written under A's romId, all guarded so a
+  // superseded install never writes a stale save.
+  const prevRomId = session.romId;
+  const prevGen = session.gen;
+  const prevHadBattery = session.hasBattery;
+  if (prevGen !== 0 && prevRomId && prevHadBattery) {
+    try {
+      const m = await call("readSram", { generation: prevGen });
+      if (prevGen !== session.gen) {
+        // The machine was replaced meanwhile: the bytes belong to a
+        // session we no longer own. Discard - do NOT write them under
+        // prevRomId (they may be B's data by now if an even newer load
+        // raced us; the guard keeps identity honest either way).
+      } else {
+        const snap = new Uint8Array(m.bytes);
+        if (!session.sramShadow || !arraysEqual(snap, session.sramShadow)) {
+          await savePut(prevRomId, snap);
+          if (prevGen === session.gen) {
+            session.sramShadow = snap.slice();
+            session.sramDirty = false;
+            storageDiag.lastWrite = { romId: prevRomId, why: "replace", at: Date.now(), bytes: snap.length };
+          }
+        }
+      }
+    } catch (e) {
+      // Visible but not fatal: the new cartridge still loads, and the
+      // periodic flush may yet retry for the SAME session.
+      storageDiag.errors.push(`save flush on replace failed (${e.message})`);
+    }
+  }
+  if (!stillMine()) return;
+
   const romId = await sha256hex(norm);
-  if (forGen !== session.want) return; // a newer selection won meanwhile
+  if (!stillMine()) return; // a newer selection won meanwhile
 
   const { hasBattery, sramShift } = batteryInfo(norm);
   let loaded;
   try {
     loaded = await call("load", { bytes: norm });
   } catch (e) {
-    if (forGen !== session.want) return; // superseded: swallow
-    fail(`${file.name}: ${e.message}`);
+    if (!stillMine()) return; // superseded: swallow
+    // The preflight and core rejections explain themselves (DSP, mapping,
+    // PAL, unrecognizable dump, size). The previous session is untouched.
+    fail(`${fileName}: ${e.message}`);
     revertPhase();
     return;
   }
-  if (forGen !== session.want) return; // our worker machine was replaced later
-  // Check against the CURRENT session (not a captured one): the worker
-  // assigned the generation synchronously inside `load`.
-  if (loaded.generation !== session.gen + 1) {
-    // Should not happen: the worker is single-message serialized. Guard anyway.
-    return;
-  }
-
+  // L3: adoption is by LATEST WANT, never by generation arithmetic - the
+  // worker may have committed intermediate loads the page skipped. The
+  // adopted reply's generation is authoritative.
+  if (!stillMine()) return;
   session.gen = loaded.generation;
   session.romId = romId;
-  session.fileName = file.name;
+  session.fileName = fileName;
   session.bytes = norm;
   session.sramLen = loaded.sramLen;
-  session.hasBattery = hasBattery && session.sramLen > 0 && sramShift >= 1 && sramShift <= 5
-    ? hasBattery : hasBattery && session.sramLen > 0;
+  session.hasBattery = hasBattery && session.sramLen > 0 && sramShift >= 1 && sramShift <= 5;
   session.sramDirty = false;
   session.sramShadow = null;
   session.sramBoot = null;
@@ -298,51 +410,47 @@ async function startLoad(file) {
   audio.flush();
   releaseInputs();
 
-  // Restore the battery BEFORE the first frame (TASK.md). A missing,
-  // corrupt or wrong-sized save must be VISIBLE but never block play.
+  // Restore the battery BEFORE the first frame. A missing, corrupt or
+  // wrong-sized save stays VISIBLE (sticky) but never blocks play.
   if (session.hasBattery) {
     try {
       const rec = await saveGet(romId);
-      if (forGen !== session.want) return;
+      if (!stillMine()) return;
       if (rec) {
         const saved = new Uint8Array(rec.bytes ?? []);
         if (saved.length === session.sramLen) {
           await call("importSram", { bytes: saved });
+          if (!stillMine()) return;
           session.sramBoot = saved.slice();
         } else if (saved.length) {
           storageDiag.errors.push(`save size ${saved.length} != ${session.sramLen}; starting fresh`);
-          say(`stored save has the wrong size for this cartridge - starting without it`, true);
+          noticeSticky(`stored save has the wrong size for this cartridge - starting without it; the game remains playable`);
         }
       }
     } catch (e) {
       storageDiag.errors.push(String(e));
-      say(`could not read the stored save (${e.message}) - starting fresh; the game remains playable`, true);
+      noticeSticky(`could not read the stored save (${e.message}) - starting fresh; the game remains playable`);
     }
   }
 
-  if (forGen !== session.want) return;
+  if (!stillMine()) return;
   if (session.hasBattery && !session.sramBoot) {
-    // Fresh cartridge: snapshot the $FF boot SRAM so the dirty check has a
-    // baseline without writing anything to storage.
+    // Fresh cartridge: snapshot the $FF boot SRAM so the dirty check has
+    // a baseline without writing anything to storage.
     try {
       const m = await call("readSram");
-      if (forGen === session.want) session.sramBoot = new Uint8Array(m.bytes);
+      if (stillMine()) session.sramBoot = new Uint8Array(m.bytes);
     } catch {}
   }
-  if (forGen !== session.want) return;
-  // Pause at the load screen, like boot and reset (TASK.md).
-  titleEl.textContent = file.name;
-  // The drop zone only belongs on the EMPTY screen: loading a cartridge
-  // borrows its space for the start overlay, and it must stop intercepting
-  // pointer events so #screen clicks (and Playwright's click on #screen)
-  // reach the canvas.
+  if (!stillMine()) return;
+  titleEl.textContent = fileName;
   const dropEl = $("drop");
   dropEl.hidden = true;
   dropEl.style.pointerEvents = "none";
   $("start-overlay").hidden = false;
   setPhase("paused");
-  presentNow(); // show frame 0 (the paused boot picture)
-  say(`${file.name} loaded - press Play`);
+  presentNow(); // show the paused boot picture
+  if (!stickyNotice) say(`${fileName} loaded - press Play`);
 }
 
 function revertPhase() {
@@ -351,20 +459,22 @@ function revertPhase() {
   else if (session.gen === 0) setPhase("empty");
 }
 
-function crashWorker(message) {
+// A crashed WORKER (wasm trap, protocol error): the machine state is
+// unknown and the worker refuses further ops. No unverifiable claims
+// about save safety: the LAST PERSISTED save stands, but anything since
+// may be lost.
+function crashWorkerState(message) {
   setPhase("error");
-  fail(`emulation worker crashed (${message}) - reload the page to recover. Your battery saves are safe.`);
+  fail(`emulation worker crashed (${message}). The last save in storage is safe; progress since then may be lost - reload the page to recover.`);
 }
 
 // ---------------------------------------------------------------------------
 // audio: schedule 32 kHz stereo AudioBuffers ahead of a running cursor.
-// The DSP emits ~534 frames per emulated frame; we keep the queue below
-// 250 ms and flush on pause/hidden/reset/replace/off.
 // ---------------------------------------------------------------------------
 const audio = {
   ctx: null,
   cursor: 0,
-  nodes: [], // live buffers for flush()
+  nodes: [],
   underruns: 0,
   peakQueueMs: 0,
   underrunEvents: 0,
@@ -429,8 +539,6 @@ let gpuPresenter = null;
 let mode2d = null;
 let deviceLost = false;
 
-// RGB15 -> RGB32 for both backends, exactly the native screenshot tool's
-// component << 3 expansion (src/screenshot.zig writePpm).
 const rgb15ToRgba8 = (() => {
   const lut = new Uint8Array(32);
   for (let i = 0; i < 32; i++) lut[i] = i << 3;
@@ -448,22 +556,17 @@ const rgb15ToRgba8 = (() => {
 
 let rgbaBuffer = new Uint8ClampedArray(W * H * 4);
 function fbToRgba(fb) {
-  // fb arrives as a transferred ArrayBuffer of 256*224 LE u16s.
   rgb15ToRgba8(new Uint16Array(fb), rgbaBuffer, W, H);
   return rgbaBuffer;
 }
 
 function fitCanvas() {
-  // Integer-scale the backing store where possible (ZuperWorld's
-  // fitCanvas policy), keeping the whole 256x224 frame visible with no
-  // horizontal overflow on narrow layouts (CSS letterboxes the rest).
   if (presenterMode === "webgpu" && gpuPresenter) return; // presenter owns output size
   const dpr = window.devicePixelRatio || 1;
   const cssW = canvas.getBoundingClientRect();
   const availW = Math.max(1, Math.floor((cssW.width || W) * dpr));
   const availH = Math.max(1, Math.floor((cssW.height || H) * dpr));
   let k = Math.max(1, Math.min(Math.floor(availW / W), Math.floor(availH / H)));
-  if (k * W > availW || k * H > availH) k = Math.max(1, Math.min(Math.floor(availW / W), Math.floor(availH / H)));
   const w = W * k, h = H * k;
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
@@ -483,8 +586,12 @@ async function initPresenter() {
       deviceLost = true;
       gpuPresenter?.destroy?.();
       gpuPresenter = null;
-      use2d(`WebGPU device lost (${info?.reason ?? "unknown"}) - switched to 2D`);
-      if (crtRequested) say("CRT display lost (WebGPU device reset); showing plain 2D", true);
+      // Real device loss: the presenter is gone AND this canvas can never
+      // return a 2D context after holding a WebGPU one. Swap in a FRESH
+      // canvas element (same id, same DOM slot) and present the live frame
+      // through it, then PROVE it renders (paintCount keeps counting).
+      use2dAfterWebGpu(`WebGPU device lost (${info?.reason ?? "unknown"}) - switched to 2D`);
+      if (crtRequested) noticeSticky("CRT display lost (WebGPU device reset); showing plain 2D");
     });
     presenterMode = "webgpu";
     fitWebGpuOutput();
@@ -508,6 +615,27 @@ function use2d(reason) {
   updateCrtLabel();
   if (reason) console.info("[theater] 2D fallback:", reason);
 }
+// Replacement for a canvas that held a WebGPU context: create a fresh
+// element (a WebGPU canvas can never acquire a 2D context, by spec), swap
+// it into the same DOM slot with the same id, and draw the LAST frame
+// through a real 2D context so the picture updates again.
+function use2dAfterWebGpu(reason) {
+  const fresh = document.createElement("canvas");
+  fresh.id = canvas.id;
+  fresh.setAttribute("aria-label", canvas.getAttribute("aria-label") || "SNES display");
+  fresh.width = W;
+  fresh.height = H;
+  canvas.replaceWith(fresh);
+  canvas = fresh;
+  presenterMode = "2d";
+  crtActive = false;
+  mode2d = canvas.getContext("2d", { alpha: false });
+  if (mode2d) mode2d.imageSmoothingEnabled = false;
+  fitCanvas();
+  updateCrtLabel();
+  presentNow(); // repaint the current frame onto the fresh canvas
+  if (reason) console.info("[theater] 2D fallback (fresh canvas):", reason);
+}
 function updateCrtLabel() {
   const btn = $("crt");
   if (presenterMode === "webgpu") {
@@ -520,93 +648,101 @@ function updateCrtLabel() {
     btn.disabled = false; // still clickable; keeps 2d and reports honestly
   }
 }
-// The 2D path renders into an offscreen 256x224 canvas then scales it to
-// the output canvas with drawImage (putImageData is always unscaled, so it
-// could only ever fill the top-left corner of a larger backing store).
-// drawImage with imageSmoothingEnabled=false is the nearest-neighbor
-// upscale, matching the plain WebGPU pipeline 1:1.
 const offscreen = document.createElement("canvas");
 offscreen.width = W;
 offscreen.height = H;
 const offCtx = offscreen.getContext("2d", { alpha: false });
 
 let paintCount = 0; // diagnostics: visible in the test hook
-function presentFrame(fb) {
-  paintCount++;
-  const rgba = fbToRgba(fb);
+function presentFrame(rgba) {
   if (presenterMode === "webgpu" && gpuPresenter) {
-    // writeTexture needs exactly W*4 bytesPerRow; rgbaBuffer length matches.
-    gpuPresenter.present(new Uint8Array(rgba.buffer, 0, W * H * 4));
+    gpuPresenter.present(new Uint8Array(rgba.buffer, rgba.byteOffset, W * H * 4));
     return;
   }
   if (!mode2d) return;
-  offCtx.putImageData(new ImageData(rgbaBuffer, W, H), 0, 0);
+  offCtx.putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, W * H * 4), W, H), 0, 0);
   mode2d.imageSmoothingEnabled = false;
   mode2d.drawImage(offscreen, 0, 0, W, H, 0, 0, canvas.width, canvas.height);
 }
-let lastFrameBytes = null; // the raw RGB15 framebuffer of the last presented frame
+let lastFrameBytes = null;
 function presentNow() {
-  // Repaint the LAST received frame (used at load/pause/reset/CRT-toggle
-  // so the canvas is not blank or stale while the loop is stopped). Works
-  // on BOTH backends: the WebGPU path re-presents the same texture through
-  // the currently configured pipeline (a CRT toggle takes effect here).
   if (!lastFrameBytes) return;
   if (presenterMode === "webgpu" && gpuPresenter && lastFrameRgba) {
-    gpuPresenter.present(new Uint8Array(lastFrameRgba.buffer, 0, W * H * 4));
+    gpuPresenter.present(new Uint8Array(lastFrameRgba.buffer, lastFrameRgba.byteOffset, W * H * 4));
     return;
   }
   if (!lastFrameRgba || !mode2d) return;
-  offCtx.putImageData(new ImageData(lastFrameRgba, W, H), 0, 0);
+  offCtx.putImageData(new ImageData(new Uint8ClampedArray(lastFrameRgba.buffer, lastFrameRgba.byteOffset, W * H * 4), W, H), 0, 0);
   mode2d.imageSmoothingEnabled = false;
   mode2d.drawImage(offscreen, 0, 0, W, H, 0, 0, canvas.width, canvas.height);
 }
 let lastFrameRgba = null;
-let frameAlreadyPainted = false; // set by the eager paint, cleared by the loop
-let alreadyPaintedRgba = null;
+let framePaintedByMessage = false; // the eager paint consumed this frame's paint
 
 // ---------------------------------------------------------------------------
-// main loop: rAF accumulator at the NTSC cadence, independent of display Hz.
+// main loop. The accumulator subtracts each run's budget; runs CHAIN on
+// their replies while budget remains, so emulation speed is decoupled
+// from display refresh: a 30 Hz rAF still emulates at (near) NTSC speed -
+// two frames per tick - while a 120 Hz display can never add budget faster
+// than wall time. Bounded catch-up: the accumulator is clamped at 100 ms
+// and a reply chain yields after CHAIN_LIMIT runs (the next rAF resumes
+// it), so a backlog can never burst and a hidden tab (which pauses
+// outright) never replays wall-clock time.
 // ---------------------------------------------------------------------------
+const CHAIN_LIMIT = 3;
 let acc = 0, last = 0, running = false;
 let inFlight = false;
+let chainDepth = 0;
 let saveFlushTimer = 0;
 
-// The accumulator subtracts each run's budget instead of clearing, so a
-// 33ms rAF tick still buys one emulated frame per elapsed FRAME_MS of wall
-// time (an emulator can run ahead of a slow display; here we only ever run
-// ONE run in flight, so surplus beyond that is DROPPED as bounded catch-up,
-// never replayed as a burst).
 function loop(t) {
   requestAnimationFrame(loop);
   if (!running || session.phase !== "running") { last = t; return; }
   acc += Math.min(t - last, 100); // bound catch-up: never replay a backlog
   last = t;
-  if (inFlight) return;
+  chainDepth = 0;
+  dispatchRun();
+}
+function dispatchRun() {
+  if (inFlight || session.phase !== "running") return;
   if (acc < FRAME_MS) return;
   acc -= FRAME_MS;
-  // Surplus beyond one frame of debt is discarded: a hidden tab's wall-time
-  // backlog must never be worked off after becoming visible again.
-  if (acc > FRAME_MS) acc = 0;
-  const gen = session.gen;
+  sendRun();
+}
+function sendRun() {
   inFlight = true;
-  session.buttons = held;
+  const gen = session.gen;
   call("run", { buttons: held, generation: gen })
     .then((m) => {
       inFlight = false;
-      if (m.generation !== session.gen || session.phase !== "running") return; // stale session
+      // L5: stale sessions and paused machines consume the frame silently.
+      if (m.generation !== session.gen || session.phase !== "running") return;
       session.frame++;
-      if (m.framebuffer && !frameAlreadyPainted) {
+      if (!framePaintedByMessage && m.framebuffer) {
         lastFrameBytes = m.framebuffer.slice(0);
         lastFrameRgba = fbToRgba(m.framebuffer);
-        presentFrame(m.framebuffer);
+        paintCount++;
+        presentFrame(lastFrameRgba);
       }
-      frameAlreadyPainted = false;
+      framePaintedByMessage = false;
       if (m.pcm.byteLength) audio.push(m.pcm);
       scheduleSRamPoll();
+      // The CHAIN: budget still pending (slow display) -> run again now,
+      // yielding to rAF after CHAIN_LIMIT consecutive runs. The phase is
+      // re-checked here: a Pause that landed while this reply was in flight
+      // must never submit ANOTHER frame to the worker.
+      if (acc >= FRAME_MS && chainDepth < CHAIN_LIMIT && session.phase === "running") {
+        acc -= FRAME_MS;
+        chainDepth++;
+        sendRun();
+      } else {
+        chainDepth = 0;
+      }
     })
     .catch((e) => {
       inFlight = false;
-      if (/crashed/.test(e.message)) { crashWorker(e.message); return; }
+      if (workerBroken) return; // killWorker already surfaced it
+      if (/crashed/.test(e.message)) { crashWorkerState(e.message); return; }
       fail(`emulation error: ${e.message}`);
     });
 }
@@ -614,8 +750,6 @@ function loop(t) {
 let sramReadBusy = false;
 let sramPollDue = 0;
 function scheduleSRamPoll() {
-  // At most one dirty-check per second of emulated time; the flush itself
-  // happens within a second of a mutation (TASK.md).
   if (!session.hasBattery || session.phase !== "running") return;
   const now = performance.now();
   if (now < sramPollDue || sramReadBusy) return;
@@ -626,18 +760,12 @@ function scheduleSRamPoll() {
     .then((m) => {
       sramReadBusy = false;
       if (gen !== session.gen) {
-        // Session replaced mid-read: DISCARD (do not write a stale save).
-        return;
+        return; // session replaced mid-read: DISCARD
       }
       const bytes = new Uint8Array(m.bytes);
-      // Dirty check against the LAST PERSISTED (or restored) snapshot. The
-      // snapshot may be null before the first successful write - treat that
-      // as "unknown, compare against what the machine booted with" via the
-      // session's restore-time snapshot (set by importSram), else cheap
-      // fallback: compare against the previous poll.
       const baseline = session.sramShadow ?? session.sramBoot;
       if (!session.sramDirty && !arraysEqual(bytes, baseline)) {
-        session.sramDirty = true; // will be flushed by the timer below
+        session.sramDirty = true;
       }
       if (session.sramDirty) queueSRamFlush();
     })
@@ -658,23 +786,26 @@ function queueSRamFlush() {
 async function flushSave(why) {
   if (!session.hasBattery || session.dead || !session.romId) return false;
   const gen = session.gen;
+  const romId = session.romId;
   try {
     const m = await call("readSram", { generation: gen });
-    if (gen !== session.gen) return false; // replaced: do not cross-write
+    if (gen !== session.gen || romId !== session.romId) return false;
     const bytes = new Uint8Array(m.bytes);
     if (session.sramShadow && arraysEqual(bytes, session.sramShadow)) {
       session.sramDirty = false;
-      return true; // unchanged: no write
+      return true;
     }
-    await savePut(session.romId, bytes);
-    if (gen !== session.gen) return false; // replaced DURING the write
+    await savePut(romId, bytes);
+    if (gen !== session.gen || romId !== session.romId) return false;
     session.sramShadow = bytes.slice();
     session.sramDirty = false;
-    storageDiag.lastWrite = { romId: session.romId, why, at: Date.now(), bytes: bytes.length };
+    storageDiag.lastWrite = { romId, why, at: Date.now(), bytes: bytes.length };
     return true;
   } catch (e) {
-    storageDiag.errors.push(`save write failed (${e.message})`);
-    say(`could not persist the battery save (${e.message}); play continues`, true);
+    if (!workerBroken) {
+      storageDiag.errors.push(`save write failed (${e.message})`);
+      say(`could not persist the battery save (${e.message}); play continues`, true);
+    }
     return false;
   }
 }
@@ -684,6 +815,7 @@ function startLoop() {
     running = true;
     last = performance.now();
     acc = 0;
+    chainDepth = 0;
   }
 }
 
@@ -697,9 +829,8 @@ function isEditableTarget(t) {
 addEventListener("keydown", (e) => {
   const bit = KEYMAP[e.code];
   if (!bit) return;
-  if (e.repeat) { e.preventDefault(); return; } // fresh keydown required
+  if (e.repeat) { e.preventDefault(); return; }
   if (isEditableTarget(e.target) || isEditableTarget(document.activeElement)) {
-    // Typing goes to the toolbar, not to the game. Also clear live holds.
     held = 0;
     return;
   }
@@ -716,10 +847,9 @@ function releaseInputs() { held = 0; }
 addEventListener("blur", releaseInputs);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
-    releaseInputs();
-    audio.suspend();
-    // Hidden pauses: no wall-clock backlog, and it stays paused on return.
-    if (session.phase === "running") doPause(true);
+    // Hidden pauses immediately (L1) and stays paused on return.
+    stopSimulation("paused");
+    $("start-overlay").hidden = false;
   }
 });
 
@@ -727,60 +857,58 @@ document.addEventListener("visibilitychange", () => {
 // controls
 // ---------------------------------------------------------------------------
 async function doPlay() {
-  if (session.phase !== "paused" || session.dead) return;
+  if (session.phase !== "paused" || session.dead || workerBroken) return;
   if (audioEnabled) {
     const ctx = audio.ensure();
     if (ctx.state !== "running") {
       try { await ctx.resume(); } catch {}
     }
   }
+  if (session.phase !== "paused") return; // a racing load changed plans
   setPhase("running");
   $("start-overlay").hidden = true;
   startLoop();
-  // Kick the FIRST frame immediately instead of waiting for the rAF
-  // accumulator: pages that observe the boot marker (tests, users watching
-  // the first frame) see the canvas painted with the first frame rather
-  // than a one-tick-blank window.
-  runOneFrame();
-  // Focus the canvas so keyboard play begins naturally (TASK.md).
+  // Kick the FIRST frame immediately: the observer of the boot marker
+  // sees the canvas painted with the first frame rather than a tick
+  // late. dispatchRun (not sendRun) so the budget is SUBTRACTED like
+  // every other frame - a phantom extra budget would double the cadence.
+  acc += FRAME_MS;
+  dispatchRun();
   canvas.focus({ preventScroll: true });
 }
-// Send a single run request right now (no accumulator wait). Safe to call
-// while a run is in flight.
-function runOneFrame() {
-  if (inFlight || session.phase !== "running" || session.dead) return;
-  inFlight = true;
-  const gen = session.gen;
-  call("run", { buttons: held, generation: gen })
-    .then((m) => {
-      inFlight = false;
-      if (m.generation !== session.gen || session.phase !== "running") return;
-      session.frame++;
-      if (m.pcm.byteLength) audio.push(m.pcm);
-      scheduleSRamPoll();
-    })
-    .catch((e) => {
-      inFlight = false;
-      if (/crashed/.test(e.message)) { crashWorker(e.message); return; }
-      fail(`emulation error: ${e.message}`);
-    });
-}
 async function doPause(hide) {
-  // Flush the save BEFORE the observable phase flip: the test hooks (and
-  // anyone polling phase==='paused') treat pause as "persisted"; flipping
-  // the phase first would leave a window where a reload races the
-  // IndexedDB write. Persistence is claimed only after it has landed.
   if (session.phase === "running") {
-    releaseInputs();
-    audio.suspend();
-    await flushSave("pause");
-    setPhase("paused");
+    // L1: stop FIRST - inputs, audio and the dispatch loop halt NOW; the
+    // persistence await below cannot keep emulation running. Persistence
+    // is claimed (shadow updated) only when the write lands.
+    stopSimulation("paused");
   }
   if (!hide) $("start-overlay").hidden = false;
+  await flushSave("pause");
 }
 async function doReset() {
-  if (session.dead || session.gen === 0) return;
-  await flushSave("reset"); // preserve any last-second SRAM change
+  if (session.dead || session.gen === 0 || workerBroken) return;
+  const gen = session.gen;
+  const romId = session.romId;
+  stopSimulation("loading");
+  // Snapshot the live SRAM BEFORE the machine resets (the worker
+  // serializes: this read reflects the pre-reset machine).
+  try {
+    const m = await call("readSram", { generation: gen });
+    if (gen === session.gen && romId === session.romId && session.hasBattery) {
+      const bytes = new Uint8Array(m.bytes);
+      if (!session.sramShadow || !arraysEqual(bytes, session.sramShadow)) {
+        await savePut(romId, bytes);
+        if (gen === session.gen) {
+          session.sramShadow = bytes.slice();
+          session.sramDirty = false;
+        }
+      }
+    }
+  } catch (e) {
+    storageDiag.errors.push(`save flush on reset failed (${e.message})`);
+  }
+  if (gen !== session.gen) return; // replaced meanwhile
   await call("reset").catch(() => {});
   audio.flush();
   releaseInputs();
@@ -790,46 +918,32 @@ async function doReset() {
   say("cold boot - press Play");
   presentNow();
 }
-// transactional erase: confirm, clear, cold boot paused
+// transactional erase: confirm, stop, clear, cold boot paused
 async function doForget() {
-  if (session.gen === 0 || session.dead) return;
+  if (session.gen === 0 || session.dead || workerBroken) return;
   const name = session.fileName ?? "this cartridge";
   if (!window.confirm(`Erase the battery save for ${name}? This cannot be undone.`)) return;
+  // L1: stop immediately; the erase then proceeds through one path.
+  const myLoad = ++session.want;
+  stopSimulation("loading");
   session.sramDirty = false;
   if (session.romId) {
     try { await saveDelete(session.romId); }
     catch (e) {
       fail(`could not erase the stored save (${e.message})`);
+      revertPhase();
       return;
     }
   }
+  if (myLoad !== session.want) return;
   // Cold boot the SAME ROM with a FRESH machine (default $FF SRAM -
-  // zn_reset alone would preserve SRAM, which is the opposite of erasing).
-  let loaded;
-  try {
-    loaded = await call("load", { bytes: session.bytes });
-  } catch (e) {
-    fail(`could not rebuild the cartridge after erasing (${e.message})`);
-    return;
+  // zn_reset alone would preserve SRAM, the opposite of erasing), through
+  // the same install path as a normal selection.
+  await installSession(name, new Uint8Array(session.bytes), myLoad);
+  if (myLoad === session.want && session.phase === "paused") {
+    say("battery save erased - cold boot, press Play");
+    presentNow();
   }
-  // The worker's generation moved with the reload; adopt it exactly (never
-  // a manual ++, which would desync the mirror by one).
-  session.gen = loaded.generation;
-  // The dirtiness baseline must reflect the ERASED machine: the new SRAM IS
-  // the $FF boot state, and no stale shadow may survive the erase.
-  session.sramShadow = null;
-  session.sramBoot = null;
-  try {
-    const m = await call("readSram");
-    session.sramBoot = new Uint8Array(m.bytes);
-  } catch {}
-  audio.flush();
-  releaseInputs();
-  session.frame = 0;
-  setPhase("paused");
-  $("start-overlay").hidden = false;
-  say("battery save erased - cold boot, press Play");
-  presentNow();
 }
 function toggleSound() {
   audioEnabled = !audioEnabled;
@@ -846,21 +960,15 @@ function toggleCrt() {
   crtRequested = !crtRequested;
   localStorage.setItem("zupernes-crt", crtRequested ? "1" : "0");
   if (presenterMode === "webgpu" && gpuPresenter) {
-    // CRT toggle is pure presentation: one configure() flips the pipeline.
-    // The output size must be re-derived (the presenter sizes its backing
-    // store from these values; passing the source size would collapse k
-    // to 1 and make the scanline/mask effect vanish).
     fitWebGpuOutput();
     crtActive = crtRequested;
-    presentNow(); // the new pipeline draws the paused frame immediately
+    presentNow();
   } else {
     crtActive = false; // 2D fallback: truthfully off
     say("CRT is unavailable without WebGPU; showing the plain picture");
   }
   updateCrtLabel();
 }
-// Pick the largest integer k so W*k x H*k fits the stage's device-pixel box
-// (ZuperWorld's integer-scale policy), and configure the presenter with it.
 function fitWebGpuOutput() {
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -887,7 +995,6 @@ fileEl.addEventListener("change", (e) => {
   if (f) startLoad(f);
 });
 
-// drag/drop
 addEventListener("dragover", (e) => { e.preventDefault(); $("drop")?.classList.add("armed"); });
 addEventListener("dragleave", () => $("drop")?.classList.remove("armed"));
 addEventListener("drop", (e) => {
@@ -897,14 +1004,11 @@ addEventListener("drop", (e) => {
   if (f) startLoad(f);
 });
 
-// Toolbar focus outlets: entering any control drops live gameplay keys so
-// typed keys never leak into the pad (TASK.md).
 document.querySelectorAll("#bar button, #bar input").forEach((el) => {
   el.addEventListener("focus", releaseInputs);
 });
 addEventListener("keydown", (e) => {
   if (e.code === "Space" && document.activeElement === document.body) {
-    // Space toggles play/pause when nothing is focused (not while typing).
     e.preventDefault();
     session.phase === "running" ? doPause() : doPlay();
   }
@@ -919,9 +1023,14 @@ window.addEventListener("beforeunload", () => { flushSave("unload"); });
 if (TEST_MODE) {
   window.__zupernesTest = {
     async state() {
+      // Everything observable must resolve without a worker round trip so a
+      // state() call sandwiched around a Pause click is instantaneous: the
+      // frame counter is page-side, and worker/wasm diagnostics live behind
+      // an explicit workerStats() query.
       return {
         phase: session.phase,
         generation: session.gen,
+        want: session.want,
         frame: session.frame,
         romId: session.romId,
         lastError,
@@ -938,15 +1047,15 @@ if (TEST_MODE) {
         audioPeakQueueMs: Math.round(audio.peakQueueMs),
         deviceLost,
         paintCount,
+        workerBroken,
       };
     },
+    // Real worker observability: wasm memory pages + worker counters,
+    // behind an explicit query so plain state() stays round-trip free.
+    workerStats: () => workerBroken ? null : call("stats"),
     presenterReady: () => presenterReady,
     // Test-only: make the worker die mid-session (real error plumbing).
     forceCrash: () => call("__crash"),
-    // Repaint the paused frame at the CURRENT canvas size (the parity check
-    // temporarily resizes the canvas to native 256x224 and must NOT go
-    // through fitCanvas, which would re-derive an integer scale). Passing
-    // true skips the resize.
     repaint: (skipFit) => { if (!skipFit) fitCanvas(); presentNow(); },
     async readWram(offset, len = 1) {
       const m = await call("readWram", { offset, len });
@@ -956,7 +1065,7 @@ if (TEST_MODE) {
       const m = await call("readSram");
       return Array.from(m.bytes);
     },
-    audio: () => audio, // instrumentation surface for tests
+    audio: () => audio,
     _flushSave: () => flushSave("test"),
   };
 }
@@ -977,7 +1086,7 @@ window.addEventListener("resize", fitCanvas);
     $("sound").textContent = audioEnabled ? "🔊 Sound: On" : "🔇 Sound: Off";
     updateCrtLabel();
   } catch (e) {
-    fail(`could not start (${e.message}) - reload the page`);
+    fail(`could not start (${e.message || e}) - reload the page`);
     setPhase("error");
   }
 })();

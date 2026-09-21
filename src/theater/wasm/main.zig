@@ -55,6 +55,11 @@ pub const ZN_ERR_NO_ROM: i32 = 1;
 pub const ZN_ERR_LOAD: i32 = 2;
 pub const ZN_ERR_ALLOC: i32 = 3;
 pub const ZN_ERR_ARGS: i32 = 4;
+/// Unsupported-cartridge preflight codes (documented in the contract table).
+pub const ZN_ERR_COPROCESSOR: i32 = 5;
+pub const ZN_ERR_MAPPING: i32 = 6;
+pub const ZN_ERR_REGION: i32 = 7;
+pub const ZN_ERR_HEADER: i32 = 8;
 
 const wasm_alloc = std.mem.Allocator{
     .ptr = undefined,
@@ -152,6 +157,75 @@ export fn zn_free(ptr: usize, len: usize) void {
     wasm_alloc.free(bytes[0..len]);
 }
 
+// ---------------------------------------------------------------------------
+// Supported-cartridge preflight. One classifier, in the adapter next to
+// the core it gates, so every host (page, Node checks) applies the SAME
+// acceptance rules with no divergent JS copy. The rules mirror the core's
+// own header interpretation (src/cartridge.zig detectCartridgeType +
+// chip parsing); a dump the core can map but this browser build cannot
+// support (coprocessor, ExHiROM-style mapping, PAL region) is refused
+// with an actionable code BEFORE any machine state is touched, so the
+// previous session stays intact. Bad checksums are explicitly NOT a
+// rejection reason (TASK.md); copier headers are stripped by size rule
+// in Cartridge.init already.
+// ---------------------------------------------------------------------------
+fn scoreHeaderAdapter(rom: []const u8, base: usize, expect_hirom: bool) u32 {
+    // The core's header plausibility scoring (src/cartridge.zig
+    // scoreHeader), restated locally so the preflight cannot drift from
+    // what Cartridge.init will actually map. Same weights, same criteria.
+    if (rom.len < base + 0x40) return 0;
+    var score: u32 = 0;
+    const checksum = @as(u16, rom[base + 0x1C]) | (@as(u16, rom[base + 0x1D]) << 8);
+    const complement = @as(u16, rom[base + 0x1E]) | (@as(u16, rom[base + 0x1F]) << 8);
+    if (checksum +% complement == 0xFFFF) score += 8;
+    const map_mode = rom[base + 0x15];
+    const mode_is_hirom = (map_mode & 0x01) != 0;
+    if ((map_mode & 0xE0) == 0x20 and mode_is_hirom == expect_hirom) score += 4;
+    const reset = @as(u16, rom[base + 0x3C]) | (@as(u16, rom[base + 0x3D]) << 8);
+    if (reset >= 0x8000) score += 2;
+    return score;
+}
+
+fn validateCartridge(rom_all: []const u8) i32 {
+    if (rom_all.len < 0x8000) return ZN_ERR_ARGS;
+    // Apply the same copier-header normalization Cartridge.init uses, so a
+    // headered dump validates against its real internal header.
+    const rom = if (rom_all.len % 0x8000 == 512) rom_all[512..] else rom_all;
+    if (rom.len < 0x8000) return ZN_ERR_ARGS;
+
+    // Locate the internal header with the core's own scoring. A dump where
+    // NEITHER candidate location scores anything (no checksum agreement,
+    // no map byte, no plausible reset vector) is a malformed dump, not an
+    // ordinary SNES cartridge.
+    const lorom_score = scoreHeaderAdapter(rom, 0x7FC0, false);
+    const hirom_score = scoreHeaderAdapter(rom, 0xFFC0, true);
+    // A reset vector alone (score 2) is not evidence of an internal
+    // header - a garbage dump passes it by chance. Require at least the
+    // map-mode byte (4) or checksum agreement (8) at one location.
+    if (lorom_score < 4 and hirom_score < 4) return ZN_ERR_HEADER;
+    const base: usize = if (lorom_score >= hirom_score) 0x7FC0 else 0xFFC0;
+
+    // Mapping mode ($xxD5): $20/$30 LoROM, $21/$31 HiROM - everything
+    // else (ExHiROM $25/$35 and beyond) is outside the ordinary envelope.
+    const map_mode = rom[base + 0x15];
+    const recognized = (map_mode & 0xE0) == 0x20 and ((map_mode & 0x0F) == 0x00 or (map_mode & 0x0F) == 0x01);
+    if (!recognized) return ZN_ERR_MAPPING;
+
+    // Chip type ($xxD6): the core emulates plain ROM (0x00) and
+    // ROM+RAM(+battery) boards (0x01/0x02). 0x03-0x05 announce DSP
+    // coprocessors the browser cannot feed microcode; >= 0x0F are other
+    // coprocessors the core does not implement at all.
+    const chip = rom[base + 0x16];
+    if ((chip >= 0x03 and chip <= 0x05) or chip >= 0x0F) return ZN_ERR_COPROCESSOR;
+
+    // Destination code ($xxD9): 0 = Japan, 1 = US; both NTSC. 2+ is PAL,
+    // whose timing this build does not emulate.
+    const destination = rom[base + 0x19];
+    if (destination >= 2) return ZN_ERR_REGION;
+
+    return 0;
+}
+
 export fn zn_load_rom(ptr: usize, len: usize) i32 {
     if (ptr == 0 or len < 0x8000) {
         last_error = ZN_ERR_ARGS;
@@ -168,7 +242,17 @@ export fn zn_load_rom(ptr: usize, len: usize) i32 {
 
     // Validate BEFORE touching the previous session: a load failure (e.g. a
     // 17-byte "ROM") must leave the previous game and its saves intact
-    // (TASK.md: atomic failure). Cartridge.init is the core's own validator.
+    // (TASK.md: atomic failure). The preflight enforces the supported
+    // NTSC ordinary-LoROM/HiROM envelope first (actionable codes), then
+    // Cartridge.init re-checks structurally.
+    {
+        const prefault = validateCartridge(rom_copy);
+        if (prefault != 0) {
+            wasm_alloc.free(rom_copy);
+            last_error = prefault;
+            return prefault;
+        }
+    }
     _ = zupernes.Cartridge.init(rom_copy) catch {
         wasm_alloc.free(rom_copy);
         last_error = ZN_ERR_LOAD;
