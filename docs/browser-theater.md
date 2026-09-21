@@ -68,6 +68,24 @@ Keys release on blur, tab-hide, pause, reset and ROM swap, and OS
 auto-repeat can never re-press a released key. Typing in the toolbar or any
 editable element never leaks into the emulated pad.
 
+## Operation ownership
+
+One rule governs play/pause/reset/erase/load/hidden and every delayed
+continuation: each operation captures an epoch (selection serial,
+session generation+identity, command serial) when it begins, and a
+continuation may commit only while its epoch is current - an old or
+superseded operation can never change a newer operation's phase,
+presentation, inputs, audio or save identity. All storage writes and
+deletes flow through one serialized mutation queue; an erase invalidates
+older queued writes for the same cartridge, so a held write can never
+resurrect a deleted save, and writes/deletes order totally at the actual
+IndexedDB side effect. The worker rejects run/reset/read/import requests
+naming any generation other than its live machine, so page and worker
+cannot disagree about the live cartridge. A rejected selection whose
+install left the worker ahead of the page reloads the last successful
+selection, keeping the retained cartridge, identity, SRAM and
+generation in agreement.
+
 ## Battery saves
 
 Automatic, keyed by the SHA-256 of the *normalized* ROM bytes (copier
@@ -116,15 +134,25 @@ zig build && zig build test               # native behavior unchanged
   Chrome after warmup: 60.1 fps (100.0% of NTSC) with the WebGPU
   presenter; toolbar response 38-43 ms measured from before the click
   dispatch (harness transit included).
-- **feature-check.mjs round-2 scenarios** (18 total): out-of-order load
-  adoption by latest-want (a held `loaded` reply cannot wedge the page
-  at a stale generation), A->B->A replacement with an unpaused save,
-  synchronous stop under delayed storage, real worker startup failure
-  and crash injection with recovery, worker wasm memory plateau, real
-  GPUDevice.destroy() recovery through a fresh 2D canvas with provably
-  continuing paints, and display-refresh independence - the run-chain
-  controller keeps a 30 Hz rAF driver at 100.3% NTSC and an accelerated
-  ~120 Hz driver at 100.4%.
+- **feature-check.mjs round-3 scenarios** (20 total), each tied to what
+  its assertions actually measure: a held-loaded-reply regression (real
+  Worker.onmessage interception from an addInitScript - no timed sleeps)
+  where a committed-but-unheld B followed by a rejected C reconciles the
+  page to its last successful selection and Play advances frames;
+  A->B->A replacement with an unpaused save; a held pause write that
+  cannot resurrect an erased save (the storage mutation queue orders
+  every put/delete and erase-invalidates older writes); old pause
+  completion epoch-guarded against newer sessions; real worker startup
+  failure and crash injection with recovery; a worker-side
+  1,000-iteration interleaved alloc/free churn (the allocation.json
+  scenario executed for real through `__allocChurn`) asserting the wasm
+  memory plateau; real GPUDevice.destroy() and forced
+  GPUCanvasContext.configure-failure recovery through a fresh canvas
+  with provably continuing paints; display-refresh independence - a
+  30 Hz driver runs at ~100.3% NTSC and a MEASURED ~109.5/s fast
+  driver at ~100.5%, both asserting minimum progress and no
+  acceleration; REAL listener/worker counts via prototype instrumentation
+  (test-mode only).
 
 ### Tested environment
 
