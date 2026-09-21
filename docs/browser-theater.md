@@ -25,18 +25,25 @@ existing core's compatibility envelope; nothing about accuracy changes in
 the browser build (verified byte-exact against native goldens — see
 "Verification").
 
-Honest limits, inherited from the core as of this build:
+The adapter enforces this envelope at load time with actionable errors
+(error codes 5-8 in the `zn_load_rom` contract): coprocessor cartridges
+(DSP chips 0x03-0x05 and others >= 0x0F) announce hardware this build
+cannot support and are rejected up front with a visible message rather
+than "booting" into a hang; ExHiROM-style mapping bytes and PAL/other
+regions (destination code >= 2) are likewise rejected while NTSC/US/
+Japan dumps load. A plausibility gate requires real internal-header
+evidence (map byte or checksum agreement - a reset vector alone is not
+enough) before any machine is committed, and the previous session and
+its save are untouched on every rejection. **Bad checksums are never a
+rejection reason**, and dumps with a copier header validate against
+their stripped content.
 
-- **No coprocessor microcode** (DSP-1 etc.): the native loader looks for
-  `test/dsp/dsp1b.rom` on disk; a browser has no such filesystem, so
-  DSP cartridges boot without their coprocessor and will hang at their
-  handshake. Ordinary LoROM/HiROM games are unaffected.
-- **NTSC timing only** (60.0988 fps emulation). No PAL, interlace, or
-  hi-res modes.
-- **No ExHiROM**, and a >16 MiB file is rejected as not an ordinary
-  cartridge.
-- A cartridge is never rejected merely for a bad checksum (the core's
-  header scoring never required one).
+Remaining honest limits:
+
+- **Not emulated:** coprocessors of any kind (the browser has no
+  microcode source; such cartridges are visibly rejected at load),
+  PAL timing/interlace/hi-res, ExHiROM.
+- **> 16 MiB files** are rejected as not ordinary cartridges.
 
 The picture is the core's native 256x224, displayed at 256:224 with black
 letterbox margins — no widescreen — integer-scaled where possible,
@@ -66,9 +73,13 @@ editable element never leaks into the emulated pad.
 Automatic, keyed by the SHA-256 of the *normalized* ROM bytes (copier
 header stripped), stored in IndexedDB in this browser profile. Restored
 before the first frame of a session; flushed within a second of any
-change and on pause/reset/replace/page unload. Cartridges without battery
-RAM are never written. A storage failure or wrong-sized stored save is
-reported but never blocks play.
+change, on pause/reset/replace/page unload, and on cartridge
+replacement BEFORE the outgoing machine is swapped (an unpaused A->B
+swap keeps A's last-second save). Pausing halts emulation immediately
+and only shows itself as paused once the save has landed, so a reload
+racing a pause cannot lose data. Cartridges without battery RAM are
+never written. A storage failure or wrong-sized stored save is
+reported (and stays visible) but never blocks play.
 
 ## Verification (this checkout)
 
@@ -102,8 +113,18 @@ zig build && zig build test               # native behavior unchanged
   forced-init-failure fallback, exact 2D pixel equality versus the live
   wasm core, and a 30-cycle replacement/reset stress with bounded heap.
 - **perf-check.mjs** measures 10 s of emulation in headed GPU-accelerated
-  Chrome after warmup: ~58.9-59.7 fps (98.0-99.3% of NTSC) with the
-  WebGPU presenter, toolbar response ~15 ms.
+  Chrome after warmup: 60.1 fps (100.0% of NTSC) with the WebGPU
+  presenter; toolbar response 38-43 ms measured from before the click
+  dispatch (harness transit included).
+- **feature-check.mjs round-2 scenarios** (18 total): out-of-order load
+  adoption by latest-want (a held `loaded` reply cannot wedge the page
+  at a stale generation), A->B->A replacement with an unpaused save,
+  synchronous stop under delayed storage, real worker startup failure
+  and crash injection with recovery, worker wasm memory plateau, real
+  GPUDevice.destroy() recovery through a fresh 2D canvas with provably
+  continuing paints, and display-refresh independence - the run-chain
+  controller keeps a 30 Hz rAF driver at 100.3% NTSC and an accelerated
+  ~120 Hz driver at 100.4%.
 
 ### Tested environment
 
