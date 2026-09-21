@@ -205,6 +205,7 @@ function updatePauseLabel() {
 // L1: immediate, synchronous stop. Halts the dispatch loop via the phase,
 // releases inputs and stops audio NOW; persistence continues afterwards.
 function stopSimulation(nextPhase) {
+  stopping = true;
   releaseInputs();
   audio.suspend(); // stops every live node; freezes the cursor
   setPhase(nextPhase);
@@ -327,7 +328,9 @@ async function startLoad(file) {
 // Shared by the picker/drop path (startLoad) and Erase Save (fresh boot).
 // `myLoad` is the page-side load sequence number that must remain the
 // latest at every await, or the whole install is abandoned.
-async function installSession(fileName, rawBytes, myLoad) {
+// `opts.skipOutgoingFlush` suppresses the L2 pre-replacement SRAM flush -
+// used ONLY by Erase Save, which has just deliberately deleted that save.
+async function installSession(fileName, rawBytes, myLoad, opts = {}) {
   const stillMine = () => myLoad === session.want && !session.dead && !workerBroken;
   const norm = normalizeRom(rawBytes);
   if (norm.length < 0x8000) {
@@ -350,7 +353,7 @@ async function installSession(fileName, rawBytes, myLoad) {
   const prevRomId = session.romId;
   const prevGen = session.gen;
   const prevHadBattery = session.hasBattery;
-  if (prevGen !== 0 && prevRomId && prevHadBattery) {
+  if (!opts.skipOutgoingFlush && prevGen !== 0 && prevRomId && prevHadBattery) {
     try {
       const m = await call("readSram", { generation: prevGen });
       if (prevGen !== session.gen) {
@@ -360,7 +363,13 @@ async function installSession(fileName, rawBytes, myLoad) {
         // raced us; the guard keeps identity honest either way).
       } else {
         const snap = new Uint8Array(m.bytes);
-        if (!session.sramShadow || !arraysEqual(snap, session.sramShadow)) {
+        // Replace-time write only when SRAM actually CHANGED since the
+        // boot/restore baseline (shadow OR sramBoot). Writing an unmodified
+        // $FF boot image here would clobber a stored save (of any shape)
+        // that the NEXT session's restore still needs to see.
+        const unchanged = (session.sramShadow && arraysEqual(snap, session.sramShadow)) ||
+          (session.sramBoot && arraysEqual(snap, session.sramBoot));
+        if (!unchanged) {
           await savePut(prevRomId, snap);
           if (prevGen === session.gen) {
             session.sramShadow = snap.slice();
@@ -407,6 +416,7 @@ async function installSession(fileName, rawBytes, myLoad) {
   session.sramBoot = null;
   session.frame = 0;
   session.dead = false;
+  stopping = false;
   audio.flush();
   releaseInputs();
 
@@ -690,6 +700,11 @@ let framePaintedByMessage = false; // the eager paint consumed this frame's pain
 // outright) never replays wall-clock time.
 // ---------------------------------------------------------------------------
 const CHAIN_LIMIT = 3;
+// `stopping` halts frame dispatch INSTANTLY (before any persistence await)
+// while the observable phase still shows 'running' until the save lands:
+// no frame may run after the pause click, AND phase==='paused' continues to
+// mean 'persisted' (a reload racing the pause cannot lose the save).
+let stopping = false;
 let acc = 0, last = 0, running = false;
 let inFlight = false;
 let chainDepth = 0;
@@ -697,14 +712,14 @@ let saveFlushTimer = 0;
 
 function loop(t) {
   requestAnimationFrame(loop);
-  if (!running || session.phase !== "running") { last = t; return; }
+  if (!running || stopping || session.phase !== "running") { last = t; return; }
   acc += Math.min(t - last, 100); // bound catch-up: never replay a backlog
   last = t;
   chainDepth = 0;
   dispatchRun();
 }
 function dispatchRun() {
-  if (inFlight || session.phase !== "running") return;
+  if (inFlight || stopping || session.phase !== "running") return;
   if (acc < FRAME_MS) return;
   acc -= FRAME_MS;
   sendRun();
@@ -716,7 +731,7 @@ function sendRun() {
     .then((m) => {
       inFlight = false;
       // L5: stale sessions and paused machines consume the frame silently.
-      if (m.generation !== session.gen || session.phase !== "running") return;
+      if (m.generation !== session.gen || session.phase !== "running" || stopping) return;
       session.frame++;
       if (!framePaintedByMessage && m.framebuffer) {
         lastFrameBytes = m.framebuffer.slice(0);
@@ -731,7 +746,7 @@ function sendRun() {
       // yielding to rAF after CHAIN_LIMIT consecutive runs. The phase is
       // re-checked here: a Pause that landed while this reply was in flight
       // must never submit ANOTHER frame to the worker.
-      if (acc >= FRAME_MS && chainDepth < CHAIN_LIMIT && session.phase === "running") {
+      if (acc >= FRAME_MS && chainDepth < CHAIN_LIMIT && !stopping && session.phase === "running") {
         acc -= FRAME_MS;
         chainDepth++;
         sendRun();
@@ -858,6 +873,7 @@ document.addEventListener("visibilitychange", () => {
 // ---------------------------------------------------------------------------
 async function doPlay() {
   if (session.phase !== "paused" || session.dead || workerBroken) return;
+  stopping = false;
   if (audioEnabled) {
     const ctx = audio.ensure();
     if (ctx.state !== "running") {
@@ -877,14 +893,21 @@ async function doPlay() {
   canvas.focus({ preventScroll: true });
 }
 async function doPause(hide) {
-  if (session.phase === "running") {
-    // L1: stop FIRST - inputs, audio and the dispatch loop halt NOW; the
-    // persistence await below cannot keep emulation running. Persistence
-    // is claimed (shadow updated) only when the write lands.
-    stopSimulation("paused");
+  if (session.phase === "running" && !stopping) {
+    // Halt IMMEDIATELY - inputs, audio, and (via `stopping`) every frame
+    // dispatch - BEFORE any persistence await. The observable phase flips
+    // to 'paused' only once the save has landed, so a page reload racing
+    // this pause cannot lose the save, and no frame runs after the click.
+    stopping = true;
+    releaseInputs();
+    audio.suspend();
+    await flushSave("pause");
+    stopping = false;
+    setPhase("paused");
+  } else if (session.phase === "paused") {
+    await flushSave("pause");
   }
   if (!hide) $("start-overlay").hidden = false;
-  await flushSave("pause");
 }
 async function doReset() {
   if (session.dead || session.gen === 0 || workerBroken) return;
@@ -938,8 +961,9 @@ async function doForget() {
   if (myLoad !== session.want) return;
   // Cold boot the SAME ROM with a FRESH machine (default $FF SRAM -
   // zn_reset alone would preserve SRAM, the opposite of erasing), through
-  // the same install path as a normal selection.
-  await installSession(name, new Uint8Array(session.bytes), myLoad);
+  // the same install path as a normal selection - WITHOUT the outgoing
+  // flush, which would resurrect the save that was just deleted.
+  await installSession(name, new Uint8Array(session.bytes), myLoad, { skipOutgoingFlush: true });
   if (myLoad === session.want && session.phase === "paused") {
     say("battery save erased - cold boot, press Play");
     presentNow();
