@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<!-- ZuperNES browser theater.
+     A wholly local page: the user's own ROM files only, no network I/O
+     beyond the localhost static server that shipped this page. The wasm
+     (src/theater/zupernes.wasm, built by `zig build theater`) runs the
+     REAL emulator core; this page only moves bytes and presents frames.
+     Test hooks (#screen #file #pause #reset #forget #sound #crt #status
+     and ?test=1's window.__zupernesTest) are specified in
+     test/theater/TASK.md and measured by browser-check.mjs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZuperNES Theater</title>
+<link rel="stylesheet" href="css/theater.css">
+</head>
+<body>
+<div id="stage">
+  <canvas id="screen" width="256" height="224" aria-label="SNES display"></canvas>
+  <div id="drop" hidden>
+    <b>Drop a .sfc / .smc cartridge</b><br>
+    or use <i>Load ROM</i> below, then press <i>Play</i>.
+    <small>Everything runs locally in your browser; nothing is uploaded.</small>
+  </div>
+  <div id="start-overlay" hidden>
+    <button id="start-session" type="button" aria-label="Start emulation">▶ Play</button>
+  </div>
+</div>
+
+<div id="bar">
+  <div class="toolbar-section">
+    <button id="load" type="button">Load ROM…</button>
+    <input id="file" type="file" accept=".sfc,.smc" hidden aria-label="ROM file picker">
+  </div>
+  <div class="toolbar-section">
+    <button id="pause" type="button">⏸ Pause</button>
+    <button id="reset" type="button">⟳ Reset</button>
+  </div>
+  <div class="toolbar-section">
+    <button id="sound" type="button">🔊 Sound: On</button>
+    <button id="crt" type="button">🖥 CRT: On</button>
+  </div>
+  <div class="toolbar-section">
+    <button id="forget" type="button">Erase Save</button>
+  </div>
+</div>
+<div id="title">no cartridge</div>
+<div id="status">drop or load a cartridge to begin</div>
+
+<section id="keyboard" aria-label="Controller mapping">
+  <h2>Controller 1</h2>
+  <div class="kb">
+    <div class="kcluster">
+      <div class="krow"><span class="key"><b>Q</b><small>L</small></span><span class="key"><b>E</b><small>R</small></span></div>
+      <div class="krow"><span class="key"><b>W</b><small>Up</small></span></div>
+      <div class="krow"><span class="key"><b>A</b><small>Left</small></span><span class="key"><b>S</b><small>Down</small></span><span class="key"><b>D</b><small>Right</small></span></div>
+      <div class="krow"><span class="key"><b>U</b><small>Select</small></span><span class="key"><b>O</b><small>Start</small></span></div>
+    </div>
+    <div class="kcluster">
+      <div class="krow"><span class="key"><b>K</b><small>B</small></span><span class="key"><b>L</b><small>A</small></span></div>
+      <div class="krow"><span class="key"><b>J</b><small>Y</small></span><span class="key"><b>P</b><small>X</small></span></div>
+    </div>
+  </div>
+</section>
+
+<script type="module" src="js/main.mjs"></script>
+</body>
+</html>
