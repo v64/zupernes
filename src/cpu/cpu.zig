@@ -468,6 +468,15 @@ pub const Cpu = struct {
     /// The first implied-operation phase retains IdleOrRead provenance so a
     /// later interrupt-aware implementation can substitute a next-PC read.
     fn idleOrReadBeforeEffect(self: *Cpu) void {
+        // Mesen2 SnesCpu::IdleOrRead: when an IRQ (I clear) or NMI will be
+        // taken after this instruction, the 65816 spends this cycle on a
+        // real read of the next opcode address, at its memory speed, rather
+        // than a six-master idle. Only the ordered profile can answer the
+        // question at the cycle's start.
+        if (self.bus.orderedInterruptImminent(self.p.i)) {
+            _ = self.readByte(self.pbr, self.pc);
+            return;
+        }
         self.cycles += 1;
         self.last_timed_phase_masters = 6;
         if (self.bus.orderedClockConnected()) {

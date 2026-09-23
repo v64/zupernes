@@ -110,6 +110,16 @@ for (const name of ["dma-normal", "dma-refresh", "dma-reverse", "dma-two-channel
   compare("irq", "handler write", m.filter((r) => r.event === "handler_write"), z.filter((r) => r.event === "cpu_write" && r.address === "000100"), 1);
 }
 
+// ---- IRQ sweep: interrupts sampled on every cycle of a NOP/JMP loop,
+// including NOP's implied IdleOrRead (a real read when an IRQ is imminent).
+for (let h = 100; h <= 140; h += 2) {
+  const name = `irq-h${h}`;
+  const m = tsv(join(probes, name, "trace.tsv"));
+  const z = trace(name, 1, ["008100", "008100"]);
+  compare(name, "handler entries", m.filter((r) => r.event === "handler_exec"), z.filter((r) => r.event === "exec"), m.filter((r) => r.event === "handler_exec").length);
+  compare(name, "handler writes", m.filter((r) => r.event === "handler_write"), z.filter((r) => r.event === "cpu_write" && r.address === "000100"), m.filter((r) => r.event === "handler_write").length);
+}
+
 writeFileSync(join(out, "cross-oracle.json"), JSON.stringify(results, null, 2) + "\n");
 const failed = results.filter((r) => !r.pass).length;
 console.log(`${failed ? "FAIL" : "PASS"}: ${results.length - failed}/${results.length} event streams agree exactly`);

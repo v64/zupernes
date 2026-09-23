@@ -361,6 +361,8 @@ pub const Bus = struct {
     // migrate; bounded CPU/DMA fixtures install these callbacks explicitly.
     ordered_clock_context: ?*anyopaque = null,
     ordered_clock_advance: ?OrderedClockAdvanceFn = null,
+    // Ordered profile: is an interrupt about to be taken? (Mesen2 IdleOrRead)
+    ordered_interrupt_imminent: ?*const fn (*anyopaque, i_flag: bool) bool = null,
     ordered_dma_advance: ?OrderedDmaAdvanceFn = null,
 
     // End-of-access timestamp projected from the PPU's last committed beam
@@ -416,6 +418,14 @@ pub const Bus = struct {
     /// Report one observed bus event to the timing probe, if installed.
     pub inline fn probe(self: *Bus, kind: TimingProbeKind, addr: u24, value: u8) void {
         if (self.timing_probe) |p| p.record(p.context, kind, addr, value);
+    }
+
+    /// Whether the CPU will take an interrupt at the end of the current
+    /// instruction, evaluated at the start of an implied IdleOrRead cycle.
+    /// Always false on the aggregate path (the phase stays an idle there).
+    pub fn orderedInterruptImminent(self: *Bus, i_flag: bool) bool {
+        const f = self.ordered_interrupt_imminent orelse return false;
+        return f(self.ordered_clock_context.?, i_flag);
     }
 
     pub fn orderedClockConnected(self: *const Bus) bool {
@@ -597,7 +607,20 @@ pub const Bus = struct {
             }
             if (irq_at == event_at) {
                 self.irq_hold_until_master = event_at + 4;
-                self.setIrqFlagAt(true, event_at);
+                if (self.orderedClockConnected()) {
+                    // Mesen2 InternalRegisters::ProcessIrqCounters: the
+                    // timer tick after a counter match sets the $4211 TIMEUP
+                    // flag, and the NEXT tick (4 masters later) drives the
+                    // CPU's IRQ input. The flag is visible at event_at; the
+                    // CPU line rises at event_at + 4 (the read-clear hold
+                    // already spans exactly that gap).
+                    if (!self.irq_flag) {
+                        self.irq_flag = true;
+                        self.recordIrqTransition(true, event_at + 4);
+                    }
+                } else {
+                    self.setIrqFlagAt(true, event_at);
+                }
             }
             cursor = event_at;
         }
@@ -612,11 +635,20 @@ pub const Bus = struct {
         if (mode == 0) return null;
         const h_delay: u64 = if (self.htime == 0) 10 else 14 + @as(u64, self.htime) * 4;
         if (self.ppu.short_lines) {
+            // Ordered profile: Mesen2 3b058f9 timer circuit (ticks at H = 2
+            // mod 4). The H counter restarts at H=10 and matches htime at
+            // H = 10 + 4*htime (H=6 for htime 0, with one extra tick of
+            // delay); the TIMEUP flag follows one tick later. V-only: the V
+            // counter changes at H=6 (reset at H=2 on line 0), flag one tick
+            // later. The CPU input follows the flag by another tick (see
+            // syncInterruptFlagsTo).
             const lines = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
+            const h_flag: u64 = if (self.htime == 0) 14 else 14 + @as(u64, self.htime) * 4;
+            const v_flag: u64 = if (self.vtime == 0) 6 else 10;
             return switch (mode) {
-                0x10 => if (self.htime <= 339) self.nextEveryLineAfter(now, h_delay) else null,
-                0x20 => if (self.vtime < lines) self.nextBeamAfter(now, self.vtime, 10) else null,
-                0x30 => if (self.htime <= 339 and self.vtime < lines) self.nextBeamAfter(now, self.vtime, h_delay) else null,
+                0x10 => if (self.htime <= 339) self.nextEveryLineAfter(now, h_flag) else null,
+                0x20 => if (self.vtime < lines) self.nextBeamAfter(now, self.vtime, v_flag) else null,
+                0x30 => if (self.htime <= 339 and self.vtime < lines) self.nextBeamAfter(now, self.vtime, h_flag) else null,
                 else => null,
             };
         }
@@ -645,6 +677,11 @@ pub const Bus = struct {
     fn setIrqFlagAt(self: *Bus, level: bool, master: u64) void {
         if (self.irq_flag == level) return;
         self.irq_flag = level;
+        self.recordIrqTransition(level, master);
+    }
+
+    /// Record a change of the CPU's IRQ input (see irqLineAt).
+    fn recordIrqTransition(self: *Bus, level: bool, master: u64) void {
         if (self.irq_transition_count < max_irq_transitions) {
             self.irq_transitions[self.irq_transition_count] = .{ .master = master, .level = level };
             self.irq_transition_count += 1;

@@ -52,6 +52,8 @@ pub const Emulator = struct {
     // Mesen2 SnesCpuState::IrqLock: set when the most recent CPU cycle
     // start serviced a DMA/HDMA transfer. Consumed by the interrupt model.
     ordered_irq_lock: bool = false,
+    // Wall master at which the current instruction began (ordered path).
+    ordered_instruction_start: u64 = 0,
 
     /// Capture-only input recorder; see `recordInputs`. Deliberately NOT
     /// part of the savestate: a snapshot captures the machine, not the
@@ -152,6 +154,7 @@ pub const Emulator = struct {
 
         const instruction_start = absolutePpuMaster(&self.ppu);
         self.ordered_last_cpu_cycle_start = instruction_start;
+        self.ordered_instruction_start = instruction_start;
         self.bus.beginCpuInstruction();
         defer self.bus.invalidateCpuReadSample();
         const cycles = self.cpu.step();
@@ -192,13 +195,18 @@ pub const Emulator = struct {
             std.debug.assert(instruction_end == self.refresh_timeline.wall_master);
 
             const sample_master = self.ordered_last_cpu_cycle_start;
+            // Mesen2 SnesCpu::DetectNmiSignalEdge: when the final cycle's
+            // start serviced a DMA/HDMA (IrqLock), interrupt recognition
+            // slips by one cycle - NMI is carried to the next instruction
+            // and this instruction's IRQ sample reads as inactive.
+            const irq_lock = self.ordered_irq_lock;
             if (self.cpu.nmi_latched or self.bus.nmiEdgeInRange(instruction_start, sample_master)) {
-                self.cpu.triggerNmi();
+                if (irq_lock) self.cpu.latchNmi() else self.cpu.triggerNmi();
             }
             const irq_at_sample = self.bus.irqLineAt(sample_master);
             if (irq_at_sample) {
                 self.cpu.wakeFromIrqLine();
-                if (!self.cpu.irq_sample_i) self.cpu.triggerIrq();
+                if (!self.cpu.irq_sample_i and !irq_lock) self.cpu.triggerIrq();
             }
 
             self.bus.syncInterruptFlagsTo(instruction_end);
@@ -366,6 +374,20 @@ pub const Emulator = struct {
         self.refresh_timeline.advanceWorkOrdered(masters, &sink);
     }
 
+    /// Evaluated at the start of an implied IdleOrRead cycle (before any
+    /// pending DMA is serviced for it), mirroring Mesen2 SnesCpu::IdleOrRead:
+    /// an IRQ is imminent if the CPU input is asserted now or was at the
+    /// previous cycle's start (PrevIrqSource) with I clear; an NMI if its
+    /// edge has arrived since the instruction began or is already latched.
+    fn orderedInterruptImminent(context: *anyopaque, i_flag: bool) bool {
+        const self: *Emulator = @ptrCast(@alignCast(context));
+        const now = self.refresh_timeline.wall_master;
+        if (self.cpu.nmi_latched or self.bus.nmiEdgeInRange(self.ordered_instruction_start, now)) return true;
+        if (i_flag) return false;
+        return self.bus.irqLineAt(now) or
+            (!self.ordered_irq_lock and self.bus.irqLineAt(self.ordered_last_cpu_cycle_start));
+    }
+
     /// The ordered wall as seen by the DMA controller: its current master
     /// (for the reset-relative 8-master alignment) and DMA-owned advance.
     const OrderedDmaClock = struct {
@@ -396,6 +418,7 @@ pub const Emulator = struct {
         const next_refresh = if (refresh >= wall) refresh else refresh_timing.no_refresh_scheduled;
         self.refresh_timeline = RefreshTimeline.restore(wall, next_refresh) catch unreachable;
         self.bus.connectOrderedClock(self, advanceOrderedClock, advanceOrderedDmaClock);
+        self.bus.ordered_interrupt_imminent = orderedInterruptImminent;
         // The ordered profile models the real NTSC field geometry: scanline
         // 240 of every odd non-interlace field is 1360 masters.
         self.ppu.enableShortLines();
@@ -1512,23 +1535,34 @@ test "audited implied phases advance before effects on the ordered owner" {
 }
 
 test "ordered interrupt sampling distinguishes pre-final and final-cycle edges" {
-    var irq = Emulator.init();
-    irq.setup();
-    irq.cpu.pc = 0;
-    irq.cpu.p.i = false;
-    irq.bus.wram[0] = 0xA9; // LDA #$00, two eight-master accesses
-    irq.bus.wram[1] = 0x00;
-    irq.bus.nmitimen = 0x10; // H-IRQ
-    irq.bus.htime = 0; // timer output at local H-clock 10
-    irq.ppu.dot = 1; // instruction begins at H-clock 4
-    irq.enableOrderedClockFixture();
-    irq.step();
-
-    // The timer rises during the opcode access at 10. The operand/final CPU
-    // cycle starts at 12, so IRQ is accepted for the next boundary.
-    try std.testing.expectEqual(@as(u64, 12), irq.ordered_last_cpu_cycle_start);
-    try std.testing.expect(irq.bus.irqLineAt(irq.ordered_last_cpu_cycle_start));
-    try std.testing.expect(irq.cpu.irq_pending);
+    // Mesen2 timer model (InternalRegisters::ProcessIrqCounters): with
+    // htime = 0 the H counter matches at H=6, the $4211 flag rises at 14 and
+    // the CPU's IRQ input at 18. The CPU samples at its final cycle's start.
+    const Case = struct { code: []const u8, final_cycle_start: u64, taken: bool };
+    const cases = [_]Case{
+        // LDA #$00: opcode 4-12, operand (final) cycle starts at 12 - the
+        // input is still low there, so this instruction does not take it.
+        .{ .code = &.{ 0xA9, 0x00 }, .final_cycle_start = 12, .taken = false },
+        // LDA $0000: final (data) cycle starts at 28, after the rise at 18.
+        .{ .code = &.{ 0xAD, 0x00, 0x00 }, .final_cycle_start = 28, .taken = true },
+    };
+    for (cases) |case| {
+        var irq = Emulator.init();
+        irq.setup();
+        irq.cpu.pc = 0x100;
+        irq.cpu.p.i = false;
+        for (case.code, 0..) |b, k| irq.bus.wram[0x100 + k] = b;
+        irq.bus.nmitimen = 0x10; // H-IRQ
+        irq.bus.htime = 0;
+        irq.ppu.dot = 1; // instruction begins at H-clock 4
+        irq.enableOrderedClockFixture();
+        irq.step();
+        try std.testing.expectEqual(case.final_cycle_start, irq.ordered_last_cpu_cycle_start);
+        try std.testing.expectEqual(case.taken, irq.bus.irqLineAt(irq.ordered_last_cpu_cycle_start));
+        try std.testing.expectEqual(case.taken, irq.cpu.irq_pending);
+        // The $4211 flag is already visible 4 masters before the CPU input.
+        try std.testing.expect(irq.bus.irq_flag);
+    }
 
     var nmi = Emulator.init();
     nmi.setup();
