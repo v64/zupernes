@@ -253,6 +253,10 @@ pub const Dma = struct {
             self.start_delay = false;
             return false;
         }
+        // Priority as in Mesen2 ProcessPendingTransfers: HDMA, then HDMA
+        // init, then a general DMA request.
+        if (self.hdma_pending) return self.processHdmaOrdered(bus, clock, cpu_speed);
+        if (self.hdma_init_pending) return self.initHdmaOrdered(bus, clock, cpu_speed);
         if (self.general_pending) {
             self.general_pending = false;
             self.syncStart(clock);
@@ -268,6 +272,191 @@ pub const Dma = struct {
             return true;
         }
         return false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Ordered HDMA (Mesen2 SnesDmaController::InitHdmaChannels /
+    // ProcessHdmaChannels). The emulator raises `hdma_init_pending` at line 0
+    // H-clock 12+(line start & 7) and `hdma_pending` at H-clock 1104 of each
+    // visible line, both with `start_delay`; the work then runs at CPU cycle
+    // boundaries like a general DMA. When a general DMA is already halting
+    // the CPU (any channel active), HDMA runs inside it with no extra sync.
+    // -------------------------------------------------------------------------
+
+    /// Raised by the ordered event schedule (Mesen2 BeginHdmaInit): always
+    /// at line 0, whether or not any channel is enabled.
+    pub fn beginHdmaInit(self: *Dma) void {
+        self.start_delay = true;
+        self.hdma_init_pending = true;
+    }
+
+    /// Raised at H-clock 1104 of a visible line (Mesen2 BeginHdmaTransfer),
+    /// only when some HDMA channel is enabled at that instant.
+    pub fn beginHdmaTransfer(self: *Dma) void {
+        if (self.hdma_enable != 0) {
+            self.hdma_pending = true;
+            self.start_delay = true;
+        }
+    }
+
+    /// One HDMA table byte: 4 masters, the A-bus read, 4 more (Mesen2
+    /// ReadDma followed by IncMasterClock4, counted as 8 masters).
+    fn readHdmaTable(self: *Dma, bus: anytype, clock: anytype, bank: u8, addr: u16) u8 {
+        clock.advance(4);
+        const full: u24 = (@as(u24, bank) << 16) | addr;
+        const value = bus.readDma(full);
+        bus.probe(.dma_read, full, value);
+        clock.advance(4);
+        self.clock_counter += 8;
+        return value;
+    }
+
+    fn initHdmaOrdered(self: *Dma, bus: anytype, clock: anytype, cpu_speed: u32) bool {
+        self.hdma_init_pending = false;
+        // Every frame resets the per-channel flags, enabled or not.
+        self.hdma_terminated = 0;
+        for (&self.channels) |*ch| ch.hdma_do_transfer = false;
+        if (self.hdma_enable == 0) return false;
+
+        if (comptime dbg.trace_hdma) {
+            std.debug.print("[HDMA] Init frame - channels enabled: ${x:0>2}\n", .{self.hdma_enable});
+        }
+        const need_sync = self.general_active == 0;
+        if (need_sync) self.syncStart(clock);
+        self.clock_counter += 8;
+        clock.advance(8);
+
+        for (0..8) |i| {
+            const bit = @as(u8, 1) << @intCast(i);
+            const ch = &self.channels[i];
+            // Mesen sets DoTransfer for ALL channels when any is enabled.
+            ch.hdma_do_transfer = true;
+            if ((self.hdma_enable & bit) == 0) continue;
+            ch.hdma_addr = @truncate(ch.a_addr);
+            self.general_active &= ~bit; // HDMA takes over the channel
+            const bank: u8 = @truncate(ch.a_addr >> 16);
+            ch.line_counter = self.readHdmaTable(bus, clock, bank, ch.hdma_addr);
+            ch.hdma_addr +%= 1;
+            if (ch.line_counter == 0) self.hdma_terminated |= bit;
+            if (ch.control.indirect) {
+                const lo = self.readHdmaTable(bus, clock, bank, ch.hdma_addr);
+                ch.hdma_addr +%= 1;
+                if ((self.hdma_terminated & bit) == 0) {
+                    const hi = self.readHdmaTable(bus, clock, bank, ch.hdma_addr);
+                    ch.hdma_addr +%= 1;
+                    ch.byte_count = (@as(u16, hi) << 8) | lo;
+                } else {
+                    ch.byte_count = @as(u16, lo) << 8;
+                }
+            }
+        }
+        if (need_sync) self.syncEnd(clock, cpu_speed);
+        return true;
+    }
+
+    fn isLastActiveHdmaChannel(self: *const Dma, index: usize) bool {
+        var i = index + 1;
+        while (i < 8) : (i += 1) {
+            const bit = @as(u8, 1) << @intCast(i);
+            if ((self.hdma_enable & bit) != 0 and (self.hdma_terminated & bit) == 0) return false;
+        }
+        return true;
+    }
+
+    fn processHdmaOrdered(self: *Dma, bus: anytype, clock: anytype, cpu_speed: u32) bool {
+        self.hdma_pending = false;
+        if (self.hdma_enable == 0) return false;
+
+        const need_sync = self.general_active == 0;
+        if (need_sync) self.syncStart(clock);
+        self.clock_counter += 8;
+        clock.advance(8);
+
+        // Pass 1: every channel's data bytes for this line.
+        for (0..8) |i| {
+            const bit = @as(u8, 1) << @intCast(i);
+            if ((self.hdma_enable & bit) == 0) continue;
+            self.general_active &= ~bit; // an HDMA line cancels general DMA here
+            if ((self.hdma_terminated & bit) != 0) continue;
+            const ch = &self.channels[i];
+            if (!ch.hdma_do_transfer) continue;
+            const ctrl = ch.control;
+            const bank: u8 = @truncate(ch.a_addr >> 16);
+            const count = getTransferSize(ctrl.transfer_mode);
+            for (0..count) |byte_idx| {
+                var src_bank: u8 = bank;
+                var src_addr: u16 = undefined;
+                if (ctrl.indirect) {
+                    src_bank = ch.indirect_bank;
+                    src_addr = ch.byte_count;
+                    ch.byte_count +%= 1;
+                } else {
+                    src_addr = ch.hdma_addr;
+                    ch.hdma_addr +%= 1;
+                }
+                const b_addr: u16 = 0x2100 | @as(u16, ch.b_addr +% getBOffset(ctrl.transfer_mode, @intCast(byte_idx)));
+                const a_full: u24 = (@as(u24, src_bank) << 16) | src_addr;
+                clock.advance(4);
+                if (!ctrl.direction) {
+                    const value = bus.readDma(a_full);
+                    bus.probe(.dma_read, a_full, value);
+                    clock.advance(4);
+                    bus.probe(.dma_write, b_addr, value);
+                    bus.writePpuDma(b_addr, value);
+                    if (comptime dbg.trace_hdma) {
+                        if (b_addr >= 0x2126 and b_addr <= 0x2129) {
+                            std.debug.print("[HDMA] Ch{d} write ${x:0>4}=${x:0>2} (WH{d}) from ${x:0>6}\n", .{ i, b_addr, value, b_addr - 0x2126, a_full });
+                        }
+                    }
+                } else {
+                    const value = bus.readPpuDma(b_addr);
+                    bus.probe(.dma_read, b_addr, value);
+                    clock.advance(4);
+                    bus.probe(.dma_write, a_full, value);
+                    bus.writeDma(a_full, value);
+                }
+                self.clock_counter += 8;
+            }
+        }
+
+        // Pass 2: advance every channel's table for the next line.
+        for (0..8) |i| {
+            const bit = @as(u8, 1) << @intCast(i);
+            if ((self.hdma_enable & bit) == 0 or (self.hdma_terminated & bit) != 0) continue;
+            const ch = &self.channels[i];
+            const bank: u8 = @truncate(ch.a_addr >> 16);
+            // The whole byte decrements; bit 7 (repeat) is simply what is
+            // left in it (Mesen2 / anomie: "Decrement $43xA. Set DoTransfer
+            // to the value of Repeat").
+            ch.line_counter -%= 1;
+            ch.hdma_do_transfer = (ch.line_counter & 0x80) != 0;
+            // The next byte is always fetched; it is used only on reload.
+            const next = self.readHdmaTable(bus, clock, bank, ch.hdma_addr);
+            if ((ch.line_counter & 0x7F) == 0) {
+                ch.line_counter = next;
+                ch.hdma_addr +%= 1;
+                if (ch.control.indirect) {
+                    if (ch.line_counter == 0 and self.isLastActiveHdmaChannel(i)) {
+                        // Terminating last channel: only the high byte is
+                        // loaded, the low byte is $00 (one fewer cycle).
+                        const hi = self.readHdmaTable(bus, clock, bank, ch.hdma_addr);
+                        ch.hdma_addr +%= 1;
+                        ch.byte_count = @as(u16, hi) << 8;
+                    } else {
+                        const lo = self.readHdmaTable(bus, clock, bank, ch.hdma_addr);
+                        ch.hdma_addr +%= 1;
+                        const hi = self.readHdmaTable(bus, clock, bank, ch.hdma_addr);
+                        ch.hdma_addr +%= 1;
+                        ch.byte_count = (@as(u16, hi) << 8) | lo;
+                    }
+                }
+                if (ch.line_counter == 0) self.hdma_terminated |= bit;
+                ch.hdma_do_transfer = true;
+            }
+        }
+
+        if (need_sync) self.syncEnd(clock, cpu_speed);
+        return true;
     }
 
     /// "After the pause, wait 2-8 master cycles to reach a whole multiple

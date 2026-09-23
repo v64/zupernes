@@ -269,6 +269,9 @@ pub const Emulator = struct {
     }
 
     const HdmaEventKind = enum { init, transfer };
+    // Ordered-path HDMA schedule constants (Mesen2 SnesMemoryManager).
+    const hdma_start_hclock: u64 = 276 * 4;
+    const hdma_visible_lines: u16 = 225; // Mesen GetVblankStart without overscan
 
     const OrderedClockSink = struct {
         emu: *Emulator,
@@ -280,23 +283,42 @@ pub const Emulator = struct {
             return masters_per_line - in_line;
         }
 
+        /// Mesen2 3b058f9 SnesMemoryManager event schedule, per scanline:
+        ///   - line 0: HdmaInit at H-clock 12 + (line start & 7);
+        ///   - visible lines (V < 225): HdmaStart at H-clock 1104 (276*4).
+        /// Both only RAISE requests (Dma.beginHdmaInit/beginHdmaTransfer);
+        /// the transfers run at later CPU cycle boundaries like general DMA.
+        /// Events are found within the current line only - the timeline
+        /// splits at every real line boundary and asks again - so a short or
+        /// long line cannot misplace them.
         pub fn mastersUntilExternalEvent(self: *OrderedClockSink) ?u64 {
-            const event = self.emu.nextHdmaEvent();
-            self.pending_hdma = event.kind;
-            return event.masters_until;
+            const ppu = &self.emu.ppu;
+            const in_line: u64 = @as(u64, ppu.dot) * master_cycles_per_dot + ppu.master_accum;
+            const line_start = self.emu.refresh_timeline.wall_master - in_line;
+            var best: ?u64 = null;
+            if (ppu.scanline == 0) {
+                const init_at: u64 = 12 + (line_start & 7);
+                if (in_line < init_at) {
+                    best = init_at - in_line;
+                    self.pending_hdma = .init;
+                }
+            }
+            if (ppu.scanline < hdma_visible_lines and in_line < hdma_start_hclock) {
+                const delta = hdma_start_hclock - in_line;
+                if (best == null or delta < best.?) {
+                    best = delta;
+                    self.pending_hdma = .transfer;
+                }
+            }
+            return best;
         }
 
         pub fn dispatchExternalEvent(self: *OrderedClockSink) void {
             const kind = self.pending_hdma.?;
-            // Mark the event consumed before DMA advances this same timeline
-            // reentrantly. nextHdmaEvent is strictly after the committed beam.
             self.pending_hdma = null;
-            self.emu.bus.beginStandaloneDma();
             switch (kind) {
-                .init => self.emu.bus.dma.initHdma(&self.emu.bus),
-                .transfer => if (self.emu.bus.hdmaen != 0) {
-                    self.emu.bus.dma.runHdma(&self.emu.bus);
-                },
+                .init => self.emu.bus.dma.beginHdmaInit(),
+                .transfer => self.emu.bus.dma.beginHdmaTransfer(),
             }
         }
 
@@ -1396,33 +1418,48 @@ test "DMA byte halves put the source handler four masters before the destination
     try std.testing.expectEqual(@as(u8, 0), emu.ppu.inidisp & 0x40);
 }
 
-test "HDMA event and transfer work interrupt CPU work on the ordered owner" {
+test "HDMA request at H=1104 runs at the second CPU cycle boundary" {
     var emu = Emulator.init();
     emu.setup();
     emu.cpu.pc = 0;
-    emu.bus.wram[0] = 0xA9; // LDA #$00: sixteen CPU-work masters
+    emu.bus.wram[0] = 0xA9; // LDA #$00, then BRK (WRAM is zero)
     emu.bus.wram[1] = 0x00;
     emu.bus.wram[0x0100] = 0x07;
     emu.bus.write(0, 0x420C, 0x01);
     emu.bus.dma.writeRegister(0x4300, 0x00); // direct A -> B, mode 0
     emu.bus.dma.writeRegister(0x4301, 0x00); // $2100 INIDISP
-    emu.bus.dma.writeRegister(0x4308, 0x00);
+    emu.bus.dma.writeRegister(0x4308, 0x00); // table at $00:0100
     emu.bus.dma.writeRegister(0x4309, 0x01);
     emu.bus.dma.writeRegister(0x430A, 0x82); // transfer, then one repeat line
     emu.bus.dma.channels[0].hdma_do_transfer = true;
+    var instants = DmaInstants{ .emu = &emu };
+    instants.install();
 
-    // Starting at line 1 H=275 leaves twelve CPU-work masters to the H=278
-    // event. Current explicit HDMA costs add 18+8+8 masters, then the final
-    // four CPU clocks complete at local H-clock 1150.
+    // Line 1 (starting at wall 1364), local H-clock 1100. LDA's opcode
+    // fetch (1100-1108) passes H-clock 1104, where the schedule RAISES the
+    // HDMA request with its start delay (Mesen2 BeginHdmaTransfer). The
+    // operand fetch's cycle boundary (1108) consumes the delay, so nothing
+    // has transferred when LDA ends at 1116.
     emu.ppu.scanline = 1;
     emu.ppu.dot = 275;
     emu.enableOrderedClockFixture();
     emu.step();
+    try std.testing.expectEqual(@as(u64, 1364 + 1116), emu.refresh_timeline.wall_master);
+    try std.testing.expectEqual(@as(usize, 0), instants.read_count);
 
+    // BRK's opcode-fetch boundary (1116) runs HDMA: wall 2480 is a multiple
+    // of 8, so SyncStartDma waits 8 (1124); overhead 8 (1132); the byte
+    // reads $00:0100 at 1136 and writes $2100 at 1140; the table advance
+    // fetches the next byte (handler 4 masters in, at 1144; done at 1148);
+    // SyncEndDma completes the
+    // 8-master CPU cycle (32 % 8 = 0 -> a full 8, 1156).
+    emu.step();
+    try std.testing.expectEqual(@as(u64, 1364 + 1136), instants.reads[0]);
+    try std.testing.expectEqual(@as(u64, 1364 + 1140), instants.writes[0]);
+    try std.testing.expectEqual(@as(u64, 1364 + 1144), instants.reads[1]);
     try std.testing.expectEqual(@as(u8, 0x07), emu.ppu.inidisp);
-    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
-    try std.testing.expectEqual(@as(u16, 286), emu.ppu.render_events[0].dot);
-    try std.testing.expectEqual(@as(u64, 1364 + 1150), emu.refresh_timeline.wall_master);
+    try std.testing.expectEqual(@as(u16, 285), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u8, 0x81), emu.bus.dma.channels[0].line_counter);
     try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
 }
 
