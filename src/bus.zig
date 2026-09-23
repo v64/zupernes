@@ -367,6 +367,16 @@ pub const Bus = struct {
 
     /// Timestamp the end of the current CPU bus access.
     pub fn setCpuAccessTiming(self: *Bus, instruction_masters: u32) void {
+        // Flat-memory mode (the 65816 SingleStepTests CPU vector harness;
+        // the SPC700 core uses its own test_flat_ram mechanism instead)
+        // has no PPU: `ppu` is undefined there and hardware-timing
+        // projection is meaningless against a flat array. The CPU vector
+        // harness previously crashed here once CPU accountAccess started
+        // calling this per access.
+        if (self.flat_mem != null) {
+            self.ppu_write_timing_offset = self.ppu_cpu_timing_base + instruction_masters;
+            return;
+        }
         self.ppu_write_timing_offset = self.ppu_cpu_timing_base + instruction_masters;
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
         self.syncInterruptFlagsTo(absolutePpuMaster(self.ppu) + self.ppu_write_timing_offset);

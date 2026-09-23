@@ -1,0 +1,889 @@
+{
+  "schema": 1,
+  "description": "5A22 indirect-pointer result records captured from a clean pinned Mesen, after completion marker and before idle loop. Each record: A, PHP, four target bytes. No frame timing comparison.",
+  "romSha256": "a8c8b91cbe94ba2f3d191bcbad905d768bb017d2cc854fc1f2f51a3017240e60",
+  "mesenRevision": "3b058f9fbf6f446028eab3a83c5a3db35b1b960a",
+  "mesenBinarySha256": "ac6f4fe375a2009db750c8fd085bdf81ce9b97e43b6c869f784d31bd1b60e48a",
+  "records": [
+    {
+      "id": "emu-aligned-edge-ind-load",
+      "bytes": [
+        49,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-edge-ind-store",
+      "bytes": [
+        90,
+        53,
+        90,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-edge-indx-load",
+      "bytes": [
+        49,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-edge-indx-store",
+      "bytes": [
+        90,
+        53,
+        90,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-edge-indy-load",
+      "bytes": [
+        147,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-edge-indy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        90,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-edge-long-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-edge-long-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-edge-longy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-edge-longy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-ind-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-ind-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-indx-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-indx-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-indy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-indy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-long-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-long-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-longy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-aligned-middle-longy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-ind-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-ind-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-indx-load",
+      "bytes": [
+        49,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-indx-store",
+      "bytes": [
+        90,
+        53,
+        90,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-indy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-indy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-long-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-long-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-longy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-edge-longy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-ind-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-ind-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-indx-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-indx-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-indy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-indy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-long-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-long-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-longy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "emu-unaligned-middle-longy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "native-aligned-edge-ind-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-edge-ind-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-edge-indx-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-edge-indx-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-edge-indy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-edge-indy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "native-aligned-edge-long-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-edge-long-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-edge-longy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-edge-longy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "native-aligned-middle-ind-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-middle-ind-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-middle-indx-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-middle-indx-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-middle-indy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-middle-indy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "native-aligned-middle-long-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-middle-long-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-middle-longy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-aligned-middle-longy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-ind-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-ind-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-indx-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-indx-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-indy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-indy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-long-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-long-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-longy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-edge-longy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-ind-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-ind-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-indx-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-indx-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-indy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-indy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-long-load",
+      "bytes": [
+        114,
+        53,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-long-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        90,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-longy-load",
+      "bytes": [
+        180,
+        181,
+        49,
+        114,
+        147,
+        180
+      ]
+    },
+    {
+      "id": "native-unaligned-middle-longy-store",
+      "bytes": [
+        90,
+        53,
+        49,
+        114,
+        147,
+        90
+      ]
+    }
+  ]
+}
