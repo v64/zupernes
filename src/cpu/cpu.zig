@@ -461,6 +461,49 @@ pub const Cpu = struct {
         self.internal_flushed += 1;
     }
 
+    /// One six-master internal CPU cycle (Mesen2 SnesCpu::Idle) at this
+    /// point in the instruction. It is accounted like every other internal
+    /// cycle: flushed to the clock owner immediately before the next bus
+    /// access, or as a trailing cycle if no access follows. Used for the
+    /// addressing-mode and stack/branch internal operations the 65816
+    /// performs with neither VDA nor VPA asserted.
+    fn internalCycle(self: *Cpu) void {
+        self.cycles += 1;
+    }
+
+    /// The "modify" cycle of an 8-bit read-modify-write instruction
+    /// (Mesen2 SnesCpu::IdleOrDummyWrite). In emulation mode the 65816
+    /// re-writes the UNMODIFIED value to the target (a real, memory-speed
+    /// bus write - observable on I/O ports such as $2118/$2119 or $2180);
+    /// in native mode it is a plain internal cycle. SingleStepTests 65816
+    /// shows the same RMW shape: read, modify cycle, write.
+    fn rmwModifyCycle8(self: *Cpu, bank: u8, addr: u16, unmodified: u8) void {
+        if (self.emulation_mode) {
+            self.writeByte(bank, addr, unmodified);
+        } else {
+            self.internalCycle();
+        }
+    }
+
+    /// 16-bit RMW only exists in native mode, where the modify cycle is
+    /// always internal (Mesen2 SnesCpu::ASL etc: GetWordValue, Idle,
+    /// WriteWordRmw).
+    fn rmwModifyCycle16(self: *Cpu) void {
+        self.internalCycle();
+    }
+
+    /// A taken relative branch (Mesen2 SnesCpu::BranchRelative): one
+    /// internal cycle to add the offset, plus one more in emulation mode
+    /// when the target lies in a different page from the next instruction.
+    fn takeBranch(self: *Cpu, offset: i8) void {
+        const target: u16 = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
+        self.internalCycle();
+        if (self.emulation_mode and (target & 0xFF00) != (self.pc & 0xFF00)) {
+            self.internalCycle();
+        }
+        self.pc = target;
+    }
+
     /// XBA's second phase is an unconditional internal idle in Mesen.
     fn internalBeforeEffect(self: *Cpu) void {
         self.cycles += 1;
@@ -614,6 +657,9 @@ pub const Cpu = struct {
     fn addrDirectX(self: *Cpu) u16 {
         const offset = self.fetchByte();
         if (self.dp & 0xFF != 0) self.cycles += 1;
+        // Index add: one internal cycle after the DL penalty (Mesen2
+        // AddrMode_DirIdxX / AddrMode_DirIdxIndX).
+        self.internalCycle();
         // Emulation mode with DL=0: the indexed sum wraps WITHIN the page
         // (8-bit add), reproducing 6502 zero-page indexing. With DL!=0 (or
         // in native mode) the full 16-bit sum is used.
@@ -631,6 +677,7 @@ pub const Cpu = struct {
     fn addrDirectY(self: *Cpu) u16 {
         const offset = self.fetchByte();
         if (self.dp & 0xFF != 0) self.cycles += 1;
+        self.internalCycle(); // index add (Mesen2 AddrMode_DirIdxY)
         // Same DL=0 page wrap as dp,X (see addrDirectX).
         if (self.emulation_mode and (self.dp & 0xFF) == 0) {
             return self.dp | @as(u16, offset +% @as(u8, @truncate(self.y)));
@@ -649,11 +696,14 @@ pub const Cpu = struct {
     }
 
     /// Absolute Indexed X: addr,X
+    /// `check_page` = true for reads: the index-add internal cycle is only
+    /// taken for a 16-bit index or a page crossing. Stores and RMW pass
+    /// false and ALWAYS take it (Mesen2 AddrMode_AbsIdxX(isWrite)).
     fn addrAbsoluteX(self: *Cpu, check_page: bool) u16 {
         const base = self.fetchWord();
         const idx = if (self.p.x) @as(u16, @truncate(self.x)) else self.x;
-        if (check_page and (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
-            self.cycles += 1; // Page crossing
+        if (!check_page or !self.p.x or (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
+            self.internalCycle();
         }
         const ea: u32 = (@as(u32, self.dbr) << 16) + base + idx; // carries into bank
         self.ea_bank = @truncate(ea >> 16);
@@ -661,11 +711,14 @@ pub const Cpu = struct {
     }
 
     /// Absolute Indexed Y: addr,Y
+    /// `check_page` = true for reads: the index-add internal cycle is only
+    /// taken for a 16-bit index or a page crossing. Stores and RMW pass
+    /// false and ALWAYS take it (Mesen2 AddrMode_AbsIdxY(isWrite)).
     fn addrAbsoluteY(self: *Cpu, check_page: bool) u16 {
         const base = self.fetchWord();
         const idx = if (self.p.x) @as(u16, @truncate(self.y)) else self.y;
-        if (check_page and (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
-            self.cycles += 1;
+        if (!check_page or !self.p.x or (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
+            self.internalCycle();
         }
         const ea: u32 = (@as(u32, self.dbr) << 16) + base + idx; // carries into bank
         self.ea_bank = @truncate(ea >> 16);
@@ -791,8 +844,9 @@ pub const Cpu = struct {
         const dp_addr = self.addrDirect();
         const base = self.readDirectWord(dp_addr);
         const idx = if (self.p.x) @as(u16, @truncate(self.y)) else self.y;
-        if (check_page and (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
-            self.cycles += 1;
+        // Same rule as abs,Y (Mesen2 AddrMode_DirIndIdxY(isWrite)).
+        if (!check_page or !self.p.x or (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
+            self.internalCycle();
         }
         const ea: u32 = (@as(u32, self.dbr) << 16) + base + idx; // carries into bank
         self.ea_bank = @truncate(ea >> 16);
@@ -813,6 +867,7 @@ pub const Cpu = struct {
     /// Stack Relative: sr,S
     fn addrStackRelative(self: *Cpu) u16 {
         const offset = self.fetchByte();
+        self.internalCycle(); // S + offset (Mesen2 AddrMode_StkRel)
         return self.sp +% offset;
     }
 
@@ -820,6 +875,9 @@ pub const Cpu = struct {
     fn addrStackRelativeIndirectIndexed(self: *Cpu) u16 {
         const sr_addr = self.addrStackRelative();
         const base = self.readWord(0, sr_addr);
+        // Pointer + Y: a second internal cycle after the pointer fetch
+        // (Mesen2 AddrMode_StkRelIndIdxY).
+        self.internalCycle();
         const idx = if (self.p.x) @as(u16, @truncate(self.y)) else self.y;
         const ea: u32 = (@as(u32, self.dbr) << 16) + base + idx; // carries into bank
         self.ea_bank = @truncate(ea >> 16);
@@ -834,6 +892,22 @@ pub const Cpu = struct {
         const hi_bank = if (addr == 0xFFFF) bank +% 1 else bank;
         const hi: u16 = self.readByte(hi_bank, addr +% 1);
         return lo | (hi << 8);
+    }
+
+    /// Read-modify-write word stores write the HIGH byte first (Mesen2
+    /// SnesCpu::WriteWordRmw), the reverse of an ordinary 16-bit store.
+    /// The order is visible on I/O ports and decides which memory-speed
+    /// region each of the two write cycles is billed to.
+    fn writeWordRmw(self: *Cpu, bank: u8, addr: u16, value: u16) void {
+        self.writeByte(bank, addr +% 1, @truncate(value >> 8));
+        self.writeByte(bank, addr, @truncate(value));
+    }
+
+    /// writeWordData's bank-carrying addressing, high byte first (RMW).
+    fn writeWordDataRmw(self: *Cpu, bank: u8, addr: u16, value: u16) void {
+        const hi_bank = if (addr == 0xFFFF) bank +% 1 else bank;
+        self.writeByte(hi_bank, addr +% 1, @truncate(value >> 8));
+        self.writeByte(bank, addr, @truncate(value));
     }
 
     fn writeWordData(self: *Cpu, bank: u8, addr: u16, value: u16) void {
@@ -1917,6 +1991,7 @@ pub const Cpu = struct {
 
             // ===== ASL - Arithmetic Shift Left =====
             0x0A => { // ASL A
+                self.idleOrReadBeforeEffect(); // Mesen2 AddrMode_Acc
                 if (self.p.m) {
                     const result = self.asl8(@truncate(self.a));
                     self.a = (self.a & 0xFF00) | result;
@@ -1927,46 +2002,59 @@ pub const Cpu = struct {
             0x06 => { // ASL dp
                 const addr = self.addrDirect();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(0, addr, self.asl8(value));
                 } else {
                     const value = self.readWord(0, addr);
-                    self.writeWord(0, addr, self.asl16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, self.asl16(value));
                 }
             },
             0x16 => { // ASL dp,X
                 const addr = self.addrDirectX();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(0, addr, self.asl8(value));
                 } else {
                     const value = self.readWord(0, addr);
-                    self.writeWord(0, addr, self.asl16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, self.asl16(value));
                 }
             },
             0x0E => { // ASL addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(self.ea_bank, addr, self.asl8(value));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
-                    self.writeWordData(self.ea_bank, addr, self.asl16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, self.asl16(value));
                 }
             },
             0x1E => { // ASL addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(self.ea_bank, addr, self.asl8(value));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
-                    self.writeWordData(self.ea_bank, addr, self.asl16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, self.asl16(value));
                 }
             },
 
             // ===== LSR - Logical Shift Right =====
             0x4A => { // LSR A
+                self.idleOrReadBeforeEffect(); // Mesen2 AddrMode_Acc
                 if (self.p.m) {
                     const result = self.lsr8(@truncate(self.a));
                     self.a = (self.a & 0xFF00) | result;
@@ -1977,46 +2065,59 @@ pub const Cpu = struct {
             0x46 => { // LSR dp
                 const addr = self.addrDirect();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(0, addr, self.lsr8(value));
                 } else {
                     const value = self.readWord(0, addr);
-                    self.writeWord(0, addr, self.lsr16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, self.lsr16(value));
                 }
             },
             0x56 => { // LSR dp,X
                 const addr = self.addrDirectX();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(0, addr, self.lsr8(value));
                 } else {
                     const value = self.readWord(0, addr);
-                    self.writeWord(0, addr, self.lsr16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, self.lsr16(value));
                 }
             },
             0x4E => { // LSR addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(self.ea_bank, addr, self.lsr8(value));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
-                    self.writeWordData(self.ea_bank, addr, self.lsr16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, self.lsr16(value));
                 }
             },
             0x5E => { // LSR addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(self.ea_bank, addr, self.lsr8(value));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
-                    self.writeWordData(self.ea_bank, addr, self.lsr16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, self.lsr16(value));
                 }
             },
 
             // ===== ROL - Rotate Left =====
             0x2A => { // ROL A
+                self.idleOrReadBeforeEffect(); // Mesen2 AddrMode_Acc
                 if (self.p.m) {
                     const result = self.rol8(@truncate(self.a));
                     self.a = (self.a & 0xFF00) | result;
@@ -2027,46 +2128,59 @@ pub const Cpu = struct {
             0x26 => { // ROL dp
                 const addr = self.addrDirect();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(0, addr, self.rol8(value));
                 } else {
                     const value = self.readWord(0, addr);
-                    self.writeWord(0, addr, self.rol16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, self.rol16(value));
                 }
             },
             0x36 => { // ROL dp,X
                 const addr = self.addrDirectX();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(0, addr, self.rol8(value));
                 } else {
                     const value = self.readWord(0, addr);
-                    self.writeWord(0, addr, self.rol16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, self.rol16(value));
                 }
             },
             0x2E => { // ROL addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(self.ea_bank, addr, self.rol8(value));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
-                    self.writeWordData(self.ea_bank, addr, self.rol16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, self.rol16(value));
                 }
             },
             0x3E => { // ROL addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(self.ea_bank, addr, self.rol8(value));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
-                    self.writeWordData(self.ea_bank, addr, self.rol16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, self.rol16(value));
                 }
             },
 
             // ===== ROR - Rotate Right =====
             0x6A => { // ROR A
+                self.idleOrReadBeforeEffect(); // Mesen2 AddrMode_Acc
                 if (self.p.m) {
                     const result = self.ror8(@truncate(self.a));
                     self.a = (self.a & 0xFF00) | result;
@@ -2077,41 +2191,53 @@ pub const Cpu = struct {
             0x66 => { // ROR dp
                 const addr = self.addrDirect();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(0, addr, self.ror8(value));
                 } else {
                     const value = self.readWord(0, addr);
-                    self.writeWord(0, addr, self.ror16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, self.ror16(value));
                 }
             },
             0x76 => { // ROR dp,X
                 const addr = self.addrDirectX();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(0, addr, self.ror8(value));
                 } else {
                     const value = self.readWord(0, addr);
-                    self.writeWord(0, addr, self.ror16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, self.ror16(value));
                 }
             },
             0x6E => { // ROR addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(self.ea_bank, addr, self.ror8(value));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
-                    self.writeWordData(self.ea_bank, addr, self.ror16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, self.ror16(value));
                 }
             },
             0x7E => { // ROR addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.writeByte(self.ea_bank, addr, self.ror8(value));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
-                    self.writeWordData(self.ea_bank, addr, self.ror16(value));
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, self.ror16(value));
                 }
             },
 
@@ -2119,48 +2245,60 @@ pub const Cpu = struct {
             0xE6 => { // INC dp
                 const addr = self.addrDirect();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr) +% 1;
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified +% 1;
                     self.writeByte(0, addr, value);
                     self.setNZ8(value);
                 } else {
                     const value = self.readWord(0, addr) +% 1;
-                    self.writeWord(0, addr, value);
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, value);
                     self.setNZ16(value);
                 }
             },
             0xF6 => { // INC dp,X
                 const addr = self.addrDirectX();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr) +% 1;
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified +% 1;
                     self.writeByte(0, addr, value);
                     self.setNZ8(value);
                 } else {
                     const value = self.readWord(0, addr) +% 1;
-                    self.writeWord(0, addr, value);
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, value);
                     self.setNZ16(value);
                 }
             },
             0xEE => { // INC addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr) +% 1;
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified +% 1;
                     self.writeByte(self.ea_bank, addr, value);
                     self.setNZ8(value);
                 } else {
                     const value = self.readWordData(self.ea_bank, addr) +% 1;
-                    self.writeWordData(self.ea_bank, addr, value);
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, value);
                     self.setNZ16(value);
                 }
             },
             0xFE => { // INC addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr) +% 1;
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified +% 1;
                     self.writeByte(self.ea_bank, addr, value);
                     self.setNZ8(value);
                 } else {
                     const value = self.readWordData(self.ea_bank, addr) +% 1;
-                    self.writeWordData(self.ea_bank, addr, value);
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, value);
                     self.setNZ16(value);
                 }
             },
@@ -2169,48 +2307,60 @@ pub const Cpu = struct {
             0xC6 => { // DEC dp
                 const addr = self.addrDirect();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr) -% 1;
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified -% 1;
                     self.writeByte(0, addr, value);
                     self.setNZ8(value);
                 } else {
                     const value = self.readWord(0, addr) -% 1;
-                    self.writeWord(0, addr, value);
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, value);
                     self.setNZ16(value);
                 }
             },
             0xD6 => { // DEC dp,X
                 const addr = self.addrDirectX();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr) -% 1;
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified -% 1;
                     self.writeByte(0, addr, value);
                     self.setNZ8(value);
                 } else {
                     const value = self.readWord(0, addr) -% 1;
-                    self.writeWord(0, addr, value);
+                    self.rmwModifyCycle16();
+                    self.writeWordRmw(0, addr, value);
                     self.setNZ16(value);
                 }
             },
             0xCE => { // DEC addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr) -% 1;
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified -% 1;
                     self.writeByte(self.ea_bank, addr, value);
                     self.setNZ8(value);
                 } else {
                     const value = self.readWordData(self.ea_bank, addr) -% 1;
-                    self.writeWordData(self.ea_bank, addr, value);
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, value);
                     self.setNZ16(value);
                 }
             },
             0xDE => { // DEC addr,X
                 const addr = self.addrAbsoluteX(false);
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr) -% 1;
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified -% 1;
                     self.writeByte(self.ea_bank, addr, value);
                     self.setNZ8(value);
                 } else {
                     const value = self.readWordData(self.ea_bank, addr) -% 1;
-                    self.writeWordData(self.ea_bank, addr, value);
+                    self.rmwModifyCycle16();
+                    self.writeWordDataRmw(self.ea_bank, addr, value);
                     self.setNZ16(value);
                 }
             },
@@ -2847,6 +2997,7 @@ pub const Cpu = struct {
 
             // ===== Stack Operations =====
             0x48 => { // PHA
+                self.internalCycle(); // Mesen2 PHA: Idle, then push
                 if (self.p.m) {
                     self.pushByte(@truncate(self.a));
                 } else {
@@ -2854,6 +3005,9 @@ pub const Cpu = struct {
                 }
             },
             0x68 => { // PLA
+                // Mesen2 PLA: two internal cycles before the pull.
+                self.internalCycle();
+                self.internalCycle();
                 if (self.p.m) {
                     self.a = (self.a & 0xFF00) | self.pullByte();
                     self.setNZ8(@truncate(self.a));
@@ -2863,6 +3017,7 @@ pub const Cpu = struct {
                 }
             },
             0xDA => { // PHX
+                self.internalCycle(); // Mesen2 PHX: Idle, then push
                 if (self.p.x) {
                     self.pushByte(@truncate(self.x));
                 } else {
@@ -2870,6 +3025,9 @@ pub const Cpu = struct {
                 }
             },
             0xFA => { // PLX
+                // Mesen2 PLX: two internal cycles before the pull.
+                self.internalCycle();
+                self.internalCycle();
                 if (self.p.x) {
                     self.x = self.pullByte();
                     self.setNZ8(@truncate(self.x));
@@ -2879,6 +3037,7 @@ pub const Cpu = struct {
                 }
             },
             0x5A => { // PHY
+                self.internalCycle(); // Mesen2 PHY: Idle, then push
                 if (self.p.x) {
                     self.pushByte(@truncate(self.y));
                 } else {
@@ -2886,6 +3045,9 @@ pub const Cpu = struct {
                 }
             },
             0x7A => { // PLY
+                // Mesen2 PLY: two internal cycles before the pull.
+                self.internalCycle();
+                self.internalCycle();
                 if (self.p.x) {
                     self.y = self.pullByte();
                     self.setNZ8(@truncate(self.y));
@@ -2895,9 +3057,13 @@ pub const Cpu = struct {
                 }
             },
             0x08 => { // PHP
+                self.internalCycle(); // Mesen2 PHP: Idle, then push
                 self.pushByte(self.p.toByte());
             },
             0x28 => { // PLP
+                // Mesen2 PLP: two internal cycles before the pull.
+                self.internalCycle();
+                self.internalCycle();
                 self.p = Flags.fromByte(self.pullByte());
                 if (self.emulation_mode) {
                     self.p.m = true;
@@ -2910,20 +3076,29 @@ pub const Cpu = struct {
                 }
             },
             0x8B => { // PHB - Push Data Bank Register
+                self.internalCycle(); // Mesen2 PHB: Idle, then push
                 self.pushByte(self.dbr);
             },
             0xAB => { // PLB - Pull Data Bank Register
+                // Mesen2 PLB: two internal cycles before the pull.
+                self.internalCycle();
+                self.internalCycle();
                 self.dbr = self.pullByteRaw();
                 self.setNZ8(self.dbr);
             },
             0x0B => { // PHD - Push Direct Page Register
+                self.internalCycle(); // Mesen2 PHD: Idle, then push
                 self.pushWordRaw(self.dp);
             },
             0x2B => { // PLD - Pull Direct Page Register
+                // Mesen2 PLD: two internal cycles before the pull.
+                self.internalCycle();
+                self.internalCycle();
                 self.dp = self.pullWordRaw();
                 self.setNZ16(self.dp);
             },
             0x4B => { // PHK - Push Program Bank Register
+                self.internalCycle(); // Mesen2 PHK: Idle, then push
                 self.pushByte(self.pbr);
             },
             0xF4 => { // PEA - Push Effective Absolute Address
@@ -2937,6 +3112,7 @@ pub const Cpu = struct {
             },
             0x62 => { // PER - Push Effective PC Relative
                 const offset: i16 = @bitCast(self.fetchWord());
+                self.internalCycle(); // Mesen2 AddrMode_RelLng
                 const addr: u16 = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
                 self.pushWordRaw(addr);
             },
@@ -2944,66 +3120,59 @@ pub const Cpu = struct {
             // ===== Branch Instructions =====
             0x80 => { // BRA
                 const offset: i8 = @bitCast(self.fetchByte());
-                self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
+                self.takeBranch(offset);
             },
             0x82 => { // BRL - Branch Long
                 const offset: i16 = @bitCast(self.fetchWord());
+                self.internalCycle(); // Mesen2 AddrMode_RelLng
                 self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
             },
             0xF0 => { // BEQ
                 const offset: i8 = @bitCast(self.fetchByte());
                 if (self.p.z) {
-                    self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
-                    self.cycles += 1;
+                    self.takeBranch(offset);
                 }
             },
             0xD0 => { // BNE
                 const offset: i8 = @bitCast(self.fetchByte());
                 if (!self.p.z) {
-                    self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
-                    self.cycles += 1;
+                    self.takeBranch(offset);
                 }
             },
             0xB0 => { // BCS
                 const offset: i8 = @bitCast(self.fetchByte());
                 if (self.p.c) {
-                    self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
-                    self.cycles += 1;
+                    self.takeBranch(offset);
                 }
             },
             0x90 => { // BCC
                 const offset: i8 = @bitCast(self.fetchByte());
                 if (!self.p.c) {
-                    self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
-                    self.cycles += 1;
+                    self.takeBranch(offset);
                 }
             },
             0x30 => { // BMI
                 const offset: i8 = @bitCast(self.fetchByte());
                 if (self.p.n) {
-                    self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
-                    self.cycles += 1;
+                    self.takeBranch(offset);
                 }
             },
             0x10 => { // BPL
                 const offset: i8 = @bitCast(self.fetchByte());
                 if (!self.p.n) {
-                    self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
-                    self.cycles += 1;
+                    self.takeBranch(offset);
                 }
             },
             0x70 => { // BVS
                 const offset: i8 = @bitCast(self.fetchByte());
                 if (self.p.v) {
-                    self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
-                    self.cycles += 1;
+                    self.takeBranch(offset);
                 }
             },
             0x50 => { // BVC
                 const offset: i8 = @bitCast(self.fetchByte());
                 if (!self.p.v) {
-                    self.pc = @bitCast(@as(i16, @bitCast(self.pc)) +% offset);
-                    self.cycles += 1;
+                    self.takeBranch(offset);
                 }
             },
 
@@ -3025,6 +3194,7 @@ pub const Cpu = struct {
             },
             0x7C => { // JMP (addr,X)
                 const ptr = self.fetchWord() +% (if (self.p.x) @as(u16, @truncate(self.x)) else self.x);
+                self.internalCycle(); // index add (Mesen2 JMP_AbsIdxXInd)
                 self.pc = self.readWord(self.pbr, ptr);
             },
             0xDC => { // JMP [addr]
@@ -3034,30 +3204,54 @@ pub const Cpu = struct {
             },
             0x20 => { // JSR addr
                 const addr = self.fetchWord();
+                self.internalCycle(); // Mesen2 opcode table: AbsJmp, Idle, JSR
                 self.pushWord(self.pc -% 1);
                 self.pc = addr;
             },
             0x22 => { // JSL long
+                // Bus order (Mesen2 JSL, SingleStepTests 22.*): address
+                // low/high, push PBR, internal, THEN fetch the new bank
+                // byte, then push the return address. The bank fetch comes
+                // after the PBR push, so PC here already points past it.
                 const addr = self.fetchWord();
-                const bank = self.fetchByte();
                 self.pushByteRaw(self.pbr);
+                self.internalCycle();
+                const bank = self.fetchByte();
                 self.pushWordRaw(self.pc -% 1);
                 self.pc = addr;
                 self.pbr = bank;
             },
             0xFC => { // JSR (addr,X)
-                const ptr = self.fetchWord() +% (if (self.p.x) @as(u16, @truncate(self.x)) else self.x);
-                self.pushWord(self.pc -% 1);
+                // Bus order (Mesen2 JSR_AbsIdxXInd): pointer low, push the
+                // return address (PC = address of the high byte), pointer
+                // high, internal (index add), then the two target reads.
+                const lo: u16 = self.fetchByte();
+                // Keeps the vector-verified page-1 push semantics; only the
+                // cycle ORDER moved (push between the two operand bytes).
+                self.pushWord(self.pc);
+                const hi: u16 = self.fetchByte();
+                self.internalCycle();
+                const ptr = (lo | (hi << 8)) +% (if (self.p.x) @as(u16, @truncate(self.x)) else self.x);
                 self.pc = self.readWord(self.pbr, ptr);
             },
             0x60 => { // RTS
+                // Mesen2 RTS: Idle, Idle, pull PC, Idle (the +1).
+                self.internalCycle();
+                self.internalCycle();
                 self.pc = self.pullWord() +% 1;
+                self.internalCycle();
             },
             0x6B => { // RTL
+                // Mesen2 RTL: two internal cycles before the pulls.
+                self.internalCycle();
+                self.internalCycle();
                 self.pc = self.pullWordRaw() +% 1;
                 self.pbr = self.pullByteRaw();
             },
             0x40 => { // RTI
+                // Mesen2 RTI: two internal cycles before the pulls.
+                self.internalCycle();
+                self.internalCycle();
                 self.p = Flags.fromByte(self.pullByte());
                 if (self.emulation_mode) {
                     self.p.m = true;
@@ -3101,6 +3295,7 @@ pub const Cpu = struct {
             },
             0xC2 => { // REP
                 const mask = self.fetchByte();
+                self.internalCycle(); // Mesen2 REP: Idle before the flag change
                 const current = self.p.toByte();
                 self.p = Flags.fromByte(current & ~mask);
                 if (self.emulation_mode) {
@@ -3110,6 +3305,7 @@ pub const Cpu = struct {
             },
             0xE2 => { // SEP
                 const mask = self.fetchByte();
+                self.internalCycle(); // Mesen2 SEP: Idle before the flag change
                 const current = self.p.toByte();
                 self.p = Flags.fromByte(current | mask);
                 self.truncateIndexRegs();
@@ -3128,12 +3324,17 @@ pub const Cpu = struct {
             },
 
             // ===== Misc Instructions =====
-            0xEA => {}, // NOP
+            // $EA is AddrMode_Imp in Mesen2: the opcode fetch plus the same
+            // conditional IdleOrRead phase as CLC/TAX (arch/nop-cycle
+            // carried a plain trailing cycle; the implied phase is correct).
+            0xEA => self.idleOrReadBeforeEffect(), // NOP
             0x42 => _ = self.fetchByte(), // WDM (2-byte NOP)
             0xDB => self.cycles += 2, // STP
             0xCB => self.cycles += 2, // WAI
             0x00 => { // BRK
-                self.pc +%= 1;
+                // The signature byte is a real operand fetch (Mesen2 opcode
+                // table: AddrMode_Imm8 then BRK), not a silent PC skip.
+                _ = self.fetchByte();
                 if (!self.emulation_mode) {
                     self.pushByte(self.pbr);
                 }
@@ -3174,6 +3375,9 @@ pub const Cpu = struct {
                 const yi = if (self.p.x) self.y & 0xFF else self.y;
                 const src = self.readByte(src_bank, xi);
                 self.writeByte(dst_bank, yi, src);
+                // Two internal cycles per byte moved (Mesen2 MVN/MVP).
+                self.internalCycle();
+                self.internalCycle();
                 self.a -%= 1;
                 self.x = if (self.p.x) (self.x -% 1) & 0xFF else self.x -% 1;
                 self.y = if (self.p.x) (self.y -% 1) & 0xFF else self.y -% 1;
@@ -3189,6 +3393,9 @@ pub const Cpu = struct {
                 const yi = if (self.p.x) self.y & 0xFF else self.y;
                 const src = self.readByte(src_bank, xi);
                 self.writeByte(dst_bank, yi, src);
+                // Two internal cycles per byte moved (Mesen2 MVN/MVP).
+                self.internalCycle();
+                self.internalCycle();
                 self.a -%= 1;
                 self.x = if (self.p.x) (self.x +% 1) & 0xFF else self.x +% 1;
                 self.y = if (self.p.x) (self.y +% 1) & 0xFF else self.y +% 1;
@@ -3199,49 +3406,61 @@ pub const Cpu = struct {
             0x04 => { // TSB dp - Test and Set Bits
                 const addr = self.addrDirect();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.p.z = ((@as(u8, @truncate(self.a)) & value) == 0);
                     self.writeByte(0, addr, value | @as(u8, @truncate(self.a)));
                 } else {
                     const value = self.readWord(0, addr);
+                    self.rmwModifyCycle16();
                     self.p.z = ((self.a & value) == 0);
-                    self.writeWord(0, addr, value | self.a);
+                    self.writeWordRmw(0, addr, value | self.a);
                 }
             },
             0x0C => { // TSB addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.p.z = ((@as(u8, @truncate(self.a)) & value) == 0);
                     self.writeByte(self.ea_bank, addr, value | @as(u8, @truncate(self.a)));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
+                    self.rmwModifyCycle16();
                     self.p.z = ((self.a & value) == 0);
-                    self.writeWordData(self.ea_bank, addr, value | self.a);
+                    self.writeWordDataRmw(self.ea_bank, addr, value | self.a);
                 }
             },
             0x14 => { // TRB dp - Test and Reset Bits
                 const addr = self.addrDirect();
                 if (self.p.m) {
-                    const value = self.readByte(0, addr);
+                    const unmodified = self.readByte(0, addr);
+                    self.rmwModifyCycle8(0, addr, unmodified);
+                    const value = unmodified;
                     self.p.z = ((@as(u8, @truncate(self.a)) & value) == 0);
                     self.writeByte(0, addr, value & ~@as(u8, @truncate(self.a)));
                 } else {
                     const value = self.readWord(0, addr);
+                    self.rmwModifyCycle16();
                     self.p.z = ((self.a & value) == 0);
-                    self.writeWord(0, addr, value & ~self.a);
+                    self.writeWordRmw(0, addr, value & ~self.a);
                 }
             },
             0x1C => { // TRB addr
                 const addr = self.addrAbsolute();
                 if (self.p.m) {
-                    const value = self.readByte(self.ea_bank, addr);
+                    const unmodified = self.readByte(self.ea_bank, addr);
+                    self.rmwModifyCycle8(self.ea_bank, addr, unmodified);
+                    const value = unmodified;
                     self.p.z = ((@as(u8, @truncate(self.a)) & value) == 0);
                     self.writeByte(self.ea_bank, addr, value & ~@as(u8, @truncate(self.a)));
                 } else {
                     const value = self.readWordData(self.ea_bank, addr);
+                    self.rmwModifyCycle16();
                     self.p.z = ((self.a & value) == 0);
-                    self.writeWordData(self.ea_bank, addr, value & ~self.a);
+                    self.writeWordDataRmw(self.ea_bank, addr, value & ~self.a);
                 }
             },
         }
@@ -3494,4 +3713,102 @@ test "lda (dp) native mode fetches pointer linearly across page" {
     try std.testing.expectEqual(@as(u8, 0xCD), cpu.bus.read(0, 0x1234));
     runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
     try std.testing.expectEqual(@as(u16, 0xCD), cpu.a & 0xFF);
+}
+
+// -----------------------------------------------------------------------------
+// Cycle-sequence regression. The CPU reports every cycle it spends through
+// Bus.advanceCpuPhase (the ordered-clock hook); a recorder installed there
+// yields the instruction's exact read/write/internal sequence without a PPU.
+// Each expectation below is the SingleStepTests 65816 cycle list for the
+// opcode (VDA|VPA -> R, write -> W, neither -> I) and agrees with Mesen2
+// 3b058f9's routine named in the row. The full audit (all 256 opcodes x both
+// modes, 5.12M vectors) is `cpu-vectors <dir> --cycles`; these rows pin one
+// representative per family that the pin under-counted.
+// -----------------------------------------------------------------------------
+const CycleSeq = struct {
+    kinds: [64]u8 = undefined,
+    len: usize = 0,
+    fn advance(context: *anyopaque, masters: u32, phase: @import("../refresh_timing.zig").CpuPhase) void {
+        _ = masters;
+        const self: *CycleSeq = @ptrCast(@alignCast(context));
+        const kind: u8 = switch (phase) {
+            .read_leading => 'R',
+            .read_trailing => return,
+            .write => 'W',
+            else => 'I',
+        };
+        self.kinds[self.len] = kind;
+        self.len += 1;
+    }
+};
+
+fn recordCycles(cpu: *Cpu, seq: *CycleSeq) []const u8 {
+    seq.len = 0;
+    cpu.bus.ordered_clock_context = seq;
+    cpu.bus.ordered_clock_advance = CycleSeq.advance;
+    _ = cpu.step();
+    // Emulator.step flushes the unflushed trailing internal cycles.
+    var trailing = (@as(u32, cpu.cycles) -| cpu.mem_accesses) -| cpu.internal_flushed;
+    while (trailing > 0) : (trailing -= 1) {
+        seq.kinds[seq.len] = 'I';
+        seq.len += 1;
+    }
+    cpu.bus.ordered_clock_advance = null;
+    return seq.kinds[0..seq.len];
+}
+
+test "instruction cycle sequences match SingleStepTests and Mesen2" {
+    const Case = struct {
+        name: []const u8,
+        emulation: bool,
+        m: bool = true,
+        x: bool = true,
+        code: []const u8,
+        want: []const u8,
+    };
+    const cases = [_]Case{
+        // RMW: emulation mode re-writes the unmodified value (IdleOrDummyWrite)...
+        .{ .name = "ASL dp (E)", .emulation = true, .code = &.{ 0x06, 0x10 }, .want = "RRRWW" },
+        // ...native 16-bit: internal modify cycle, high byte written first.
+        .{ .name = "INC dp (N,16)", .emulation = false, .m = false, .code = &.{ 0xE6, 0x10 }, .want = "RRRRIWW" },
+        .{ .name = "LDA dp,X (index add)", .emulation = true, .code = &.{ 0xB5, 0x10 }, .want = "RRIR" },
+        .{ .name = "STA abs,X (store always indexes)", .emulation = true, .code = &.{ 0x9D, 0x00, 0x10 }, .want = "RRRIW" },
+        .{ .name = "LDA abs,Y (16-bit index)", .emulation = false, .x = false, .code = &.{ 0xB9, 0x00, 0x10 }, .want = "RRRIR" },
+        .{ .name = "LDA sr,S", .emulation = false, .code = &.{ 0xA3, 0x01 }, .want = "RRIR" },
+        .{ .name = "LDA (sr,S),Y", .emulation = false, .code = &.{ 0xB3, 0x01 }, .want = "RRIRRIR" },
+        .{ .name = "PHA", .emulation = true, .code = &.{0x48}, .want = "RIW" },
+        .{ .name = "PLA", .emulation = true, .code = &.{0x68}, .want = "RIIR" },
+        .{ .name = "RTS", .emulation = true, .code = &.{0x60}, .want = "RIIRRI" },
+        .{ .name = "RTL", .emulation = false, .code = &.{0x6B}, .want = "RIIRRR" },
+        .{ .name = "JSR abs", .emulation = true, .code = &.{ 0x20, 0x00, 0x90 }, .want = "RRRIWW" },
+        .{ .name = "JSL (PBR push before bank fetch)", .emulation = false, .code = &.{ 0x22, 0x00, 0x90, 0x00 }, .want = "RRRWIRWW" },
+        .{ .name = "JSR (abs,X) (push between operands)", .emulation = false, .code = &.{ 0xFC, 0x00, 0x90 }, .want = "RRWWRIRR" },
+        .{ .name = "BRA", .emulation = false, .code = &.{ 0x80, 0x02 }, .want = "RRI" },
+        .{ .name = "BRL", .emulation = false, .code = &.{ 0x82, 0x02, 0x00 }, .want = "RRRI" },
+        .{ .name = "REP", .emulation = false, .code = &.{ 0xC2, 0x00 }, .want = "RRI" },
+        .{ .name = "PER", .emulation = false, .code = &.{ 0x62, 0x00, 0x00 }, .want = "RRRIWW" },
+        .{ .name = "ASL A", .emulation = true, .code = &.{0x0A}, .want = "RI" },
+        .{ .name = "NOP", .emulation = true, .code = &.{0xEA}, .want = "RI" },
+        .{ .name = "BRK (signature fetch)", .emulation = true, .code = &.{ 0x00, 0x00 }, .want = "RRWWWRR" },
+        .{ .name = "MVN (one byte)", .emulation = false, .code = &.{ 0x54, 0x00, 0x00 }, .want = "RRRRWII" },
+    };
+    for (cases) |case| {
+        var bus: Bus = undefined;
+        var cpu: Cpu = undefined;
+        flatTestCpu(&bus, &cpu);
+        cpu.emulation_mode = case.emulation;
+        cpu.p.m = case.m;
+        cpu.p.x = case.x;
+        cpu.sp = 0x01F0;
+        cpu.dp = 0;
+        cpu.pbr = 0;
+        cpu.pc = 0x8000;
+        for (case.code, 0..) |b, i| dp_test_flat[0x8000 + i] = b;
+        var seq = CycleSeq{};
+        const got = recordCycles(&cpu, &seq);
+        std.testing.expectEqualStrings(case.want, got) catch |err| {
+            std.debug.print("cycle sequence mismatch: {s}\n", .{case.name});
+            return err;
+        };
+    }
 }

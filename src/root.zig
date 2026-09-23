@@ -15,6 +15,9 @@ pub const Spc700 = @import("apu/spc700.zig").Spc700;
 pub const movie = @import("movie.zig");
 pub const RefreshTimeline = @import("refresh_timing.zig").Timeline;
 const refresh_timing = @import("refresh_timing.zig");
+/// CPU cycle provenance reported through Bus.advanceCpuPhase (exported for
+/// the 65816 vector harness's cycle-sequence audit).
+pub const CpuClockPhase = refresh_timing.CpuPhase;
 
 const zupernes_dots_per_line = @import("ppu/ppu.zig").DOTS_PER_SCANLINE;
 const zupernes_lines_per_frame = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
@@ -1760,17 +1763,29 @@ test "$4212 samples its mapped-read handler phase and drives WaitForHBlank branc
         .{ .dot = 109, .residual = 0, .y = 0x20, .return_line = 37, .return_dot = 188, .return_residual = 2, .reads = 13 },
     };
     for (cases) |case| {
-        const result = probeSyntheticHvbjoyWait(36, case.dot, case.residual, case.y);
+        // The cases were designed on pin timing to put the first BIT $4212
+        // handler at chosen H positions. JSR now spends one more internal
+        // cycle (6 masters) before the routine, so start 6 masters earlier:
+        // every handler then lands exactly where the original evidence
+        // placed it, and read counts/branch decisions must be unchanged.
+        const jsr_internal: u32 = 6;
+        const start = @as(u32, case.dot) * master_cycles_per_dot + case.residual - jsr_internal;
+        const result = probeSyntheticHvbjoyWait(36, @intCast(start / master_cycles_per_dot), @intCast(start % master_cycles_per_dot), case.y);
         try std.testing.expectEqual(case.reads, result.read_count);
-        // Pin-era return position plus DEY's audited six-master IdleOrRead
-        // phase per execution (see "implied and register opcodes retain
-        // their internal final cycle"). The branch decisions asserted below
-        // do not depend on DEY and are unchanged.
+        // Pin-era return position plus the internal cycles the pin lacked,
+        // each verified against SingleStepTests 65816 and Mesen2:
+        //   - DEY's IdleOrRead phase, six masters per execution;
+        //   - JSR abs's internal cycle before its push (6, compensated by
+        //     the earlier start above);
+        //   - RTS's three internal cycles (18).
+        // The branch decisions asserted below are unchanged.
         const pin_return = @as(u64, case.return_line) * masters_per_line +
             @as(u64, case.return_dot) * master_cycles_per_dot + case.return_residual;
         const actual_return = @as(u64, result.return_scanline) * masters_per_line +
             @as(u64, result.return_dot) * master_cycles_per_dot + result.return_residual;
-        try std.testing.expectEqual(pin_return + @as(u64, result.dey_count) * 6, actual_return);
+        // JSR's cycle is absorbed by the earlier start; RTS adds three.
+        const rts_internal: u64 = 3 * 6;
+        try std.testing.expectEqual(pin_return + @as(u64, result.dey_count) * 6 + rts_internal, actual_return);
         for (result.reads[0..result.read_count]) |read| {
             // BVS leaves the first loop when V=0; BVC leaves the second loop
             // when V=1. Assert the branch result, not only the return dot.

@@ -18,6 +18,22 @@
 // We verify FINAL STATE (registers + RAM), not per-cycle bus activity -
 // the CPU is instruction-granular. Cycle-count mismatches are tallied
 // separately as timing telemetry, never as failures.
+//
+// CYCLE-SEQUENCE AUDIT (--cycles): the vectors also list every bus cycle
+// with its VDA/VPA and read/write outputs. On the 5A22 that fixes each
+// cycle's SNES cost: a read or write with a valid address runs at that
+// address's memory speed (6/8/12 masters); a cycle with neither VDA nor VPA
+// is a six-master internal cycle (Mesen2 SnesCpu::Idle). The one exception
+// is the emulation-mode read-modify-write dummy write, which the vectors
+// show with VDA=0 but Mesen performs as a real memory-speed write
+// (IdleOrDummyWrite) - so every write is classed as a write.
+//
+// The CPU's own sequence comes from the ordered-clock hook every CPU cycle
+// already reports through (Bus.advanceCpuPhase): read_leading = one read,
+// write = one write, every internal/IdleOrRead phase = one internal cycle,
+// plus the instruction's unflushed trailing internal cycles. Comparing the
+// two sequences per test finds missing, extra and MISPLACED internal
+// cycles, which a count alone cannot.
 // =============================================================================
 
 const std = @import("std");
@@ -26,11 +42,46 @@ const zupernes = @import("zupernes");
 var bus_backing: zupernes.Bus = undefined;
 var cpu_backing: zupernes.Cpu = undefined;
 
+/// Cycle sequence reported by the CPU through the ordered-clock hook:
+/// 'R' read, 'W' write, 'I' internal, with each access's master speed.
+const CycleRecorder = struct {
+    kinds: [512]u8 = undefined,
+    speeds: [512]u8 = undefined,
+    len: usize = 0,
+
+    fn push(self: *CycleRecorder, kind: u8, speed: u32) void {
+        if (self.len == self.kinds.len) return; // block-move bundles cap far below this
+        self.kinds[self.len] = kind;
+        self.speeds[self.len] = @intCast(speed);
+        self.len += 1;
+    }
+
+    fn advance(context: *anyopaque, masters: u32, phase: zupernes.CpuClockPhase) void {
+        const self: *CycleRecorder = @ptrCast(@alignCast(context));
+        switch (phase) {
+            .read_leading => self.push('R', masters + 4),
+            .read_trailing => {},
+            .write => self.push('W', masters),
+            else => self.push('I', masters),
+        }
+    }
+};
+var recorder = CycleRecorder{};
+
+/// Tally of one (expected -> actual) cycle-pattern disagreement.
+const Pattern = struct { count: u64, example: []const u8 };
+
 const Summary = struct {
     passed: u64 = 0,
     failed: u64 = 0,
     cycle_mismatch: u64 = 0,
+    // --cycles only
+    seq_checked: u64 = 0,
+    seq_mismatch: u64 = 0,
+    speed_mismatch: u64 = 0,
 };
+
+var cycle_mode = false;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -51,6 +102,8 @@ pub fn main() !void {
         if (std.mem.eql(u8, args[i], "--max-fail")) {
             i += 1;
             max_fail_shown = try std.fmt.parseInt(u32, args[i], 10);
+        } else if (std.mem.eql(u8, args[i], "--cycles")) {
+            cycle_mode = true;
         } else {
             filter = args[i];
         }
@@ -64,6 +117,12 @@ pub fn main() !void {
     bus_backing = zupernes.Bus.init(undefined); // PPU never touched in flat mode
     bus_backing.flat_mem = flat;
     cpu_backing = zupernes.Cpu.init(&bus_backing);
+    if (cycle_mode) {
+        // Install ONLY the CPU phase hook: no DMA hook and no PPU sink. The
+        // recorder observes the CPU's own cycle stream and nothing else.
+        bus_backing.ordered_clock_context = &recorder;
+        bus_backing.ordered_clock_advance = CycleRecorder.advance;
+    }
 
     var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
     defer dir.close();
@@ -91,13 +150,44 @@ pub fn main() !void {
     var grand = Summary{};
     var failed_files: u32 = 0;
     for (names.items) |name| {
-        const summary = runFile(allocator, dir, name, flat, max_fail_shown) catch |err| {
+        var file_patterns = std.StringHashMap(Pattern).init(allocator);
+        defer {
+            var kit = file_patterns.iterator();
+            while (kit.next()) |kv| {
+                allocator.free(kv.key_ptr.*);
+                allocator.free(kv.value_ptr.example);
+            }
+            file_patterns.deinit();
+        }
+        const summary = runFile(allocator, dir, name, flat, max_fail_shown, &file_patterns) catch |err| {
             std.debug.print("{s}: ERROR {s}\n", .{ name, @errorName(err) });
             continue;
         };
         grand.passed += summary.passed;
         grand.failed += summary.failed;
         grand.cycle_mismatch += summary.cycle_mismatch;
+        grand.seq_checked += summary.seq_checked;
+        grand.seq_mismatch += summary.seq_mismatch;
+        grand.speed_mismatch += summary.speed_mismatch;
+        if (cycle_mode and summary.seq_mismatch + summary.speed_mismatch > 0) {
+            std.debug.print("CYCLES {s}: {d}/{d} sequence mismatches, {d} speed mismatches\n", .{ name, summary.seq_mismatch, summary.seq_checked, summary.speed_mismatch });
+            // Top three expected->actual patterns for this opcode/mode.
+            for (0..3) |_| {
+                var best_key: []const u8 = "";
+                var best_val: ?*Pattern = null;
+                var kit = file_patterns.iterator();
+                while (kit.next()) |kv| {
+                    if (kv.value_ptr.count == 0) continue;
+                    if (best_val == null or kv.value_ptr.count > best_val.?.count) {
+                        best_val = kv.value_ptr;
+                        best_key = kv.key_ptr.*;
+                    }
+                }
+                const b = best_val orelse break;
+                std.debug.print("    {d:>6}x  {s}   e.g. {s}\n", .{ b.count, best_key, b.example });
+                b.count = 0;
+            }
+        }
         if (summary.failed > 0) {
             failed_files += 1;
             std.debug.print("{s}: {d}/{d} FAILED (cycle mismatches: {d})\n", .{ name, summary.failed, summary.passed + summary.failed, summary.cycle_mismatch });
@@ -107,6 +197,11 @@ pub fn main() !void {
         "\nTOTAL: {d} passed, {d} failed across {d} files ({d} files with failures); cycle-count mismatches: {d}\n",
         .{ grand.passed, grand.failed, names.items.len, failed_files, grand.cycle_mismatch },
     );
+    if (cycle_mode) {
+        std.debug.print("CYCLE SEQUENCES: {d}/{d} match exactly; {d} sequence mismatches, {d} speed mismatches\n", .{
+            grand.seq_checked - grand.seq_mismatch - grand.speed_mismatch, grand.seq_checked, grand.seq_mismatch, grand.speed_mismatch,
+        });
+    }
     if (grand.failed > 0) std.process.exit(1);
 }
 
@@ -114,7 +209,7 @@ fn getInt(obj: std.json.ObjectMap, key: []const u8) i64 {
     return obj.get(key).?.integer;
 }
 
-fn runFile(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, flat: []u8, max_fail_shown: u32) !Summary {
+fn runFile(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, flat: []u8, max_fail_shown: u32, patterns: *std.StringHashMap(Pattern)) !Summary {
     const data = try dir.readFileAlloc(allocator, name, 64 * 1024 * 1024);
     defer allocator.free(data);
 
@@ -159,13 +254,16 @@ fn runFile(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, flat
         // so we iterate to match and exempt PC when the move is incomplete.
         const opcode = flat[(@as(usize, cpu.pbr) << 16) | cpu.pc];
         const is_block_move = opcode == 0x44 or opcode == 0x54;
+        recorder.len = 0;
         var cycles_taken: u32 = cpu.step();
+        if (cycle_mode) appendTrailingInternal(cpu);
         var pc_exempt = false;
         if (is_block_move) {
             const iterations = t.get("cycles").?.array.items.len / 7;
             var done: usize = 1;
             while (cpu.a != 0xFFFF and done < iterations) : (done += 1) {
                 cycles_taken += cpu.step();
+                if (cycle_mode) appendTrailingInternal(cpu);
             }
             pc_exempt = cpu.a != 0xFFFF;
         }
@@ -237,6 +335,7 @@ fn runFile(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, flat
         // in the "cycles" array
         if (t.get("cycles")) |cyc| {
             if (cycles_taken != cyc.array.items.len) summary.cycle_mismatch += 1;
+            if (cycle_mode) try compareCycles(allocator, cyc.array.items, t.get("name").?.string, &summary, patterns, is_block_move);
         }
 
         // ---- Restore flat memory to zero for the next test ----
@@ -248,4 +347,63 @@ fn runFile(allocator: std.mem.Allocator, dir: std.fs.Dir, name: []const u8, flat
         }
     }
     return summary;
+}
+
+/// Emulator.step (not Cpu.step) flushes an instruction's trailing internal
+/// cycles to the clock owner; the harness calls Cpu.step directly, so it
+/// appends them here exactly as Emulator.step would.
+fn appendTrailingInternal(cpu: *zupernes.Cpu) void {
+    const internal = @as(u32, cpu.cycles) -| cpu.mem_accesses;
+    var trailing = internal -| cpu.internal_flushed;
+    while (trailing > 0) : (trailing -= 1) recorder.push('I', 6);
+}
+
+/// Compare the vector's bus-cycle list with the recorded CPU sequence.
+fn compareCycles(
+    allocator: std.mem.Allocator,
+    cycles: []const std.json.Value,
+    name: []const u8,
+    summary: *Summary,
+    patterns: *std.StringHashMap(Pattern),
+    is_block_move: bool,
+) !void {
+    var expected: [512]u8 = undefined;
+    var n: usize = 0;
+    var speed_ok = true;
+    for (cycles) |c| {
+        if (n == expected.len) break;
+        const items = c.array.items;
+        const out = items[2].string;
+        const vda = out[0] == 'd';
+        const vpa = out[1] == 'p';
+        const write = out[3] == 'w';
+        const kind: u8 = if (write) 'W' else if (vda or vpa) 'R' else 'I';
+        expected[n] = kind;
+        if (kind != 'I' and n < recorder.len and recorder.kinds[n] == kind) {
+            const addr: u24 = @intCast(items[0].integer);
+            const want = bus_backing.memSpeed(@truncate(addr >> 16), @truncate(addr));
+            if (want != recorder.speeds[n]) speed_ok = false;
+        }
+        n += 1;
+    }
+    summary.seq_checked += 1;
+    // Block-move vectors cap their cycle list at 100 entries, ending two
+    // cycles into an iteration the harness (correctly) does not run. Compare
+    // the complete iterations only.
+    if (is_block_move and n == 100 and recorder.len < n) n = recorder.len;
+    const seq_ok = n == recorder.len and std.mem.eql(u8, expected[0..n], recorder.kinds[0..recorder.len]);
+    if (seq_ok and speed_ok) return;
+    if (!seq_ok) summary.seq_mismatch += 1 else summary.speed_mismatch += 1;
+
+    const key = if (!seq_ok)
+        try std.fmt.allocPrint(allocator, "want {s}  got {s}", .{ expected[0..n], recorder.kinds[0..recorder.len] })
+    else
+        try std.fmt.allocPrint(allocator, "speed differs on {s}", .{expected[0..n]});
+    const gop = try patterns.getOrPut(key);
+    if (gop.found_existing) {
+        allocator.free(key);
+        gop.value_ptr.count += 1;
+    } else {
+        gop.value_ptr.* = .{ .count = 1, .example = try allocator.dupe(u8, name) };
+    }
 }
