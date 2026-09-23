@@ -413,10 +413,17 @@ pub const Cpu = struct {
         _ = self.flushInternalBeforeAccess();
         self.recordAccess(speed);
         if (self.bus.orderedClockConnected()) {
+            // The ordered owner advances the real PPU to the handler, so a
+            // mapped register read observes the live beam directly.
             self.bus.advanceCpuPhase(speed - 4, .read_leading);
         } else {
             self.bus.tickDsp(speed);
             self.bus.setCpuAccessTiming(self.mem_masters + self.internal_flushed * 6);
+            // The aggregate path has NOT advanced the PPU yet, so it projects
+            // the handler phase: Mesen2 3b058f9f runs a read's leading
+            // `speed - 4` clocks, calls the mapped handler, then four
+            // trailing clocks. recordAccess already added `speed`, hence -4.
+            self.bus.setCpuReadSampleTiming(self.mem_masters + self.internal_flushed * 6 - 4);
         }
         return speed;
     }

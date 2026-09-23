@@ -6,7 +6,8 @@ const dbg = @import("debug.zig");
 
 pub const Cpu = @import("cpu/cpu.zig").Cpu;
 pub const CpuFlags = @import("cpu/cpu.zig").Flags;
-pub const Bus = @import("bus.zig").Bus;
+const bus_module = @import("bus.zig");
+pub const Bus = bus_module.Bus;
 pub const Ppu = @import("ppu/ppu.zig").Ppu;
 pub const Cartridge = @import("cartridge.zig").Cartridge;
 pub const Dma = @import("dma.zig").Dma;
@@ -77,6 +78,8 @@ pub const Emulator = struct {
     }
 
     pub fn reset(self: *Emulator) void {
+        // Reset-vector reads happen outside an executing CPU access phase.
+        self.bus.invalidateCpuReadSample();
         self.cpu.reset(); // Reset CPU state and read reset vector from ROM
         self.ppu.reset(); // Reset PPU registers and state
         self.bus.dma.reset(); // Reset DMA channel state
@@ -144,6 +147,7 @@ pub const Emulator = struct {
         const instruction_start = absolutePpuMaster(&self.ppu);
         self.ordered_last_cpu_cycle_start = instruction_start;
         self.bus.beginCpuInstruction();
+        defer self.bus.invalidateCpuReadSample();
         const cycles = self.cpu.step();
 
         // ======================================================================
@@ -1646,4 +1650,241 @@ test "copyright-free ROM exposes general DMA timing for cross oracle" {
     try std.testing.expectEqual(@as(u8, 0), emu.ppu.inidisp);
     try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
     try std.testing.expectEqual(@as(u16, 116), emu.ppu.render_events[0].dot);
+}
+
+const HvbjoyReadProbe = struct {
+    pc: u16,
+    beam: bus_module.CpuReadSampleBeam,
+    hblank: bool,
+    next_pc: u16,
+};
+
+const HvbjoyWaitProbe = struct {
+    reads: [64]HvbjoyReadProbe = undefined,
+    read_count: usize = 0,
+    return_scanline: u16 = 0,
+    return_dot: u16 = 0,
+    return_residual: u2 = 0,
+    // DEY executions on the way out. The expected return positions below
+    // were measured when DEY was (wrongly) a one-cycle opcode fetch; the
+    // audited IdleOrRead phase adds six masters per DEY on this line.
+    dey_count: u32 = 0,
+};
+
+fn probeSyntheticHvbjoyWait(scanline: u16, dot: u16, residual: u2, initial_y: u8) HvbjoyWaitProbe {
+    var emu = Emulator.init();
+    emu.setup();
+    // $0000 JSR $0030; $002E LDY #$20; $0030 is the exact structure of
+    // SMW's WaitForHBlank at CODE_00843B..008448. WRAM executes at the same
+    // eight-master access speed as the game's SlowROM path and contains no
+    // copyrighted ROM data.
+    const program = [_]struct { addr: usize, byte: u8 }{
+        .{ .addr = 0x0000, .byte = 0x20 }, .{ .addr = 0x0001, .byte = 0x30 },
+        .{ .addr = 0x0002, .byte = 0x00 }, .{ .addr = 0x002e, .byte = 0xa0 },
+        .{ .addr = 0x002f, .byte = 0x20 }, .{ .addr = 0x0030, .byte = 0x2c },
+        .{ .addr = 0x0031, .byte = 0x12 }, .{ .addr = 0x0032, .byte = 0x42 },
+        .{ .addr = 0x0033, .byte = 0x70 }, .{ .addr = 0x0034, .byte = 0xf9 },
+        .{ .addr = 0x0035, .byte = 0x2c }, .{ .addr = 0x0036, .byte = 0x12 },
+        .{ .addr = 0x0037, .byte = 0x42 }, .{ .addr = 0x0038, .byte = 0x50 },
+        .{ .addr = 0x0039, .byte = 0xfb }, .{ .addr = 0x003a, .byte = 0x88 },
+        .{ .addr = 0x003b, .byte = 0xd0 }, .{ .addr = 0x003c, .byte = 0xfd },
+        .{ .addr = 0x003d, .byte = 0x60 },
+    };
+    for (program) |entry| emu.bus.wram[entry.addr] = entry.byte;
+    emu.cpu.pc = 0;
+    emu.cpu.y = initial_y;
+    emu.ppu.scanline = scanline;
+    emu.ppu.dot = dot;
+    emu.ppu.master_accum = residual;
+
+    var out = HvbjoyWaitProbe{};
+    for (0..512) |_| {
+        if (emu.cpu.pc == 0x003a) out.dey_count += 1;
+        if (emu.cpu.pc == 0x0003) {
+            out.return_scanline = emu.ppu.scanline;
+            out.return_dot = emu.ppu.dot;
+            out.return_residual = @intCast(emu.ppu.master_accum);
+            return out;
+        }
+        if (emu.cpu.pc == 0x0030 or emu.cpu.pc == 0x0035) {
+            const pc = emu.cpu.pc;
+            emu.step();
+            const read_index = out.read_count;
+            std.debug.assert(read_index < out.reads.len);
+            out.reads[read_index] = .{
+                .pc = pc,
+                .beam = emu.bus.lastCpuReadSampleBeam(),
+                .hblank = emu.cpu.p.v,
+                .next_pc = 0,
+            };
+            out.read_count += 1;
+            emu.step();
+            out.reads[read_index].next_pc = emu.cpu.pc;
+        } else {
+            emu.step();
+        }
+    }
+    @panic("synthetic WaitForHBlank did not return");
+}
+
+test "$4212 samples its mapped-read handler phase and drives WaitForHBlank branches" {
+    const cases = [_]struct {
+        dot: u16,
+        residual: u2,
+        y: u8,
+        return_line: u16,
+        return_dot: u16,
+        return_residual: u2,
+        reads: usize,
+    }{
+        .{ .dot = 105, .residual = 0, .y = 0x1f, .return_line = 37, .return_dot = 177, .return_residual = 0, .reads = 13 },
+        .{ .dot = 105, .residual = 2, .y = 0x1f, .return_line = 37, .return_dot = 177, .return_residual = 2, .reads = 13 },
+        .{ .dot = 109, .residual = 0, .y = 0x1f, .return_line = 37, .return_dot = 181, .return_residual = 0, .reads = 13 },
+        .{ .dot = 109, .residual = 1, .y = 0x1f, .return_line = 37, .return_dot = 181, .return_residual = 1, .reads = 13 },
+        .{ .dot = 109, .residual = 2, .y = 0x1f, .return_line = 37, .return_dot = 181, .return_residual = 2, .reads = 13 },
+        .{ .dot = 109, .residual = 3, .y = 0x1f, .return_line = 37, .return_dot = 181, .return_residual = 3, .reads = 13 },
+        // These four land the access end on H=274, but the handler is four
+        // masters earlier. All therefore remain active and take one more
+        // polling iteration; this falsifies end-of-access sampling directly.
+        .{ .dot = 102, .residual = 0, .y = 0x1f, .return_line = 37, .return_dot = 187, .return_residual = 0, .reads = 14 },
+        .{ .dot = 102, .residual = 1, .y = 0x1f, .return_line = 37, .return_dot = 187, .return_residual = 1, .reads = 14 },
+        .{ .dot = 102, .residual = 2, .y = 0x1f, .return_line = 37, .return_dot = 187, .return_residual = 2, .reads = 14 },
+        .{ .dot = 102, .residual = 3, .y = 0x1f, .return_line = 37, .return_dot = 187, .return_residual = 3, .reads = 14 },
+        // These put the handler itself on H=274. Residual 0 is active in
+        // Mesen's counter rule; residuals 1/2/3 are HBlank.
+        .{ .dot = 103, .residual = 0, .y = 0x1f, .return_line = 37, .return_dot = 188, .return_residual = 0, .reads = 14 },
+        .{ .dot = 103, .residual = 1, .y = 0x1f, .return_line = 37, .return_dot = 175, .return_residual = 1, .reads = 13 },
+        .{ .dot = 103, .residual = 2, .y = 0x1f, .return_line = 37, .return_dot = 175, .return_residual = 2, .reads = 13 },
+        .{ .dot = 103, .residual = 3, .y = 0x1f, .return_line = 37, .return_dot = 175, .return_residual = 3, .reads = 13 },
+        .{ .dot = 109, .residual = 0, .y = 0x07, .return_line = 37, .return_dot = 1, .return_residual = 0, .reads = 13 },
+        .{ .dot = 109, .residual = 0, .y = 0x20, .return_line = 37, .return_dot = 188, .return_residual = 2, .reads = 13 },
+    };
+    for (cases) |case| {
+        const result = probeSyntheticHvbjoyWait(36, case.dot, case.residual, case.y);
+        try std.testing.expectEqual(case.reads, result.read_count);
+        // Pin-era return position plus DEY's audited six-master IdleOrRead
+        // phase per execution (see "implied and register opcodes retain
+        // their internal final cycle"). The branch decisions asserted below
+        // do not depend on DEY and are unchanged.
+        const pin_return = @as(u64, case.return_line) * masters_per_line +
+            @as(u64, case.return_dot) * master_cycles_per_dot + case.return_residual;
+        const actual_return = @as(u64, result.return_scanline) * masters_per_line +
+            @as(u64, result.return_dot) * master_cycles_per_dot + result.return_residual;
+        try std.testing.expectEqual(pin_return + @as(u64, result.dey_count) * 6, actual_return);
+        for (result.reads[0..result.read_count]) |read| {
+            // BVS leaves the first loop when V=0; BVC leaves the second loop
+            // when V=1. Assert the branch result, not only the return dot.
+            if (read.pc == 0x0030) {
+                try std.testing.expectEqual(if (read.hblank) @as(u16, 0x002e) else 0x0035, read.next_pc);
+            } else {
+                try std.testing.expectEqual(if (read.hblank) @as(u16, 0x003a) else 0x0035, read.next_pc);
+            }
+            // Assert the returned flag against the explicit handler phase.
+            const hclock = @as(u16, read.beam.dot) * master_cycles_per_dot + read.beam.master_residual;
+            try std.testing.expectEqual(read.hblank, hclock < 4 or hclock > 274 * 4);
+        }
+    }
+}
+
+test "$4212 samples the mapped-read handler phase at the H=274 half-cycle" {
+    // A BIT abs performs three eight-master fetches, then samples its
+    // six-master I/O read after two masters and finishes four masters later.
+    // This first case ends at H=274 residual 2 but samples at H=273 residual
+    // 2, so an access-end model would return the wrong HBlank bit.
+    var before_edge = Emulator.init();
+    before_edge.setup();
+    before_edge.ppu.scanline = 36;
+    before_edge.ppu.dot = 267;
+    before_edge.ppu.master_accum = 0;
+    before_edge.bus.beginCpuInstruction();
+    before_edge.bus.setCpuReadSampleTiming(26);
+    before_edge.bus.setCpuAccessTiming(30);
+    try std.testing.expectEqual(@as(u16, 273), before_edge.bus.lastCpuReadSampleBeam().dot);
+    try std.testing.expectEqual(@as(u2, 2), before_edge.bus.lastCpuReadSampleBeam().master_residual);
+    try std.testing.expect(before_edge.bus.read(0, 0x4212) & 0x40 == 0);
+
+    // These starts put the handler on the two sides of Mesen's observable
+    // H=274 edge: residual 0 is active; residual 2 is HBlank.
+    var edge_zero = Emulator.init();
+    edge_zero.setup();
+    edge_zero.ppu.scanline = 36;
+    edge_zero.ppu.dot = 267;
+    edge_zero.ppu.master_accum = 2;
+    edge_zero.bus.beginCpuInstruction();
+    edge_zero.bus.setCpuReadSampleTiming(26);
+    edge_zero.bus.setCpuAccessTiming(30);
+    try std.testing.expectEqual(@as(u16, 274), edge_zero.bus.lastCpuReadSampleBeam().dot);
+    try std.testing.expectEqual(@as(u2, 0), edge_zero.bus.lastCpuReadSampleBeam().master_residual);
+    try std.testing.expect(edge_zero.bus.read(0, 0x4212) & 0x40 == 0);
+
+    var edge_two = Emulator.init();
+    edge_two.setup();
+    edge_two.ppu.scanline = 36;
+    edge_two.ppu.dot = 268;
+    edge_two.ppu.master_accum = 0;
+    edge_two.bus.beginCpuInstruction();
+    edge_two.bus.setCpuReadSampleTiming(26);
+    edge_two.bus.setCpuAccessTiming(30);
+    try std.testing.expectEqual(@as(u16, 274), edge_two.bus.lastCpuReadSampleBeam().dot);
+    try std.testing.expectEqual(@as(u2, 2), edge_two.bus.lastCpuReadSampleBeam().master_residual);
+    try std.testing.expect(edge_two.bus.read(0, 0x4212) & 0x40 != 0);
+}
+
+test "$4212 never reuses a stale CPU sample across direct DMA and reset boundaries" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.scanline = 36;
+    emu.ppu.dot = 100;
+
+    // An explicitly declared CPU handler phase may differ from committed PPU
+    // time and is used only while valid.
+    emu.bus.beginCpuInstruction();
+    emu.bus.setCpuReadSampleTiming(700);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 != 0);
+    emu.bus.invalidateCpuReadSample();
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
+
+    emu.bus.setCpuReadSampleTiming(700);
+    emu.bus.write(0, 0x0010, 0x5a);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
+
+    emu.bus.setCpuReadSampleTiming(700);
+    emu.bus.beginStandaloneDma();
+    try std.testing.expect(emu.bus.readDma(0x004212) & 0x40 == 0);
+
+    // readDma itself is safe even if a caller bypasses the outer DMA setup.
+    emu.bus.setCpuReadSampleTiming(700);
+    try std.testing.expect(emu.bus.readDma(0x004212) & 0x40 == 0);
+
+    // Reset's committed beam is H=0 (HBlank in Mesen's counter rule). Seed a
+    // stale active-display handler first, so the observed bit proves reset
+    // cleared validity rather than coincidentally agreeing with it.
+    emu.bus.beginCpuInstruction();
+    emu.bus.setCpuReadSampleTiming(0);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
+    emu.reset();
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 != 0);
+}
+
+test "$4212 CPU sample validity is transient across savestate restore" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.scanline = 36;
+    emu.ppu.dot = 100;
+
+    const snapshot = try std.testing.allocator.alloc(u8, Emulator.state_len);
+    defer std.testing.allocator.free(snapshot);
+    _ = try emu.writeState(snapshot);
+
+    emu.bus.beginCpuInstruction();
+    emu.bus.setCpuReadSampleTiming(700);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 != 0);
+    _ = try emu.readState(snapshot);
+    try std.testing.expectEqual(@as(u16, 100), emu.ppu.dot);
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
+
+    // A rejected restore must also end the transient execution phase.
+    emu.bus.setCpuReadSampleTiming(700);
+    try std.testing.expectError(error.ShortBuffer, emu.readState(&.{}));
+    try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
 }
