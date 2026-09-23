@@ -10,6 +10,9 @@
 //   screenshot <rom.sfc> <frames> <out.ppm> [options]
 //   screenshot <rom.sfc> <frames> <out.ppm> --every N <outdir>
 //
+// Timing profile:
+//   --ordered           run on the ordered wall owner from power-on
+//
 // Input injection:
 //   --input 120:S       press Start at frame 120 (held for 30 frames)
 //   --input-when 100=07:S[:HOLD[:SETTLE]]
@@ -279,6 +282,7 @@ pub fn main() !void {
     var range_end: u32 = std.math.maxInt(u32);
     var dump_path: ?[]const u8 = null;
     var wav_path: ?[]const u8 = null;
+    var ordered = false;
     var movie_path: ?[]const u8 = null;
     var record_path: ?[]const u8 = null;
     const SaveStateSpec = struct { frame: u32, path: []const u8 };
@@ -313,6 +317,11 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, args[i], "--wav")) {
             i += 1;
             wav_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--ordered")) {
+            // Run on the execution-ordered wall owner (refresh, DMA/HDMA
+            // controller, short scanline) from power-on instead of the
+            // aggregate runtime. Research profile; see src/refresh_timing.zig.
+            ordered = true;
         } else if (std.mem.eql(u8, args[i], "--tm")) {
             i += 1;
             tm_force = try std.fmt.parseInt(u8, args[i], 0);
@@ -356,6 +365,7 @@ pub fn main() !void {
     emulator = Emulator.init();
     emulator.setup();
     try emulator.loadRom(rom_data);
+    if (ordered) emulator.enableOrderedClockFromPowerOn();
     emulator.ppu.tm_force = tm_force;
 
     var playback: ?zupernes.movie.Movie = null;
