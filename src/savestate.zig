@@ -58,7 +58,7 @@ const RefreshTimeline = refresh_timing.Timeline;
 /// everything captured, and `read` refuses a mismatch. The version covers a
 /// deliberate REORDER at equal size; the length covers every accidental
 /// change, which is the one that actually happens.
-pub const magic = "ZNSAVE\x00\x07";
+pub const magic = "ZNSAVE\x00\x08";
 
 /// Clock ownership changes observable execution order, so it is part of the
 /// diagnostic state's compatibility contract even though the callback
@@ -280,6 +280,8 @@ pub const state_len: usize = blk: {
     // PPU scalars
     n += 15 + 8 * 2 + 1 + 2 + 1 + 13 + 2 + 1 + 1 + 1 + 8 * 2 + 1 + 4 +
         2 + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 8 + 4 + 1 + 4 + 4;
+    // PPU field geometry (v8): short_lines, odd_frame, frame_start_master.
+    n += 1 + 1 + 8;
     // PPU mid-scanline render replay: line-start state, queue metadata, and a
     // fixed-size event array. Unused event slots are encoded as zeroes so the
     // snapshot stays deterministic and state_len remains a compile-time guard.
@@ -288,6 +290,8 @@ pub const state_len: usize = blk: {
     n += 128 * 1024 + 1 + 32 * 1024;
     // DMA
     n += 8 * (1 + 1 + 4 + 2 + 1 + 2 + 1 + 1) + 2;
+    // Ordered DMA controller (v8): four request flags, active mask, counter.
+    n += 4 + 1 + 4;
     // Bus scalars
     n += 4 + 1 + 2 + 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 + 2 + 1 +
         2 + 2 + 1 + 2 + 2 + 1 + 4 + 4 + 1 + 1 + 1 + 8 + 4 + 4 + 4;
@@ -393,6 +397,10 @@ pub fn write(
     putU16(dst, &at, ppu.dot);
     putU64(dst, &at, ppu.frame_count);
     putU32(dst, &at, ppu.master_accum);
+    // v8: field geometry (short scanline 240 on odd NTSC fields).
+    putBool(dst, &at, ppu.short_lines);
+    putBool(dst, &at, ppu.odd_frame);
+    putU64(dst, &at, ppu.frame_start_master);
     putU8(dst, &at, ppu.vram_read_buffer);
     putU32(dst, &at, ppu.writer_pc);
     putU32(dst, &at, ppu.dma_src);
@@ -438,6 +446,13 @@ pub fn write(
     }
     putU8(dst, &at, bus.dma.hdma_enable);
     putU8(dst, &at, bus.dma.hdma_terminated);
+    // v8: ordered DMA controller requests (Mesen2 SnesDmaController flags).
+    putBool(dst, &at, bus.dma.general_pending);
+    putBool(dst, &at, bus.dma.start_delay);
+    putBool(dst, &at, bus.dma.hdma_pending);
+    putBool(dst, &at, bus.dma.hdma_init_pending);
+    putU8(dst, &at, bus.dma.general_active);
+    putU32(dst, &at, bus.dma.clock_counter);
 
     // ---- Bus registers ----
     putU32(dst, &at, bus.wram_addr);
@@ -610,6 +625,9 @@ pub fn read(
     ppu.dot = getU16(src, &at);
     ppu.frame_count = getU64(src, &at);
     ppu.master_accum = getU32(src, &at);
+    ppu.short_lines = getBool(src, &at);
+    ppu.odd_frame = getBool(src, &at);
+    ppu.frame_start_master = getU64(src, &at);
     ppu.vram_read_buffer = getU8(src, &at);
     ppu.writer_pc = @truncate(getU32(src, &at));
     ppu.dma_src = @truncate(getU32(src, &at));
@@ -652,6 +670,12 @@ pub fn read(
     }
     bus.dma.hdma_enable = getU8(src, &at);
     bus.dma.hdma_terminated = getU8(src, &at);
+    bus.dma.general_pending = getBool(src, &at);
+    bus.dma.start_delay = getBool(src, &at);
+    bus.dma.hdma_pending = getBool(src, &at);
+    bus.dma.hdma_init_pending = getBool(src, &at);
+    bus.dma.general_active = getU8(src, &at);
+    bus.dma.clock_counter = getU32(src, &at);
 
     // ---- Bus registers ----
     bus.wram_addr = @truncate(getU32(src, &at));
@@ -720,10 +744,9 @@ pub fn read(
 }
 
 fn normalizedTimelineForPpu(ppu: *const Ppu) RefreshTimeline {
-    const line_masters: u64 = ppu_mod.DOTS_PER_SCANLINE * ppu_mod.MASTER_CYCLES_PER_DOT;
-    const frame_masters: u64 = line_masters * ppu_mod.SCANLINES_PER_FRAME;
+    // The PPU's own geometry (fixed or short-line) maps the beam to wall time.
     const in_line = @as(u64, ppu.dot) * ppu_mod.MASTER_CYCLES_PER_DOT + ppu.master_accum;
-    const wall = ppu.frame_count * frame_masters + @as(u64, ppu.scanline) * line_masters + in_line;
+    const wall = ppu.absoluteMaster();
     const refresh = refresh_timing.refreshMasterForLineStart(wall - in_line);
     return .{
         .wall_master = wall,

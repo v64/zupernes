@@ -27,8 +27,7 @@ const masters_per_line: u64 = @as(u64, zupernes_dots_per_line) * master_cycles_p
 const masters_per_frame: u64 = masters_per_line * zupernes_lines_per_frame;
 
 fn absolutePpuMaster(ppu: *const Ppu) u64 {
-    return ppu.frame_count * masters_per_frame + @as(u64, ppu.scanline) * masters_per_line +
-        @as(u64, ppu.dot) * master_cycles_per_dot + ppu.master_accum;
+    return ppu.absoluteMaster();
 }
 
 // Anomie's timing measurements place the frame-start HDMA initialization at
@@ -397,6 +396,9 @@ pub const Emulator = struct {
         const next_refresh = if (refresh >= wall) refresh else refresh_timing.no_refresh_scheduled;
         self.refresh_timeline = RefreshTimeline.restore(wall, next_refresh) catch unreachable;
         self.bus.connectOrderedClock(self, advanceOrderedClock, advanceOrderedDmaClock);
+        // The ordered profile models the real NTSC field geometry: scanline
+        // 240 of every odd non-interlace field is 1360 masters.
+        self.ppu.enableShortLines();
     }
 
     /// Master clocks the S-CPU spends leaving reset before its first opcode
@@ -2045,3 +2047,33 @@ test "$4212 CPU sample validity is transient across savestate restore" {
     try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
 }
 
+
+test "ordered profile alternates 357368 and 357364 master fields" {
+    // A tight BRA loop in WRAM keeps the CPU running while fields elapse.
+    var emu = Emulator.init();
+    emu.setup();
+    emu.cpu.pc = 0;
+    emu.bus.wram[0] = 0x80; // BRA -2
+    emu.bus.wram[1] = 0xFE;
+    emu.enableOrderedClockFromPowerOn();
+
+    // Mesen2 3b058f9 frame-start callbacks for the same geometry
+    // (test/timing/mesen_timing_path.mjs): fields 0,1,2 are 357368, 357364,
+    // 357368 masters; field 1 is odd, so its scanline 240 is 1360 masters.
+    const expected = [_]u64{ 357368, 714732, 1072100 };
+    for (expected) |start| {
+        const frame = emu.ppu.frame_count;
+        while (emu.ppu.frame_count == frame) emu.step();
+        try std.testing.expectEqual(start, emu.ppu.frameStartMaster());
+    }
+
+    // The short line moves every later line start by 4 masters, and the
+    // reset-aligned refresh follows the ACTUAL line start: line 241 of the
+    // odd field 1 starts at 357368 + 241*1364 - 4 = 686088, which is a
+    // multiple of 8, so its refresh fires at local H-clock 538.
+    try std.testing.expectEqual(
+        @as(u64, 686088 + 538),
+        refresh_timing.refreshMasterForLineStart(357368 + 241 * 1364 - 4),
+    );
+    try std.testing.expect(emu.ppu.odd_frame); // field 3 is odd (0 even, 1 odd, ...)
+}

@@ -378,6 +378,28 @@ pub const Ppu = struct {
     dot: u16,
     frame_count: u64,
 
+    // =========================================================================
+    // FIELD GEOMETRY (the NTSC "short scanline")
+    // =========================================================================
+    // NTSC non-interlace fields alternate between 262 lines of 1364 masters
+    // and 262 lines where scanline 240 is only 1360 masters: "In
+    // non-interlace mode scanline 240 of every other frame (those with
+    // $213F.7=1) is only 1360 cycles" (anomie, quoted in Mesen2 3b058f9
+    // SnesPpu::ProcessEndOfScanline). Mesen starts with _oddFrame = 0 and
+    // toggles it at every frame start, so fields measure 357368, 357364,
+    // 357368, ... masters (test/timing/mesen_timing_path.mjs reproduces
+    // this).
+    //
+    // `short_lines` enables the geometry. It is set by the ordered clock
+    // profile; the aggregate runtime keeps fixed 357368-master fields so its
+    // behavior is unchanged until the ordered profile is promoted.
+    short_lines: bool = false,
+    // Mesen2 _oddFrame for the CURRENT field (toggled at each frame start).
+    odd_frame: bool = false,
+    // Absolute master clock at which the current field began. Maintained
+    // only while `short_lines` is on (fixed geometry derives it).
+    frame_start_master: u64 = 0,
+
     // Master-cycle remainder carried between tick() calls (0-3). The PPU
     // advances in whole dots but the CPU hands us master cycles that are
     // rarely a multiple of 4.
@@ -490,6 +512,10 @@ pub const Ppu = struct {
         self.scanline = 0;
         self.dot = 0;
         self.master_accum = 0;
+        // Field parity restarts (Mesen2 SnesPpu reset: _oddFrame = 0); the
+        // ordered clock profile re-enables the short-line geometry.
+        self.odd_frame = false;
+        self.short_lines = false;
         self.vram_addr = 0;
         self.cgram_addr = 0;
         self.oam_addr = 0;
@@ -535,7 +561,13 @@ pub const Ppu = struct {
             self.master_accum -= MASTER_CYCLES_PER_DOT;
             self.dot += 1;
 
-            if (self.dot >= DOTS_PER_SCANLINE) {
+            // A line ends after its real length: 341 dots, or 340 for the
+            // short line 240 of an odd field (see FIELD GEOMETRY).
+            const line_dots: u16 = if (self.scanline == SHORT_LINE and self.fieldHasShortLine(self.odd_frame))
+                DOTS_PER_SCANLINE - 1
+            else
+                DOTS_PER_SCANLINE;
+            if (self.dot >= line_dots) {
                 // Rendering is intentionally deferred until the line is
                 // complete.  That gives finishScanline() the complete ordered
                 // list of register changes made while the beam crossed it.
@@ -549,6 +581,11 @@ pub const Ppu = struct {
                 if (self.scanline >= SCANLINES_PER_FRAME) {
                     self.scanline = 0;
                     self.frame_count += 1;
+                    // The field that just ended determines where this one
+                    // starts; then the new field flips parity (Mesen2
+                    // toggles _oddFrame as each frame starts).
+                    if (self.short_lines) self.frame_start_master += self.fieldMasters(self.odd_frame);
+                    self.odd_frame = !self.odd_frame;
 
                     // Draw frame counter overlay in debug builds
                     if (comptime dbg.show_frame_counter) {
@@ -713,6 +750,52 @@ pub const Ppu = struct {
                 }
             }
         }
+    }
+
+    pub const FIXED_LINE_MASTERS: u64 = DOTS_PER_SCANLINE * MASTER_CYCLES_PER_DOT;
+    pub const FIXED_FRAME_MASTERS: u64 = FIXED_LINE_MASTERS * SCANLINES_PER_FRAME;
+    pub const SHORT_LINE: u16 = 240;
+
+    /// Whether the field with the given parity contains the short line.
+    /// (Interlace is not modeled by this PPU, so every field qualifies.)
+    pub fn fieldHasShortLine(self: *const Ppu, odd: bool) bool {
+        return self.short_lines and odd;
+    }
+
+    /// Masters in `line` of a field with the given parity.
+    pub fn lineMastersIn(self: *const Ppu, odd: bool, line: u16) u64 {
+        return if (line == SHORT_LINE and self.fieldHasShortLine(odd)) FIXED_LINE_MASTERS - 4 else FIXED_LINE_MASTERS;
+    }
+
+    /// Offset of `line`'s first master from its field's start.
+    pub fn lineOffsetIn(self: *const Ppu, odd: bool, line: u16) u64 {
+        const base = @as(u64, line) * FIXED_LINE_MASTERS;
+        return if (line > SHORT_LINE and self.fieldHasShortLine(odd)) base - 4 else base;
+    }
+
+    /// Masters in a whole field with the given parity.
+    pub fn fieldMasters(self: *const Ppu, odd: bool) u64 {
+        return if (self.fieldHasShortLine(odd)) FIXED_FRAME_MASTERS - 4 else FIXED_FRAME_MASTERS;
+    }
+
+    /// Absolute master clock at which the current field began.
+    pub fn frameStartMaster(self: *const Ppu) u64 {
+        return if (self.short_lines) self.frame_start_master else self.frame_count * FIXED_FRAME_MASTERS;
+    }
+
+    /// Absolute master clock of the beam (the wall time the PPU has reached).
+    pub fn absoluteMaster(self: *const Ppu) u64 {
+        return self.frameStartMaster() + self.lineOffsetIn(self.odd_frame, self.scanline) +
+            @as(u64, self.dot) * MASTER_CYCLES_PER_DOT + self.master_accum;
+    }
+
+    /// Turn the short-line geometry on at the current beam position. The
+    /// fields so far are taken to have been full-length (it is enabled at
+    /// power-on or by fixtures positioned inside field 0).
+    pub fn enableShortLines(self: *Ppu) void {
+        if (self.short_lines) return;
+        self.frame_start_master = self.frame_count * FIXED_FRAME_MASTERS;
+        self.short_lines = true;
     }
 
     fn absoluteLine(self: *const Ppu) u64 {

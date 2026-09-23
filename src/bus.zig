@@ -49,8 +49,7 @@ const IrqTransition = struct {
 };
 
 fn absolutePpuMaster(ppu: *const Ppu) u64 {
-    return ppu.frame_count * frame_masters + @as(u64, ppu.scanline) * line_masters +
-        @as(u64, ppu.dot) * @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT + ppu.master_accum;
+    return ppu.absoluteMaster();
 }
 
 fn nextPeriodicAfter(now: u64, phase: u64, period: u64) u64 {
@@ -501,6 +500,71 @@ pub const Bus = struct {
         };
     }
 
+    // -------------------------------------------------------------------------
+    // Beam-time projection over REAL field geometry. With the PPU's short-
+    // line geometry on (ordered profile), fields alternate 357368/357364
+    // masters and lines after 240 of an odd field start 4 masters earlier,
+    // so frame- or line-periodic arithmetic drifts. These helpers walk the
+    // actual field boundaries from the PPU's current field instead. With the
+    // geometry off they are not used: the fixed periodic formulas below are
+    // exact and unchanged.
+    // -------------------------------------------------------------------------
+    const Field = struct { start: u64, odd: bool };
+
+    /// The field containing absolute master `master`.
+    fn fieldAt(self: *const Bus, master: u64) Field {
+        var f = Field{ .start = self.ppu.frameStartMaster(), .odd = self.ppu.odd_frame };
+        while (master < f.start) {
+            f.odd = !f.odd;
+            f.start -|= self.ppu.fieldMasters(f.odd);
+        }
+        while (master >= f.start + self.ppu.fieldMasters(f.odd)) {
+            f.start += self.ppu.fieldMasters(f.odd);
+            f.odd = !f.odd;
+        }
+        return f;
+    }
+
+    /// First instant strictly after `now` at `offset` masters into `line`.
+    fn nextBeamAfter(self: *const Bus, now: u64, line: u16, offset: u64) u64 {
+        var f = self.fieldAt(now);
+        while (true) {
+            const t = f.start + self.ppu.lineOffsetIn(f.odd, line) + offset;
+            if (t > now) return t;
+            f.start += self.ppu.fieldMasters(f.odd);
+            f.odd = !f.odd;
+        }
+    }
+
+    /// First instant strictly after `now` at `offset` masters into ANY line.
+    /// Starts one line back: an offset past a (short) line's end lands in
+    /// the next line, so the previous line can still own the next event.
+    fn nextEveryLineAfter(self: *const Bus, now: u64, offset: u64) u64 {
+        var f = self.fieldAt(now);
+        const in_field = now - f.start;
+        var line: u16 = @intCast(@min(in_field / Ppu.FIXED_LINE_MASTERS, @import("ppu/ppu.zig").SCANLINES_PER_FRAME - 1));
+        while (line > 0 and self.ppu.lineOffsetIn(f.odd, line) > in_field) line -= 1;
+        // Step back one line (possibly into the previous field). Before the
+        // first field of power-on there is no earlier line to own an event.
+        if (line > 0) {
+            line -= 1;
+        } else if (f.start >= self.ppu.fieldMasters(!f.odd)) {
+            f.odd = !f.odd;
+            f.start -= self.ppu.fieldMasters(f.odd);
+            line = @import("ppu/ppu.zig").SCANLINES_PER_FRAME - 1;
+        }
+        while (true) {
+            const t = f.start + self.ppu.lineOffsetIn(f.odd, line) + offset;
+            if (t > now) return t;
+            line += 1;
+            if (line == @import("ppu/ppu.zig").SCANLINES_PER_FRAME) {
+                f.start += self.ppu.fieldMasters(f.odd);
+                f.odd = !f.odd;
+                line = 0;
+            }
+        }
+    }
+
     /// Advance the CPU-visible RDNMI latch through hardware time without
     /// moving the PPU. CPU accesses are executed before root.zig commits the
     /// instruction's clocks, so projecting this tiny piece of hardware state
@@ -509,8 +573,14 @@ pub const Bus = struct {
         if (target_master <= self.interrupt_horizon_master) return;
         var cursor = self.interrupt_horizon_master;
         while (true) {
-            const set_at = nextPeriodicAfter(cursor, nmi_set_master, frame_masters);
-            const clear_at = nextPeriodicAfter(cursor, 0, frame_masters);
+            const set_at = if (self.ppu.short_lines)
+                self.nextBeamAfter(cursor, 225, 2)
+            else
+                nextPeriodicAfter(cursor, nmi_set_master, frame_masters);
+            const clear_at = if (self.ppu.short_lines)
+                self.nextBeamAfter(cursor, 0, 0)
+            else
+                nextPeriodicAfter(cursor, 0, frame_masters);
             const irq_at = self.nextIrqEventAfter(cursor) orelse std.math.maxInt(u64);
             const event_at = @min(@min(set_at, clear_at), irq_at);
             if (event_at > target_master) break;
@@ -541,6 +611,15 @@ pub const Bus = struct {
         const mode = self.nmitimen & 0x30;
         if (mode == 0) return null;
         const h_delay: u64 = if (self.htime == 0) 10 else 14 + @as(u64, self.htime) * 4;
+        if (self.ppu.short_lines) {
+            const lines = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
+            return switch (mode) {
+                0x10 => if (self.htime <= 339) self.nextEveryLineAfter(now, h_delay) else null,
+                0x20 => if (self.vtime < lines) self.nextBeamAfter(now, self.vtime, 10) else null,
+                0x30 => if (self.htime <= 339 and self.vtime < lines) self.nextBeamAfter(now, self.vtime, h_delay) else null,
+                else => null,
+            };
+        }
         return switch (mode) {
             0x10 => if (self.htime <= 339)
                 nextPeriodicAfter(now, h_delay, line_masters)
@@ -1005,7 +1084,10 @@ pub const Bus = struct {
                 // clocks after its V=225/H=0.5 set edge. A read at H=0.5
                 // therefore returns bit 7 set but cannot clear it until H=1.5.
                 const now = @max(self.interrupt_horizon_master, absolutePpuMaster(self.ppu));
-                const in_set_hold = now >= nmi_set_master and
+                const in_set_hold = if (self.ppu.short_lines) blk: {
+                    const set_at = self.fieldAt(now).start + nmi_set_master;
+                    break :blk now >= set_at and now - set_at < 4;
+                } else now >= nmi_set_master and
                     (now - nmi_set_master) % frame_masters < 4;
                 if (!in_set_hold) self.nmi_flag = false;
                 return flag | 0x02; // Version bits: CPU version 2

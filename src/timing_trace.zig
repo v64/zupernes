@@ -111,9 +111,8 @@ pub fn main() !void {
         if (emu.ppu.frame_count != last_frame) {
             last_frame = emu.ppu.frame_count;
             // The beam has already moved past the line-0 origin inside this
-            // step; report the frame's start at its own origin instant.
-            const in_frame = @as(u64, emu.ppu.scanline) * 1364 + @as(u64, emu.ppu.dot) * 4 + emu.ppu.master_accum;
-            const start = emu.refresh_timeline.wall_master - in_frame;
+            // step; report the field's start at its own origin instant.
+            const start = emu.ppu.frameStartMaster();
             recorder.out.print(allocator, "frame_start\t000000\t00\t{d}\t0\t0\n", .{start}) catch unreachable;
         }
     }
