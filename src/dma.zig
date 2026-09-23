@@ -21,6 +21,37 @@ pub const Dma = struct {
     // HDMA terminated flag per channel
     hdma_terminated: u8,
 
+    // =========================================================================
+    // ORDERED-CLOCK DMA CONTROLLER (Mesen2 3b058f9 SnesDmaController)
+    // =========================================================================
+    // On hardware a $420B write does not start the transfer inside the
+    // write. It raises a request that the S-CPU services at a later CPU
+    // cycle boundary: Mesen's SnesCpu::ProcessCpuCycle calls
+    // ProcessPendingTransfers at the START of every CPU cycle (read, write
+    // or internal), before that cycle's clocks run.
+    //
+    //   - `start_delay` makes the first boundary after a request a no-op,
+    //     so the transfer begins at the SECOND cycle boundary after $420B.
+    //   - The controller then halts the CPU: it waits 2-8 masters to reach
+    //     a whole multiple of 8 masters since reset (SyncStartDma),
+    //     spends 8 masters of global overhead, and 8 per active channel,
+    //     then 8 per byte split 4 / source read / 4 / destination write.
+    //   - Finally it waits until a whole number of the interrupted CPU
+    //     cycle's own length has elapsed since the halt (SyncEndDma), so
+    //     the CPU resumes on its own clock phase.
+    //
+    // The pending flags are serviced only on the ordered path (Emulator
+    // routes every CPU cycle start through processPendingTransfers). The
+    // aggregate runtime keeps the pin's synchronous runDma.
+    general_pending: bool = false,
+    start_delay: bool = false,
+    hdma_pending: bool = false,
+    hdma_init_pending: bool = false,
+    // Channels with a general DMA outstanding ($420B bits; Mesen DmaActive).
+    general_active: u8 = 0,
+    // Masters spent since the halt began (Mesen _dmaClockCounter).
+    clock_counter: u32 = 0,
+
     pub const DmaChannel = struct {
         // $43x0 - DMAPx: DMA Control
         control: DmaControl,
@@ -197,6 +228,148 @@ pub const Dma = struct {
         };
     }
 
+    /// $420B on the ordered path: record the request (Mesen2
+    /// SnesDmaController::Write case 0x420B). The transfer itself runs at a
+    /// later CPU cycle boundary through processPendingTransfers.
+    pub fn requestGeneralDma(self: *Dma, mask: u8) void {
+        self.general_active |= mask;
+        if (mask != 0) {
+            self.general_pending = true;
+            self.start_delay = true;
+        }
+    }
+
+    pub fn hasPendingTransfer(self: *const Dma) bool {
+        return self.general_pending or self.start_delay or self.hdma_pending or self.hdma_init_pending;
+    }
+
+    /// Service pending transfers at the start of a CPU cycle whose length is
+    /// `cpu_speed` masters (6 internal, 6/8/12 for an access). Returns true
+    /// when a transfer ran (Mesen uses that as SnesCpuState::IrqLock).
+    /// `clock` supplies the ordered wall: `now() u64` and `advance(masters)`.
+    pub fn processPendingTransfers(self: *Dma, bus: anytype, clock: anytype, cpu_speed: u32) bool {
+        if (!self.hasPendingTransfer()) return false;
+        if (self.start_delay) {
+            self.start_delay = false;
+            return false;
+        }
+        if (self.general_pending) {
+            self.general_pending = false;
+            self.syncStart(clock);
+            self.clock_counter += 8; // global overhead
+            clock.advance(8);
+            _ = self.processPendingTransfers(bus, clock, cpu_speed);
+            for (0..8) |i| {
+                if ((self.general_active & (@as(u8, 1) << @intCast(i))) != 0) {
+                    self.runOrderedChannel(@intCast(i), bus, clock, cpu_speed);
+                }
+            }
+            self.syncEnd(clock, cpu_speed);
+            return true;
+        }
+        return false;
+    }
+
+    /// "After the pause, wait 2-8 master cycles to reach a whole multiple
+    /// of 8 master cycles since reset" (Mesen2 SyncStartDma, quoting the
+    /// fullsnes/anomie timing notes). Master time is always even.
+    fn syncStart(self: *Dma, clock: anytype) void {
+        self.clock_counter = 8 - @as(u32, @intCast(clock.now() & 7));
+        clock.advance(self.clock_counter);
+    }
+
+    /// "Then wait 2-8 master cycles to reach a whole number of CPU clock
+    /// cycles since the pause" (Mesen2 SyncEndDma). Note an exact multiple
+    /// still waits one full CPU cycle, as Mesen computes it.
+    fn syncEnd(self: *Dma, clock: anytype, cpu_speed: u32) void {
+        clock.advance(cpu_speed - (self.clock_counter % cpu_speed));
+    }
+
+    /// One channel of an ordered general DMA (Mesen2 SnesDmaController::
+    /// RunDma): 8 masters of channel overhead, then every byte, servicing
+    /// pending HDMA between bytes (HDMA can preempt a long transfer).
+    fn runOrderedChannel(self: *Dma, index: u3, bus: anytype, clock: anytype, cpu_speed: u32) void {
+        const bit = @as(u8, 1) << index;
+        self.clock_counter += 8;
+        clock.advance(8);
+        _ = self.processPendingTransfers(bus, clock, cpu_speed);
+
+        const channel = &self.channels[index];
+        // Same capture-only VRAM source tagging as runDma.
+        const is_vram = channel.b_addr == 0x18 or channel.b_addr == 0x19;
+        if (is_vram) bus.ppu.dma_src = channel.a_addr;
+        defer if (is_vram) {
+            bus.ppu.dma_src = 0;
+        };
+        var remaining: u32 = if (channel.byte_count == 0) 65536 else channel.byte_count;
+        var byte_index: u8 = 0;
+        var moved: u32 = 0;
+        while (true) {
+            self.transferGeneralByte(index, byte_index, bus);
+            byte_index = (byte_index + 1) % getTransferSize(channel.control.transfer_mode);
+            remaining -= 1;
+            moved += 1;
+            _ = self.processPendingTransfers(bus, clock, cpu_speed);
+            if (remaining == 0 or (self.general_active & bit) == 0) break;
+        }
+        self.clock_counter += 8 * moved;
+        channel.byte_count = @truncate(remaining);
+        self.general_active &= ~bit;
+    }
+
+    /// One general-DMA byte: 4 masters, source read, 4 masters, destination
+    /// write, then the A-bus address step. Shared by the aggregate runDma
+    /// and the ordered controller; the half-byte ticks route to whichever
+    /// clock owner is connected.
+    fn transferGeneralByte(self: *Dma, index: u3, byte_index: u8, bus: anytype) void {
+        const channel = &self.channels[index];
+        const ctrl = channel.control;
+        const b_base: u16 = 0x2100 | @as(u16, channel.b_addr);
+        const b_offset = getBOffset(ctrl.transfer_mode, byte_index);
+        const b_addr = b_base + b_offset;
+
+        // Each DMA byte takes 8 master cycles, during which the
+        // cartridge coprocessor keeps running. This matters
+        // functionally, not just for timing: Super Mario Kart
+        // builds its Mode 7 raster tables by DMA-reading DSP-1
+        // results from $6000, at exactly the pace the microcode
+        // streams words into DR. With an instantaneous DMA the DSP
+        // would never advance between reads and the whole transfer
+        // would see one stale value. Mesen's generic DMA path advances
+        // four masters before the source handler and another four
+        // before the destination effect; keeping that split is
+        // observable for mapped sources such as $4212 or DSP-1 DR.
+        bus.tickDmaHalfByte();
+        if (!ctrl.direction) {
+            // A→B: Read from A-bus (CPU memory), write to B-bus (PPU)
+            const value = bus.readDma(channel.a_addr);
+            bus.probe(.dma_read, channel.a_addr, value);
+            bus.tickDmaHalfByte();
+            bus.probe(.dma_write, b_addr, value);
+            bus.writePpuDma(b_addr, value);
+        } else {
+            // B→A: Read from B-bus (PPU), write to A-bus (CPU memory)
+            const value = bus.readPpuDma(b_addr);
+            bus.probe(.dma_read, b_addr, value);
+            bus.tickDmaHalfByte();
+            bus.probe(.dma_write, channel.a_addr, value);
+            bus.writeDma(channel.a_addr, value);
+        }
+
+        // Update A-bus address according to the step field.
+        // Fixed mode (step 1 or 3) keeps the address constant - this
+        // is how games do memory fills: point at a single constant
+        // byte and DMA it repeatedly (e.g. clearing VRAM with $00).
+        // Note: only the 16-bit offset changes; the bank byte is NOT
+        // affected by increment/decrement on real hardware (a 64KB
+        // transfer wraps within the bank).
+        if ((ctrl.a_step & 1) == 0) {
+            const offset: u16 = @truncate(channel.a_addr);
+            const new_offset = if (ctrl.a_step == 0) offset +% 1 else offset -% 1;
+            channel.a_addr = (channel.a_addr & 0xFF0000) | new_offset;
+        }
+    }
+
     /// Execute DMA transfer - called when $420B is written
     /// Returns the number of cycles consumed
     pub fn runDma(self: *Dma, enable_mask: u8, bus: anytype) u32 {
@@ -238,52 +411,10 @@ pub const Dma = struct {
             var remaining: u32 = if (channel.byte_count == 0) 65536 else channel.byte_count;
             const transfer_size = getTransferSize(ctrl.transfer_mode);
 
-            // Base B-bus address (PPU register at $21xx)
-            const b_base: u16 = 0x2100 | @as(u16, channel.b_addr);
-
             var byte_index: u8 = 0;
 
             while (remaining > 0) : (remaining -= 1) {
-                const b_offset = getBOffset(ctrl.transfer_mode, byte_index);
-                const b_addr = b_base + b_offset;
-
-                // Each DMA byte takes 8 master cycles, during which the
-                // cartridge coprocessor keeps running. This matters
-                // functionally, not just for timing: Super Mario Kart
-                // builds its Mode 7 raster tables by DMA-reading DSP-1
-                // results from $6000, at exactly the pace the microcode
-                // streams words into DR. With an instantaneous DMA the DSP
-                // would never advance between reads and the whole transfer
-                // would see one stale value. Mesen's generic DMA path advances
-                // four masters before the source handler and another four
-                // before the destination effect; keeping that split is
-                // observable for mapped sources such as $4212 or DSP-1 DR.
-                bus.tickDmaHalfByte();
-                if (!ctrl.direction) {
-                    // A→B: Read from A-bus (CPU memory), write to B-bus (PPU)
-                    const value = bus.readDma(channel.a_addr);
-                    bus.tickDmaHalfByte();
-                    bus.writePpuDma(b_addr, value);
-                } else {
-                    // B→A: Read from B-bus (PPU), write to A-bus (CPU memory)
-                    const value = bus.readPpuDma(b_addr);
-                    bus.tickDmaHalfByte();
-                    bus.writeDma(channel.a_addr, value);
-                }
-
-                // Update A-bus address according to the step field.
-                // Fixed mode (step 1 or 3) keeps the address constant - this
-                // is how games do memory fills: point at a single constant
-                // byte and DMA it repeatedly (e.g. clearing VRAM with $00).
-                // Note: only the 16-bit offset changes; the bank byte is NOT
-                // affected by increment/decrement on real hardware (a 64KB
-                // transfer wraps within the bank).
-                if ((ctrl.a_step & 1) == 0) {
-                    const offset: u16 = @truncate(channel.a_addr);
-                    const new_offset = if (ctrl.a_step == 0) offset +% 1 else offset -% 1;
-                    channel.a_addr = (channel.a_addr & 0xFF0000) | new_offset;
-                }
-
+                self.transferGeneralByte(@intCast(i), byte_index, bus);
                 byte_index = (byte_index + 1) % transfer_size;
                 total_cycles += 8; // 8 master cycles per byte
             }
@@ -327,6 +458,7 @@ pub const Dma = struct {
 
             // Read line counter from table
             channel.line_counter = bus.read(bank, channel.hdma_addr);
+            bus.probe(.dma_read, (@as(u24, bank) << 16) | channel.hdma_addr, channel.line_counter);
             channel.hdma_addr +%= 1;
 
             if (comptime dbg.trace_hdma) {
@@ -370,8 +502,10 @@ pub const Dma = struct {
             // Load indirect address if using indirect mode
             if (channel.control.indirect) {
                 const lo = bus.read(bank, channel.hdma_addr);
+                bus.probe(.dma_read, (@as(u24, bank) << 16) | channel.hdma_addr, lo);
                 channel.hdma_addr +%= 1;
                 const hi = bus.read(bank, channel.hdma_addr);
+                bus.probe(.dma_read, (@as(u24, bank) << 16) | channel.hdma_addr, hi);
                 channel.hdma_addr +%= 1;
                 channel.byte_count = (@as(u16, hi) << 8) | lo;
 
@@ -436,7 +570,9 @@ pub const Dma = struct {
                     bus.tickDmaHalfByte();
                     if (!ctrl.direction) {
                         const value = bus.read(src_bank, src_addr);
+                        bus.probe(.dma_read, (@as(u24, src_bank) << 16) | src_addr, value);
                         bus.tickDmaHalfByte();
+                        bus.probe(.dma_write, b_addr, value);
                         bus.writePpuDma(b_addr, value);
 
                         // Trace window register writes (WH0-WH3: $2126-$2129) which are used for spotlight effect
@@ -447,7 +583,9 @@ pub const Dma = struct {
                         }
                     } else {
                         const value = bus.readPpuDma(b_addr);
+                        bus.probe(.dma_read, b_addr, value);
                         bus.tickDmaHalfByte();
+                        bus.probe(.dma_write, (@as(u24, src_bank) << 16) | src_addr, value);
                         bus.write(src_bank, src_addr, value);
                     }
                 }
@@ -466,6 +604,7 @@ pub const Dma = struct {
             if ((channel.line_counter & 0x7F) == 0) {
                 // Read next line counter
                 channel.line_counter = bus.read(bank, channel.hdma_addr);
+                bus.probe(.dma_read, (@as(u24, bank) << 16) | channel.hdma_addr, channel.line_counter);
                 channel.hdma_addr +%= 1;
 
                 // Check for termination
@@ -480,8 +619,10 @@ pub const Dma = struct {
                 if (ctrl.indirect) {
                     bus.tickDmaMasters(hdma_indirect_fetch);
                     const lo = bus.read(bank, channel.hdma_addr);
+                    bus.probe(.dma_read, (@as(u24, bank) << 16) | channel.hdma_addr, lo);
                     channel.hdma_addr +%= 1;
                     const hi = bus.read(bank, channel.hdma_addr);
+                    bus.probe(.dma_read, (@as(u24, bank) << 16) | channel.hdma_addr, hi);
                     channel.hdma_addr +%= 1;
                     channel.byte_count = (@as(u16, hi) << 8) | lo;
                 }

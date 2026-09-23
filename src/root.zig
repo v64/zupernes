@@ -18,6 +18,7 @@ const refresh_timing = @import("refresh_timing.zig");
 /// CPU cycle provenance reported through Bus.advanceCpuPhase (exported for
 /// the 65816 vector harness's cycle-sequence audit).
 pub const CpuClockPhase = refresh_timing.CpuPhase;
+pub const TimingProbeKind = @import("bus.zig").TimingProbeKind;
 
 const zupernes_dots_per_line = @import("ppu/ppu.zig").DOTS_PER_SCANLINE;
 const zupernes_lines_per_frame = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
@@ -49,6 +50,9 @@ pub const Emulator = struct {
     // by bounded fixtures until interrupt sampling and state replay migrate.
     refresh_timeline: RefreshTimeline,
     ordered_last_cpu_cycle_start: u64,
+    // Mesen2 SnesCpuState::IrqLock: set when the most recent CPU cycle
+    // start serviced a DMA/HDMA transfer. Consumed by the interrupt model.
+    ordered_irq_lock: bool = false,
 
     /// Capture-only input recorder; see `recordInputs`. Deliberately NOT
     /// part of the savestate: a snapshot captures the machine, not the
@@ -316,12 +320,43 @@ pub const Emulator = struct {
     ) void {
         const self: *Emulator = @ptrCast(@alignCast(context));
         switch (phase) {
+            // The trailing clocks of a read belong to a cycle already begun.
             .read_trailing => {},
-            else => self.ordered_last_cpu_cycle_start = self.refresh_timeline.wall_master,
+            else => {
+                // A new CPU cycle begins. Mesen2 SnesCpu::ProcessCpuCycle
+                // services pending DMA/HDMA HERE, before the cycle's own
+                // clocks; the halt is measured against this cycle's length.
+                if (self.bus.dma.hasPendingTransfer()) {
+                    const speed: u32 = switch (phase) {
+                        .read_leading => masters + 4,
+                        .write => masters,
+                        else => 6,
+                    };
+                    var clock = OrderedDmaClock{ .emu = self };
+                    self.ordered_irq_lock = self.bus.dma.processPendingTransfers(&self.bus, &clock, speed);
+                } else {
+                    self.ordered_irq_lock = false;
+                }
+                // The cycle starts after any transfer it waited for.
+                self.ordered_last_cpu_cycle_start = self.refresh_timeline.wall_master;
+            },
         }
         var sink = OrderedClockSink{ .emu = self };
         self.refresh_timeline.advanceWorkOrdered(masters, &sink);
     }
+
+    /// The ordered wall as seen by the DMA controller: its current master
+    /// (for the reset-relative 8-master alignment) and DMA-owned advance.
+    const OrderedDmaClock = struct {
+        emu: *Emulator,
+        pub fn now(self: *const OrderedDmaClock) u64 {
+            return self.emu.refresh_timeline.wall_master;
+        }
+        pub fn advance(self: *OrderedDmaClock, masters: u32) void {
+            if (masters == 0) return;
+            self.emu.bus.tickDmaMasters(masters);
+        }
+    };
 
     fn advanceOrderedDmaClock(context: *anyopaque, masters: u32) void {
         const self: *Emulator = @ptrCast(@alignCast(context));
@@ -340,6 +375,27 @@ pub const Emulator = struct {
         const next_refresh = if (refresh >= wall) refresh else refresh_timing.no_refresh_scheduled;
         self.refresh_timeline = RefreshTimeline.restore(wall, next_refresh) catch unreachable;
         self.bus.connectOrderedClock(self, advanceOrderedClock, advanceOrderedDmaClock);
+    }
+
+    /// Master clocks the S-CPU spends leaving reset before its first opcode
+    /// fetch while the PPU, APU and refresh schedule already run. Mesen2
+    /// 3b058f9 SnesConsole::Reset calls IncMasterClockStartup (186 masters)
+    /// and then fetches the first opcode directly from the reset vector (the
+    /// vector itself is peeked, not a timed bus read). The value fixes the
+    /// CPU's phase against the reset-aligned 8-master DMA cadence and the
+    /// refresh/line schedule, so every absolute timestamp depends on it.
+    pub const power_on_startup_masters: u64 = 186;
+
+    /// Connect the ordered wall owner to a machine that has just been reset
+    /// (wall 0, beam at V=0 H=0) and run the power-on startup interval
+    /// through it, so the first instruction starts at the hardware phase.
+    /// Used by the timing-trace tool; the default runtime stays aggregate.
+    pub fn enableOrderedClockFromPowerOn(self: *Emulator) void {
+        std.debug.assert(absolutePpuMaster(&self.ppu) == 0);
+        self.enableOrderedClockFixture();
+        var sink = OrderedClockSink{ .emu = self };
+        self.refresh_timeline.advanceWorkOrdered(power_on_startup_masters, &sink);
+        self.ordered_last_cpu_cycle_start = self.refresh_timeline.wall_master;
     }
 
     const HdmaEvent = struct {
@@ -1238,64 +1294,106 @@ test "actual CPU mapped write takes effect after its complete access" {
     try std.testing.expectEqual(@as(u64, 582), emu.refresh_timeline.wall_master);
 }
 
-test "general DMA work crosses refresh on the same ordered wall owner" {
-    var emu = Emulator.init();
-    emu.setup();
-    emu.cpu.pc = 0;
-    emu.cpu.a = 0x01;
-    emu.bus.wram[0] = 0x8D; // STA $420B: start DMA channel 0
-    emu.bus.wram[1] = 0x0B;
-    emu.bus.wram[2] = 0x42;
-    emu.bus.wram[0x0100] = 0x0F;
-    emu.bus.dma.writeRegister(0x4300, 0x00); // A -> B, mode 0
-    emu.bus.dma.writeRegister(0x4301, 0x00); // $2100 INIDISP
-    emu.bus.dma.writeRegister(0x4302, 0x00);
-    emu.bus.dma.writeRegister(0x4303, 0x01);
-    emu.bus.dma.writeRegister(0x4304, 0x00);
-    emu.bus.dma.writeRegister(0x4305, 0x01);
-    emu.bus.dma.writeRegister(0x4306, 0x00);
+/// Records DMA/HDMA byte instants through the capture-only timing probe.
+const DmaInstants = struct {
+    emu: *Emulator,
+    reads: [8]u64 = undefined,
+    writes: [8]u64 = undefined,
+    read_count: usize = 0,
+    write_count: usize = 0,
 
-    // STA's mapped-write handler runs at 536. The byte's eight DMA clocks
-    // cross refresh at 538; its PPU write therefore occurs at wall 584.
-    emu.ppu.dot = 126;
-    emu.ppu.master_accum = 2;
-    emu.enableOrderedClockFixture();
-    emu.step();
+    fn record(context: *anyopaque, kind: bus_module.TimingProbeKind, addr: u24, value: u8) void {
+        _ = addr;
+        _ = value;
+        const self: *DmaInstants = @ptrCast(@alignCast(context));
+        const now = self.emu.refresh_timeline.wall_master;
+        switch (kind) {
+            .dma_read => {
+                self.reads[self.read_count] = now;
+                self.read_count += 1;
+            },
+            .dma_write => {
+                self.writes[self.write_count] = now;
+                self.write_count += 1;
+            },
+            else => {},
+        }
+    }
 
-    try std.testing.expectEqual(@as(u8, 0x0F), emu.ppu.inidisp);
-    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
-    try std.testing.expectEqual(@as(u16, 146), emu.ppu.render_events[0].dot);
-    try std.testing.expectEqual(@as(u64, 584), emu.refresh_timeline.wall_master);
-    try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
-}
+    fn install(self: *DmaInstants) void {
+        self.emu.bus.timing_probe = .{ .context = self, .record = DmaInstants.record };
+    }
+};
 
-test "DMA samples a mapped source between its two four-master halves" {
-    var emu = Emulator.init();
+/// One-byte channel-0 DMA from WRAM $00:0100 to $2100, triggered by the
+/// STA $420B at WRAM $0000 (the next instruction is BRK, WRAM being zero).
+fn setupOneByteDma(emu: *Emulator, source: u16) void {
     emu.setup();
     emu.cpu.pc = 0;
     emu.cpu.a = 0x01;
     emu.bus.wram[0] = 0x8D; // STA $420B
     emu.bus.wram[1] = 0x0B;
     emu.bus.wram[2] = 0x42;
+    emu.bus.wram[0x0100] = 0x0F;
     emu.bus.dma.writeRegister(0x4300, 0x00); // A -> B, mode 0
     emu.bus.dma.writeRegister(0x4301, 0x00); // $2100 INIDISP
-    emu.bus.dma.writeRegister(0x4302, 0x12);
-    emu.bus.dma.writeRegister(0x4303, 0x42);
-    emu.bus.dma.writeRegister(0x4304, 0x00); // source $00:4212 HVBJOY
+    emu.bus.dma.writeRegister(0x4302, @truncate(source));
+    emu.bus.dma.writeRegister(0x4303, @truncate(source >> 8));
+    emu.bus.dma.writeRegister(0x4304, 0x00);
     emu.bus.dma.writeRegister(0x4305, 0x01);
     emu.bus.dma.writeRegister(0x4306, 0x00);
+}
 
-    // STA reaches $420B at 1090. The source handler runs four masters later
-    // at 1094 (H=273 residual 2, active); the destination write runs at 1098.
-    // Charging all eight before the read would incorrectly copy HBlank bit 6.
-    emu.ppu.dot = 265;
+test "general DMA halts at the second CPU cycle boundary and crosses refresh" {
+    var emu = Emulator.init();
+    setupOneByteDma(&emu, 0x0100);
+    var instants = DmaInstants{ .emu = &emu };
+    instants.install();
+
+    // STA $420B: three WRAM fetches (8 each) + the six-master $420B write,
+    // starting at wall 482 -> the write takes effect at 512. That only
+    // RECORDS the request (Mesen2 SnesDmaController::Write).
+    emu.ppu.dot = 120;
+    emu.ppu.master_accum = 2;
     emu.enableOrderedClockFixture();
     emu.step();
+    try std.testing.expectEqual(@as(u64, 512), emu.refresh_timeline.wall_master);
+    try std.testing.expectEqual(@as(usize, 0), instants.read_count);
 
-    try std.testing.expectEqual(@as(u8, 0), emu.ppu.inidisp);
-    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
-    try std.testing.expectEqual(@as(u16, 274), emu.ppu.render_events[0].dot);
-    try std.testing.expectEqual(@as(u64, 1098), emu.refresh_timeline.wall_master);
+    // Boundary 1 (BRK opcode fetch, 512): start delay consumed; fetch to 520.
+    // Boundary 2 (signature fetch, 520): the halt. 520 is a multiple of 8,
+    // so SyncStartDma waits a full 8 (528); global overhead 8 (536); the
+    // channel's 8 masters reach refresh at 538 and stall 40 (584); byte:
+    // 4 masters -> source handler at 588, 4 more -> $2100 written at 592.
+    emu.step();
+    try std.testing.expectEqual(@as(usize, 1), instants.read_count);
+    try std.testing.expectEqual(@as(u64, 588), instants.reads[0]);
+    try std.testing.expectEqual(@as(u64, 592), instants.writes[0]);
+    try std.testing.expectEqual(@as(u8, 0x0F), emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(u16, 148), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
+}
+
+test "DMA byte halves put the source handler four masters before the destination" {
+    var emu = Emulator.init();
+    setupOneByteDma(&emu, 0x4212); // source $00:4212 HVBJOY
+    var instants = DmaInstants{ .emu = &emu };
+    instants.install();
+
+    // STA $420B from wall 1032 takes effect at 1062. Boundary 1 (1062)
+    // consumes the start delay; the BRK fetch ends at 1070. Boundary 2:
+    // 1070 & 7 = 6, so SyncStartDma waits 2 (1072); global 8 (1080);
+    // channel 8 (1088); 4 masters -> the $4212 handler runs at 1092
+    // (H=273, active display: bit 6 clear); 4 more -> the write at 1096.
+    // Because the controller is aligned to the reset-relative 8-master
+    // cadence, a source handler always lands at 4 mod 8 after reset.
+    emu.ppu.dot = 258;
+    emu.enableOrderedClockFixture();
+    emu.step();
+    emu.step();
+    try std.testing.expectEqual(@as(u64, 1092), instants.reads[0]);
+    try std.testing.expectEqual(@as(u64, 1096), instants.writes[0]);
+    try std.testing.expectEqual(@as(u8, 0), emu.ppu.inidisp & 0x40);
 }
 
 test "HDMA event and transfer work interrupt CPU work on the ordered owner" {
@@ -1607,7 +1705,7 @@ test "savestate timing profile rejects cross restore before mutation" {
     try std.testing.expectEqualSlices(u8, expected, actual);
 }
 
-test "copyright-free ROM exposes general DMA timing for cross oracle" {
+test "copyright-free dma-normal ROM matches Mesen2 absolute DMA instants" {
     var rom: [0x8000]u8 = @splat(0xFF);
     const program = [_]u8{
         0x78, 0xD8, 0xA2, 0xFF, 0x9A, // SEI; CLD; LDX #$FF; TXS
@@ -1636,23 +1734,29 @@ test "copyright-free ROM exposes general DMA timing for cross oracle" {
     var emu = Emulator.init();
     emu.setup();
     try emu.loadRom(&rom);
-    // The candidate's declared diagnostic origin is immediately after its
-    // untimed reset-vector reads: PPU wall 0, next refresh 538.
-    emu.enableOrderedClockFixture();
+    var instants = DmaInstants{ .emu = &emu };
+    instants.install();
+    // Power-on origin: 186 startup masters before the first fetch
+    // (Emulator.power_on_startup_masters, Mesen2 SnesConsole::Reset).
+    emu.enableOrderedClockFromPowerOn();
     while (emu.cpu.pc != 0x802D) emu.step();
     const sta_start = emu.refresh_timeline.wall_master;
-    emu.step();
+    emu.step(); // STA $420B: the write effect is at 682
+    const request = emu.refresh_timeline.wall_master;
+    while (instants.write_count == 0) emu.step();
 
-    // Candidate chronology: STA's three accesses end at its $420B handler at
-    // 456, then the synchronous controller samples at 460 and writes at 464.
-    // The matching Mesen ROM observes handler/source/destination at
-    // 682/716/720: the byte halves agree, while this path lacks the generic
-    // CPU halt, alignment, and controller overhead before the first source.
-    try std.testing.expectEqual(@as(u64, 426), sta_start);
-    try std.testing.expectEqual(@as(u64, 464), emu.refresh_timeline.wall_master);
+    // This is byte-for-byte the program test/mesen/timing_path_probe.mjs
+    // generates for "dma-normal". Mesen2 3b058f9 (certified sandbox,
+    // test/timing/mesen_timing_path.mjs) records the $420B write at master
+    // 682, the source read at 716 and the $2100 write at 720; the ordered
+    // controller must reproduce those absolute instants.
+    try std.testing.expectEqual(@as(u64, 652), sta_start);
+    try std.testing.expectEqual(@as(u64, 682), request);
+    try std.testing.expectEqual(@as(u64, 716), instants.reads[0]);
+    try std.testing.expectEqual(@as(u64, 720), instants.writes[0]);
     try std.testing.expectEqual(@as(u8, 0), emu.ppu.inidisp);
     try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
-    try std.testing.expectEqual(@as(u16, 116), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u16, 180), emu.ppu.render_events[0].dot);
 }
 
 const HvbjoyReadProbe = struct {
@@ -1903,3 +2007,4 @@ test "$4212 CPU sample validity is transient across savestate restore" {
     try std.testing.expectError(error.ShortBuffer, emu.readState(&.{}));
     try std.testing.expect(emu.bus.read(0, 0x4212) & 0x40 == 0);
 }
+

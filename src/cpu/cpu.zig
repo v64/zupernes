@@ -255,6 +255,9 @@ pub const Cpu = struct {
         // =====================================================================
         const trace_pc = self.pc;
         const i_before = self.p.i;
+        // Mesen2's exec callback fires as the instruction begins (its
+        // debugger's ProcessInstruction runs before the opcode fetch cycle).
+        self.bus.probe(.exec, (@as(u24, self.pbr) << 16) | trace_pc, 0);
         const opcode = self.fetchByte();
 
         // CPU trace controlled by debug.zig configuration
@@ -315,6 +318,7 @@ pub const Cpu = struct {
 
     fn handleNmi(self: *Cpu) void {
         self.cycles = 0;
+        self.bus.probe(.nmi_entry, (@as(u24, self.pbr) << 16) | self.pc, 0);
 
         if (self.emulation_mode) {
             // Emulation mode: push PC and P
@@ -343,6 +347,7 @@ pub const Cpu = struct {
 
     fn handleIrq(self: *Cpu) void {
         self.cycles = 0;
+        self.bus.probe(.irq_entry, (@as(u24, self.pbr) << 16) | self.pc, 0);
 
         if (self.emulation_mode) {
             self.pushByte(@truncate(self.pc >> 8));
@@ -520,6 +525,7 @@ pub const Cpu = struct {
         _ = self.beginReadAccess(self.pbr, self.pc);
         const value = self.bus.read(self.pbr, self.pc);
         self.finishReadAccess();
+        self.bus.probe(.cpu_read, (@as(u24, self.pbr) << 16) | self.pc, value);
         self.pc +%= 1;
         self.cycles += 1;
         return value;
@@ -543,6 +549,7 @@ pub const Cpu = struct {
         self.cycles += 1;
         const value = self.bus.read(bank, addr);
         self.finishReadAccess();
+        self.bus.probe(.cpu_read, (@as(u24, bank) << 16) | addr, value);
         return value;
     }
 
@@ -570,6 +577,7 @@ pub const Cpu = struct {
                 });
             }
         }
+        self.bus.probe(.cpu_write, (@as(u24, bank) << 16) | addr, value);
         self.bus.write(bank, addr, value);
     }
 
@@ -580,6 +588,7 @@ pub const Cpu = struct {
 
     fn pushByte(self: *Cpu, value: u8) void {
         self.beforeWriteAccess(0, self.sp);
+        self.bus.probe(.cpu_write, self.sp, value);
         self.bus.write(0, self.sp, value);
         self.sp -%= 1;
         if (self.emulation_mode) {
@@ -602,6 +611,7 @@ pub const Cpu = struct {
         self.cycles += 1;
         const value = self.bus.read(0, self.sp);
         self.finishReadAccess();
+        self.bus.probe(.cpu_read, self.sp, value);
         return value;
     }
 
@@ -619,6 +629,7 @@ pub const Cpu = struct {
     // instructions (PHA/PLA/JSR/RTS/BRK/...) keep the page-1 wrap above.
     fn pushByteRaw(self: *Cpu, value: u8) void {
         self.beforeWriteAccess(0, self.sp);
+        self.bus.probe(.cpu_write, self.sp, value);
         self.bus.write(0, self.sp, value);
         self.sp -%= 1;
         self.cycles += 1;
@@ -635,6 +646,7 @@ pub const Cpu = struct {
         self.cycles += 1;
         const value = self.bus.read(0, self.sp);
         self.finishReadAccess();
+        self.bus.probe(.cpu_read, self.sp, value);
         return value;
     }
 

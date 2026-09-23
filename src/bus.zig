@@ -65,6 +65,23 @@ pub const CpuReadSampleBeam = struct {
     master_residual: u2,
 };
 
+/// Capture-only timing probe (the timing-trace tool; see
+/// src/timing_trace.zig). Like WramTrace it only OBSERVES: every call site
+/// passes the address/value it was already using, and a null probe costs a
+/// single never-taken branch. Events are reported at the instants Mesen2's
+/// Lua callbacks use, so traces compare directly with the Mesen probes:
+///   exec       instruction start, before its opcode fetch cycle (value 0)
+///   cpu_read   CPU read complete (after the four trailing clocks)
+///   cpu_write  CPU write effect (after the full access)
+///   dma_read   DMA/HDMA source handler (after the first four masters)
+///   dma_write  DMA/HDMA destination effect (after the second four)
+///   irq_entry / nmi_entry  interrupt sequence begins (value 0)
+pub const TimingProbeKind = enum { exec, cpu_read, cpu_write, dma_read, dma_write, irq_entry, nmi_entry };
+pub const TimingProbe = struct {
+    context: *anyopaque,
+    record: *const fn (context: *anyopaque, kind: TimingProbeKind, addr: u24, value: u8) void,
+};
+
 pub const WramWrite = struct {
     addr: u24, // WRAM offset 0..$1FFFF (bank $7E = $00000, $7F = $10000)
     value: u8, // the byte written
@@ -337,6 +354,9 @@ pub const Bus = struct {
     // comparison.
     dma_masters: u32 = 0,
 
+    // Capture-only timing probe; null except under the timing-trace tool.
+    timing_probe: ?TimingProbe = null,
+
     // Optional execution-ordered clock connection. The canonical runtime
     // remains on the aggregate path until interrupt sampling and state replay
     // migrate; bounded CPU/DMA fixtures install these callbacks explicitly.
@@ -392,6 +412,11 @@ pub const Bus = struct {
         self.ppu_cpu_timing_base = 0;
         self.ppu_write_timing_offset = 0;
         self.ppu.setWriteTimingOffset(0);
+    }
+
+    /// Report one observed bus event to the timing probe, if installed.
+    pub inline fn probe(self: *Bus, kind: TimingProbeKind, addr: u24, value: u8) void {
+        if (self.timing_probe) |p| p.record(p.context, kind, addr, value);
     }
 
     pub fn orderedClockConnected(self: *const Bus) bool {
@@ -1091,7 +1116,11 @@ pub const Bus = struct {
 
             // DMA enable - triggers DMA transfer
             0x420B => {
-                if (value != 0) {
+                if (self.orderedClockConnected()) {
+                    // Hardware defers the transfer to a later CPU cycle
+                    // boundary (see Dma.processPendingTransfers).
+                    self.dma.requestGeneralDma(value);
+                } else if (value != 0) {
                     _ = self.dma.runDma(value, self);
                 }
             },

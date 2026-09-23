@@ -110,6 +110,29 @@ pub fn build(b: *std.Build) void {
         run_screenshot.addArgs(args);
     }
 
+    // Ordered-timing trace: runs a ROM from power-on on the ordered wall
+    // owner and writes Mesen-comparable bus-event timestamps (TSV).
+    //   zig build timing-trace -- <rom.sfc> <out.tsv> [--frames N] [--exec LO HI]
+    const timing_trace = b.addExecutable(.{
+        .name = "timing-trace",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/timing_trace.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zupernes", .module = emu_mod },
+            },
+        }),
+    });
+    b.installArtifact(timing_trace);
+    const timing_trace_step = b.step("timing-trace", "Trace ordered-clock bus event timestamps");
+    const run_timing_trace = b.addRunArtifact(timing_trace);
+    timing_trace_step.dependOn(&run_timing_trace.step);
+    run_timing_trace.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_timing_trace.addArgs(args);
+    }
+
     // Savestate verifier: proves a resumed run is bit-identical to a
     // from-power-on run of the same input.
     //   zig build savestate-verify -- <rom.sfc> <frames> <snapshot> [--movie F]
