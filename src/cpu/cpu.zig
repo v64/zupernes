@@ -115,6 +115,9 @@ pub const Cpu = struct {
 
     // WAI (wait for interrupt) state
     waiting: bool,
+    // Ordered profile (Mesen2 SnesCpu::_waiOver): a halted cycle's start saw
+    // a wake condition, so the NEXT halted cycle leaves WAI.
+    wai_over: bool = false,
     // After an interrupt input wakes WAI, hardware spends two internal CPU
     // cycles (12 master clocks) ending the instruction before either taking
     // the interrupt or resuming the next opcode.
@@ -151,6 +154,10 @@ pub const Cpu = struct {
     }
 
     fn wakeForInterrupt(self: *Cpu) void {
+        // The ordered profile ends WAI through its own two-stage wake
+        // (wai_over, Mesen2 ProcessHaltedState); the aggregate runtime keeps
+        // the pin's immediate wake plus resume delay.
+        if (self.bus.orderedClockConnected()) return;
         if (self.waiting) {
             self.waiting = false;
             self.wai_resume_cycles = 2;
@@ -194,6 +201,7 @@ pub const Cpu = struct {
         self.nmi_latched = false;
         self.irq_pending = false;
         self.waiting = false;
+        self.wai_over = false;
         self.wai_resume_cycles = 0;
         self.instruction_count = 0;
         self.total_cycles = 0;
@@ -243,6 +251,21 @@ pub const Cpu = struct {
         }
 
         // WAI instruction puts CPU to sleep until next interrupt
+        if (self.waiting and self.bus.orderedClockConnected()) {
+            // Mesen2 SnesCpu::ProcessHaltedState: each halted step is one
+            // six-master idle cycle. Its cycle start (Emulator) records a
+            // wake condition in `wai_over`; the step AFTER that leaves the
+            // halt, and only then are interrupts checked.
+            const over = self.wai_over;
+            self.cycles = 1;
+            if (over) {
+                self.waiting = false;
+                self.wai_over = false;
+            }
+            self.irq_sample_i = self.p.i;
+            self.total_cycles += self.cycles;
+            return self.cycles;
+        }
         if (self.waiting) {
             self.cycles = 1;
             self.irq_sample_i = self.p.i;
@@ -3363,7 +3386,18 @@ pub const Cpu = struct {
             0xEA => self.idleOrReadBeforeEffect(), // NOP
             0x42 => _ = self.fetchByte(), // WDM (2-byte NOP)
             0xDB => self.cycles += 2, // STP
-            0xCB => self.cycles += 2, // WAI
+            0xCB => { // WAI
+                if (self.bus.orderedClockConnected()) {
+                    // Mesen2 opcode table: WAI has no addressing-mode cycles;
+                    // the opcode fetch is followed by halted idle cycles.
+                    self.waiting = true;
+                    self.wai_over = false;
+                } else {
+                    // Aggregate runtime (pin behavior): charged as two
+                    // internal cycles and execution continues.
+                    self.cycles += 2;
+                }
+            },
             0x00 => { // BRK
                 // The signature byte is a real operand fetch (Mesen2 opcode
                 // table: AddrMode_Imm8 then BRK), not a silent PC skip.

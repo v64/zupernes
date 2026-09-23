@@ -396,8 +396,25 @@ pub const Bus = struct {
         self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
         self.interrupt_horizon_master = absolutePpuMaster(self.ppu);
         self.cpu_read_sample_valid = false;
-        self.irq_level_at_instruction_start = self.irq_flag;
-        self.irq_transition_count = 0;
+        if (self.orderedClockConnected()) {
+            // The CPU's IRQ input lags the $4211 flag by one timer tick on
+            // the ordered profile, so a rise can still be pending when an
+            // instruction begins. Seed the baseline from the INPUT level at
+            // this instant and carry any still-future transitions forward.
+            const start = self.interrupt_horizon_master;
+            self.irq_level_at_instruction_start = self.irqLineAt(start);
+            var kept: u8 = 0;
+            for (self.irq_transitions[0..self.irq_transition_count]) |t| {
+                if (t.master > start) {
+                    self.irq_transitions[kept] = t;
+                    kept += 1;
+                }
+            }
+            self.irq_transition_count = kept;
+        } else {
+            self.irq_level_at_instruction_start = self.irq_flag;
+            self.irq_transition_count = 0;
+        }
         self.nmi_edge_count = 0;
     }
 

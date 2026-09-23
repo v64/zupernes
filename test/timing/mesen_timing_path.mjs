@@ -42,7 +42,7 @@ function must(cmd, args, label) {
 
 must("node", ["test/mesen/timing_path_probe.mjs", probes], "probe generation");
 const irqSweep = [];
-for (let h = 100; h <= 140; h += 2) irqSweep.push(`irq-h${h}`);
+for (let h = 100; h <= 140; h += 2) irqSweep.push(`irq-h${h}`, `wai-h${h}`);
 const cases = ["dma-normal", "dma-refresh", "dma-reverse", "dma-two-channel", "clc-refresh", "hdma", "irq", ...irqSweep];
 for (const name of cases) {
   must(mesen, ["--testrunner", join(probes, name, "probe.sfc"), join(probes, name, "probe.lua"), "--timeout=30"], `Mesen ${name}`);

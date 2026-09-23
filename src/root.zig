@@ -194,6 +194,13 @@ pub const Emulator = struct {
             const instruction_end = absolutePpuMaster(&self.ppu);
             std.debug.assert(instruction_end == self.refresh_timeline.wall_master);
 
+            // While halted in WAI, interrupts are not checked (Mesen2 only
+            // calls CheckForInterrupts when leaving the halted state).
+            if (self.cpu.waiting) {
+                self.bus.syncInterruptFlagsTo(instruction_end);
+                if (self.bus.nmiEdgeInRange(instruction_start, instruction_end)) self.cpu.latchNmi();
+                return;
+            }
             const sample_master = self.ordered_last_cpu_cycle_start;
             // Mesen2 SnesCpu::DetectNmiSignalEdge: when the final cycle's
             // start serviced a DMA/HDMA (IrqLock), interrupt recognition
@@ -368,6 +375,17 @@ pub const Emulator = struct {
                 }
                 // The cycle starts after any transfer it waited for.
                 self.ordered_last_cpu_cycle_start = self.refresh_timeline.wall_master;
+                // WAI wake detection happens at every cycle start (Mesen2
+                // DetectNmiSignalEdge): the IRQ input ends WAI even with I
+                // set; an NMI edge does too.
+                if (self.cpu.waiting) {
+                    const now = self.refresh_timeline.wall_master;
+                    if (self.bus.irqLineAt(now) or self.cpu.nmi_latched or
+                        self.bus.nmiEdgeInRange(self.ordered_instruction_start, now))
+                    {
+                        self.cpu.wai_over = true;
+                    }
+                }
             },
         }
         var sink = OrderedClockSink{ .emu = self };
@@ -2110,4 +2128,60 @@ test "ordered profile alternates 357368 and 357364 master fields" {
         refresh_timing.refreshMasterForLineStart(357368 + 241 * 1364 - 4),
     );
     try std.testing.expect(emu.ppu.odd_frame); // field 3 is odd (0 even, 1 odd, ...)
+}
+
+test "WAI wakes through Mesen2's two-stage halted cycles" {
+    // Byte-for-byte test/mesen/timing_path_probe.mjs "wai-h100": H-IRQ at
+    // htime 100, CLI, then WAI; BRA. The handler at $8100 acknowledges, INCs
+    // $0100 and returns. Mesen2 3b058f9 (certified sandbox) enters the
+    // handler at master 488 and performs the INC's write at 598.
+    //
+    // Derivation: WAI's fetch ends at 404; halted 6-master idles start at
+    // 404, 410, 416, 422, ... The CPU IRQ input rises at 18 + 4*100 = 418
+    // (TIMEUP flag at 414), so the idle starting at 422 records the wake,
+    // the idle at 428 leaves the halt, and the interrupt sequence (read at
+    // PC 8, idle 6, three pushes and two vector reads at 8) runs 434-488.
+    var rom: [0x8000]u8 = @splat(0xFF);
+    const program = [_]u8{
+        0x78, 0xD8, 0xA2, 0xFF, 0x9A, // SEI; CLD; LDX #$FF; TXS
+        0xA9, 100, 0x8D, 0x07, 0x42, // HTIMEL = 100
+        0xA9, 0x00, 0x8D, 0x08, 0x42, // HTIMEH = 0
+        0xA9, 0x10, 0x8D, 0x00, 0x42, // NMITIMEN: H-IRQ
+        0x58, // CLI
+        0xCB, 0x80, 0xFD, // WAI; BRA -3
+    };
+    @memcpy(rom[0..program.len], &program);
+    rom[0x100..0x107].* = .{ 0xAD, 0x11, 0x42, 0xEE, 0x00, 0x01, 0x40 }; // LDA $4211; INC $0100; RTI
+    rom[0x7FD5] = 0x20;
+    rom[0x7FD6] = 0x00;
+    rom[0x7FD7] = 0x08;
+    rom[0x7FD8] = 0x00;
+    rom[0x7FD9] = 0x01;
+    rom[0x7FDA] = 0x33;
+    rom[0x7FFC] = 0x00;
+    rom[0x7FFD] = 0x80;
+    rom[0x7FFE] = 0x00; // IRQ/BRK vector (emulation) -> $8100
+    rom[0x7FFF] = 0x81;
+
+    const Seen = struct {
+        emu: *Emulator,
+        entry: u64 = 0,
+        write: u64 = 0,
+        fn record(context: *anyopaque, kind: bus_module.TimingProbeKind, addr: u24, value: u8) void {
+            _ = value;
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const now = self.emu.refresh_timeline.wall_master;
+            if (kind == .exec and addr == 0x008100 and self.entry == 0) self.entry = now;
+            if (kind == .cpu_write and addr == 0x000100 and self.write == 0) self.write = now;
+        }
+    };
+    var emu = Emulator.init();
+    emu.setup();
+    try emu.loadRom(&rom);
+    var seen = Seen{ .emu = &emu };
+    emu.bus.timing_probe = .{ .context = &seen, .record = Seen.record };
+    emu.enableOrderedClockFromPowerOn();
+    while (seen.write == 0) emu.step();
+    try std.testing.expectEqual(@as(u64, 488), seen.entry);
+    try std.testing.expectEqual(@as(u64, 598), seen.write);
 }

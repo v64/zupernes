@@ -282,6 +282,10 @@ pub const state_len: usize = blk: {
         2 + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 8 + 4 + 1 + 4 + 4;
     // PPU field geometry (v8): short_lines, odd_frame, frame_start_master.
     n += 1 + 1 + 8;
+    // CPU ordered WAI wake flag (v8).
+    n += 1;
+    // Bus IRQ input baseline, transition count and 8 transitions (v8).
+    n += 1 + 1 + 8 * (8 + 1);
     // PPU mid-scanline render replay: line-start state, queue metadata, and a
     // fixed-size event array. Unused event slots are encoded as zeroes so the
     // snapshot stays deterministic and state_len remains a compile-time guard.
@@ -344,6 +348,7 @@ pub fn write(
     putBool(dst, &at, cpu.nmi_latched);
     putBool(dst, &at, cpu.irq_pending);
     putBool(dst, &at, cpu.waiting);
+    putBool(dst, &at, cpu.wai_over); // v8: ordered WAI two-stage wake
     putU8(dst, &at, cpu.wai_resume_cycles);
 
     // ---- PPU memories ----
@@ -479,6 +484,17 @@ pub fn write(
     putBool(dst, &at, bus.nmi_flag);
     putBool(dst, &at, bus.irq_flag);
     putU64(dst, &at, bus.irq_hold_until_master);
+    // v8: the CPU IRQ input can lag the $4211 flag by one timer tick on the
+    // ordered profile, so a pending input rise is real state across an
+    // instruction boundary. Serialize the input baseline and transitions.
+    putBool(dst, &at, bus.irq_level_at_instruction_start);
+    putU8(dst, &at, bus.irq_transition_count);
+    for (bus.irq_transitions, 0..) |t, i| {
+        // Unused slots are written as zeroes so snapshots stay deterministic.
+        const used = i < bus.irq_transition_count;
+        putU64(dst, &at, if (used) t.master else 0);
+        putBool(dst, &at, used and t.level);
+    }
     putBool(dst, &at, bus.dsp1_present);
     putU32(dst, &at, bus.writer_pc);
     putU32(dst, &at, bus.dsp_accum);
@@ -571,6 +587,7 @@ pub fn read(
     cpu.nmi_latched = getBool(src, &at);
     cpu.irq_pending = getBool(src, &at);
     cpu.waiting = getBool(src, &at);
+    cpu.wai_over = getBool(src, &at);
     cpu.wai_resume_cycles = getU8(src, &at);
 
     // ---- PPU memories ----
@@ -702,6 +719,12 @@ pub fn read(
     bus.nmi_flag = getBool(src, &at);
     bus.irq_flag = getBool(src, &at);
     bus.irq_hold_until_master = getU64(src, &at);
+    bus.irq_level_at_instruction_start = getBool(src, &at);
+    bus.irq_transition_count = getU8(src, &at);
+    for (&bus.irq_transitions) |*t| {
+        t.master = getU64(src, &at);
+        t.level = getBool(src, &at);
+    }
     bus.dsp1_present = getBool(src, &at);
     bus.writer_pc = @truncate(getU32(src, &at));
     bus.dsp_accum = getU32(src, &at);

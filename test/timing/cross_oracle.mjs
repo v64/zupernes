@@ -112,8 +112,8 @@ for (const name of ["dma-normal", "dma-refresh", "dma-reverse", "dma-two-channel
 
 // ---- IRQ sweep: interrupts sampled on every cycle of a NOP/JMP loop,
 // including NOP's implied IdleOrRead (a real read when an IRQ is imminent).
-for (let h = 100; h <= 140; h += 2) {
-  const name = `irq-h${h}`;
+for (const kind of ["irq", "wai"]) for (let h = 100; h <= 140; h += 2) {
+  const name = `${kind}-h${h}`;
   const m = tsv(join(probes, name, "trace.tsv"));
   const z = trace(name, 1, ["008100", "008100"]);
   compare(name, "handler entries", m.filter((r) => r.event === "handler_exec"), z.filter((r) => r.event === "exec"), m.filter((r) => r.event === "handler_exec").length);

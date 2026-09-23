@@ -192,4 +192,33 @@ emu.addMemoryCallback(function(a,v) row("handler_write",a,v); n=n+1; if n>=4 the
 `);
 }
 
+// WAI sweep: the CPU halts in WAI and is woken by the H-IRQ. Mesen2 runs
+// six-master idle cycles while halted (SnesCpu::ProcessHaltedState) and
+// services the IRQ one cycle after the wake condition is seen.
+for (let htime = 100; htime <= 140; htime += 2) {
+  const code = [0x78, 0xd8, 0xa2, 0xff, 0x9a];
+  ldaSta(code, htime, 0x4207);
+  ldaSta(code, 0, 0x4208);
+  ldaSta(code, 0x10, 0x4200);
+  code.push(0x58); // CLI
+  const loop = 0x8000 + code.length;
+  code.push(0xcb, 0x80, 0xfd); // WAI; BRA loop
+  const name = `wai-h${htime}`;
+  const dir = emitRom(name, `T3 WAI H${htime}`, code, rom => {
+    rom.set([0xad, 0x11, 0x42, 0xee, 0x00, 0x01, 0x40], 0x100); // ack, marker, RTI
+    rom[0x7ffe] = 0x00;
+    rom[0x7fff] = 0x81;
+  });
+  const trace = join(dir, "trace.tsv");
+  writeFileSync(join(dir, "probe.lua"), `local output=assert(io.open(${JSON.stringify(trace)},"w"))
+output:write("event\\taddress\\tvalue\\tmaster\\tline\\thclock\\tspc_cycle\\n")
+local n=0
+local function row(kind,a,v)
+ local s=emu.getState(); output:write(string.format("%s\\t%06x\\t%02x\\t%d\\t%d\\t%d\\t%d\\n",kind,a or 0,v or 0,s["masterClock"],s["ppu.scanline"],s["memoryManager.hClock"],s["spc.cycle"]))
+end
+emu.addMemoryCallback(function(a) row("handler_exec",a,0) end,emu.callbackType.exec,0x008100,0x008100,emu.cpuType.snes,emu.memType.snesMemory)
+emu.addMemoryCallback(function(a,v) row("handler_write",a,v); n=n+1; if n>=4 then output:close();emu.stop(0) end end,emu.callbackType.write,0x000100,0x000100,emu.cpuType.snes,emu.memType.snesMemory)
+`);
+}
+
 console.log(`wrote timing probes under ${outDir}`);
