@@ -120,6 +120,17 @@ for (const kind of ["irq", "wai"]) for (let h = 100; h <= 140; h += 2) {
   compare(name, "handler writes", m.filter((r) => r.event === "handler_write"), z.filter((r) => r.event === "cpu_write" && r.address === "000100"), m.filter((r) => r.event === "handler_write").length);
 }
 
+// ---- NMI sweep: V=225 NMI edge against NOP/JMP and WAI loops at ten
+// alignments; four NMIs (frames) each.
+for (const loop of ["nop", "wai"]) for (let k = 0; k <= 9; k++) {
+  const name = `nmi-${loop}-k${k}`;
+  const m = tsv(join(probes, name, "trace.tsv"));
+  const z = trace(name, 5, ["008100", "008100"]);
+  const n = m.filter((r) => r.event === "handler_exec").length;
+  compare(name, "handler entries", m.filter((r) => r.event === "handler_exec"), z.filter((r) => r.event === "exec"), n);
+  compare(name, "handler writes", m.filter((r) => r.event === "handler_write"), z.filter((r) => r.event === "cpu_write" && r.address === "000100"), n);
+}
+
 writeFileSync(join(out, "cross-oracle.json"), JSON.stringify(results, null, 2) + "\n");
 const failed = results.filter((r) => !r.pass).length;
 console.log(`${failed ? "FAIL" : "PASS"}: ${results.length - failed}/${results.length} event streams agree exactly`);

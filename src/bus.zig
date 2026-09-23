@@ -411,11 +411,20 @@ pub const Bus = struct {
                 }
             }
             self.irq_transition_count = kept;
+            // Likewise a CPU NMI edge can lie just past this instant.
+            var kept_nmi: u8 = 0;
+            for (self.nmi_edges[0..self.nmi_edge_count]) |edge| {
+                if (edge > start) {
+                    self.nmi_edges[kept_nmi] = edge;
+                    kept_nmi += 1;
+                }
+            }
+            self.nmi_edge_count = kept_nmi;
         } else {
             self.irq_level_at_instruction_start = self.irq_flag;
             self.irq_transition_count = 0;
+            self.nmi_edge_count = 0;
         }
-        self.nmi_edge_count = 0;
     }
 
     pub fn connectOrderedClock(
@@ -615,7 +624,13 @@ pub const Bus = struct {
                 const nmi_line_was_active = self.nmi_flag and (self.nmitimen & 0x80) != 0;
                 self.nmi_flag = true;
                 if (!nmi_line_was_active and (self.nmitimen & 0x80) != 0) {
-                    self.recordNmiEdge(event_at);
+                    // Mesen2 InternalRegisters::ProcessIrqCounters: RDNMI
+                    // ($4210 bit 7) sets at H=2 of the NMI line, but the
+                    // CPU's NMI signal is raised at H=6 (SnesCpu::
+                    // SetNmiFlag; "the CPU behaves like it was set on H=6
+                    // instead of H=2"). The ordered profile records the CPU
+                    // edge there; the aggregate runtime keeps the pin's.
+                    self.recordNmiEdge(if (self.orderedClockConnected()) event_at + 4 else event_at);
                 }
                 if ((self.nmitimen & 0x01) != 0) self.autoJoypadRead();
             }

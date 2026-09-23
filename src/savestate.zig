@@ -286,6 +286,8 @@ pub const state_len: usize = blk: {
     n += 1;
     // Bus IRQ input baseline, transition count and 8 transitions (v8).
     n += 1 + 1 + 8 * (8 + 1);
+    // Bus pending NMI edges: count and four edges (v8).
+    n += 1 + 4 * 8;
     // PPU mid-scanline render replay: line-start state, queue metadata, and a
     // fixed-size event array. Unused event slots are encoded as zeroes so the
     // snapshot stays deterministic and state_len remains a compile-time guard.
@@ -495,6 +497,10 @@ pub fn write(
         putU64(dst, &at, if (used) t.master else 0);
         putBool(dst, &at, used and t.level);
     }
+    // v8: pending CPU NMI edges (the ordered profile's H=6 edge can lie
+    // past an instruction boundary).
+    putU8(dst, &at, bus.nmi_edge_count);
+    for (bus.nmi_edges, 0..) |edge, i| putU64(dst, &at, if (i < bus.nmi_edge_count) edge else 0);
     putBool(dst, &at, bus.dsp1_present);
     putU32(dst, &at, bus.writer_pc);
     putU32(dst, &at, bus.dsp_accum);
@@ -725,6 +731,8 @@ pub fn read(
         t.master = getU64(src, &at);
         t.level = getBool(src, &at);
     }
+    bus.nmi_edge_count = getU8(src, &at);
+    for (&bus.nmi_edges) |*edge| edge.* = getU64(src, &at);
     bus.dsp1_present = getBool(src, &at);
     bus.writer_pc = @truncate(getU32(src, &at));
     bus.dsp_accum = getU32(src, &at);

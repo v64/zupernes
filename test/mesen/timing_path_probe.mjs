@@ -221,4 +221,35 @@ emu.addMemoryCallback(function(a,v) row("handler_write",a,v); n=n+1; if n>=4 the
 `);
 }
 
+// NMI sweep: NMI enabled, then a NOP/JMP loop or a WAI; BRA loop, entered
+// after k CLC fillers (14 masters each) so the V=225 NMI edge meets
+// different cycles. The NMI handler at $8100 INCs $0100 and returns; four
+// NMIs (four frames) are recorded per case.
+for (const waiLoop of [false, true]) {
+  for (let k = 0; k <= 9; k++) {
+    const code = [0x78, 0xd8, 0xa2, 0xff, 0x9a];
+    ldaSta(code, 0x80, 0x4200); // NMITIMEN: NMI only
+    for (let i = 0; i < k; i++) code.push(0x18);
+    const loop = 0x8000 + code.length;
+    if (waiLoop) code.push(0xcb, 0x80, 0xfd); // WAI; BRA loop
+    else code.push(0xea, 0x4c, loop & 0xff, loop >> 8); // NOP; JMP loop
+    const name = `nmi-${waiLoop ? "wai" : "nop"}-k${k}`;
+    const dir = emitRom(name, `T3 NMI ${waiLoop ? "W" : "N"}${k}`, code, rom => {
+      rom.set([0xad, 0x10, 0x42, 0xee, 0x00, 0x01, 0x40], 0x100); // LDA $4210; INC $0100; RTI
+      rom[0x7ffa] = 0x00; // emulation-mode NMI vector -> $8100
+      rom[0x7ffb] = 0x81;
+    });
+    const trace = join(dir, "trace.tsv");
+    writeFileSync(join(dir, "probe.lua"), `local output=assert(io.open(${JSON.stringify(trace)},"w"))
+output:write("event\\taddress\\tvalue\\tmaster\\tline\\thclock\\tspc_cycle\\n")
+local n=0
+local function row(kind,a,v)
+ local s=emu.getState(); output:write(string.format("%s\\t%06x\\t%02x\\t%d\\t%d\\t%d\\t%d\\n",kind,a or 0,v or 0,s["masterClock"],s["ppu.scanline"],s["memoryManager.hClock"],s["spc.cycle"]))
+end
+emu.addMemoryCallback(function(a) row("handler_exec",a,0) end,emu.callbackType.exec,0x008100,0x008100,emu.cpuType.snes,emu.memType.snesMemory)
+emu.addMemoryCallback(function(a,v) row("handler_write",a,v); n=n+1; if n>=4 then output:close();emu.stop(0) end end,emu.callbackType.write,0x000100,0x000100,emu.cpuType.snes,emu.memType.snesMemory)
+`);
+  }
+}
+
 console.log(`wrote timing probes under ${outDir}`);

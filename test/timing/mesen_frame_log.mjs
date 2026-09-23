@@ -20,6 +20,9 @@ const argv = process.argv.slice(2);
 let dumpEvery = 0;
 const di = argv.indexOf("--dump-every");
 if (di >= 0) { dumpEvery = Number(argv[di + 1]); argv.splice(di, 2); }
+let execAddr = null, execEvery = 0;
+const ei = argv.indexOf("--exec-dump");
+if (ei >= 0) { execAddr = argv[ei + 1]; execEvery = Number(argv[ei + 2]); argv.splice(ei, 3); }
 const [romArg, framesArg, outArg, ...addrs] = argv;
 if (!romArg || !framesArg || !outArg || addrs.length === 0) {
   console.error("usage: mesen_frame_log.mjs <rom> <frames> <out.tsv> ADDR...");
@@ -52,6 +55,19 @@ emu.addEventCallback(function()
   end
   if n >= ${Number(framesArg)} then out:close(); emu.stop(0) end
 end, emu.eventType.startFrame)
+${execAddr ? `local ec = 0
+emu.addMemoryCallback(function()
+  ec = ec + 1
+  if ec % ${execEvery} == 0 then
+    local d = assert(io.open(${JSON.stringify(out)} .. ".exec" .. ec .. ".wram", "wb"))
+    local chunk = {}
+    for a = 0, 0x1FFFF do
+      chunk[#chunk + 1] = string.char(emu.read(a, emu.memType.snesWorkRam))
+      if #chunk == 4096 then d:write(table.concat(chunk)); chunk = {} end
+    end
+    d:close()
+  end
+end, emu.callbackType.exec, 0x${execAddr}, 0x${execAddr}, emu.cpuType.snes, emu.memType.snesMemory)` : ""}
 `;
 const luaPath = join(work, "frame-log.lua");
 writeFileSync(luaPath, lua);
