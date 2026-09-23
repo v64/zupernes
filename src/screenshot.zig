@@ -10,6 +10,10 @@
 //   screenshot <rom.sfc> <frames> <out.ppm> [options]
 //   screenshot <rom.sfc> <frames> <out.ppm> --every N <outdir>
 //
+// Debugging:
+//   --trace-wram ADDR   print every frame on which the WRAM byte at offset
+//                       ADDR (0-0x1FFFF, $7E0000-based) changes value
+//
 // Timing profile:
 //   --ordered           run on the ordered wall owner from power-on
 //
@@ -355,6 +359,10 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, args[i], "--trace-wram")) {
             i += 1;
             trace_wram = try std.fmt.parseInt(usize, args[i], 0);
+            if (trace_wram.? >= 128 * 1024) {
+                std.debug.print("--trace-wram address out of range (0-0x1FFFF): {s}\n", .{args[i]});
+                return error.BadArgs;
+            }
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
             return error.BadArgs;
