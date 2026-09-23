@@ -181,7 +181,7 @@ const res = await fetch(new URL("../zupernes.wasm", import.meta.url), { cache: "
       case "__allocChurn": {
         // Test-only (?test=1): the reviewer's allocation scenario against
         // the REAL provider: N iterations of alloc A, alloc B, free B,
-        // free A (valid cross-order matching frees). Returns the worker's
+        // free A (matching sizes, most-recent-first release). Returns the worker's
         // wasm memory size before/after so the test can assert the
         // plateau without page-side JS heap readings.
         if (!TEST_HOOKS || !wasm) throw new Error("churn requires test mode and a booted worker");
@@ -193,7 +193,7 @@ const res = await fetch(new URL("../zupernes.wasm", import.meta.url), { cache: "
           const a = exports.zn_alloc(size);
           const b = exports.zn_alloc(size);
           if (!a || !b) { fails++; continue; }
-          exports.zn_free(b, size); // cross order
+          exports.zn_free(b, size); // newest first
           exports.zn_free(a, size);
         }
         const afterBytes = exports.memory.buffer.byteLength;

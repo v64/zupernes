@@ -25,7 +25,10 @@ try{browser=await pw.chromium.launch({channel:'chrome',headless:true,args:['--en
 catch{browser=await pw.chromium.launch({headless:true,args:['--enable-unsafe-webgpu']});}
 
 const results=[];
-function check(name, fn){ results.push([name,fn]); }
+// THEATER_ONLY=<regex> runs only matching scenarios (old-code evidence
+// runs each regression on its own; the full gate runs everything).
+const only=process.env.THEATER_ONLY?new RegExp(process.env.THEATER_ONLY):null;
+function check(name, fn){ if(!only||only.test(name)) results.push([name,fn]); }
 async function runAll(){
   for(const [name,fn] of results){
     const start=Date.now();
@@ -874,6 +877,236 @@ check('real GPU device loss after rendering: fresh 2D canvas draws new frames', 
   await poll(async()=>(await state(page)).paintCount>paintBefore+10,'painting continues after device loss');
   const paintAfter=(await state(page)).paintCount;
   assert(paintAfter>paintBefore+10,`frozen picture claimed as recovery (paints ${paintAfter-paintBefore})`);
+  await page.close();
+});
+
+// =====================================================================
+// OWNERSHIP / STORAGE REGRESSIONS - forced interleavings, no sleeps as
+// synchronization. Every scenario HOLDS a real message or IndexedDB open,
+// performs the racing operation, then releases it, and asserts the
+// observable result. They pin the ownership rule in main.mjs (O1-O4 and
+// the storage erase-token rule).
+// =====================================================================
+// Installed before page scripts run (addInitScript):
+//   __holdReply[type] = n  hold the next n worker replies of that type
+//   __releaseReply(type)   deliver the oldest held reply of that type
+//   __holdDb = n           hold the next n indexedDB.open() calls
+//   __releaseDb()          let the oldest held open proceed
+function installHolds(){
+  const d=Object.getOwnPropertyDescriptor(Worker.prototype,'onmessage');
+  window.__holdReply={};const held=[];
+  window.__heldReplyCount=t=>held.filter(h=>h.type===t).length;
+  window.__releaseReply=t=>{const i=held.findIndex(h=>h.type===t);if(i<0)throw Error('no held '+t);held.splice(i,1)[0].release();};
+  Object.defineProperty(Worker.prototype,'onmessage',{configurable:true,get:d.get,set(fn){d.set.call(this,ev=>{
+    const t=ev.data&&ev.data.type;
+    if(window.__holdReply[t]>0){window.__holdReply[t]--;held.push({type:t,release:()=>fn(ev)});}
+    else fn(ev);
+  });}});
+  const origOpen=indexedDB.open.bind(indexedDB);
+  window.__holdDb=0;const dbHeld=[];
+  window.__heldDbCount=()=>dbHeld.length;
+  window.__releaseDb=()=>dbHeld.shift()();
+  indexedDB.open=(...a)=>{
+    if(window.__holdDb<=0)return origOpen(...a);
+    window.__holdDb--;const fake={};
+    dbHeld.push(()=>{const req=origOpen(...a);
+      req.onupgradeneeded=e=>{fake.result=req.result;fake.onupgradeneeded?.(e);};
+      req.onerror=e=>{fake.error=req.error;fake.onerror?.(e);};
+      req.onsuccess=e=>{fake.result=req.result;fake.onsuccess?.(e);};});
+    return fake;
+  };
+}
+async function holdPage(extraInit){
+  const ctx=await browser.newContext({viewport:{width:1100,height:850}});
+  await ctx.addInitScript(installHolds);
+  if(extraInit)await ctx.addInitScript(extraInit);
+  const page=await newPage(ctx);
+  await page.evaluate(()=>window.__zupernesTest.presenterReady?.());
+  return page;
+}
+const evalIn=(page,fn,arg)=>page.evaluate(fn,arg);
+// Hold KeyK until the fixture ROM has written $5A to SRAM[0] (it copies
+// SRAM[0] to WRAM $1004 at boot, which is how restores are observed).
+async function writeSave(page){
+  await play(page);
+  await page.keyboard.down('KeyK');
+  await poll(async()=>(await page.evaluate(()=>window.__zupernesTest.readSram()))[0]===0x5a,'SRAM[0]=5A');
+  await page.keyboard.up('KeyK');
+}
+async function restoredByte(page,rom){
+  await load(page,rom,'reload.sfc');await play(page);
+  return (await read(page,0x1004))[0];
+}
+// Page and worker must name the same cartridge generation.
+async function assertConsistent(page,label){
+  const s=await state(page);
+  const w=await page.evaluate(()=>window.__zupernesTest.workerStats());
+  assert.equal(s.generation,w.generation,`${label}: page generation ${s.generation} vs worker ${w.generation}`);
+}
+// Click Play/Pause via the DOM (the overlay may cover the toolbar).
+const clickPause=page=>evalIn(page,()=>document.getElementById('pause').click());
+
+check('erase while a pause write is in flight does not resurrect the save', async()=>{
+  // Review-2 finding 1. The pause's IndexedDB write is held open; Erase
+  // Save is confirmed; then the write is released.
+  const page=await holdPage();
+  await load(page,f.lorom,'A.sfc');await writeSave(page);
+  await evalIn(page,()=>{window.__holdDb=1;document.getElementById('pause').click();});
+  await poll(()=>evalIn(page,()=>window.__heldDbCount()===1),'pause write held');
+  page.once('dialog',d=>d.accept());await page.locator('#forget').click();
+  await evalIn(page,()=>window.__releaseDb());
+  await poll(async()=>{const s=await state(page);return s.generation===2&&s.phase==='paused';},'erase cold boot');
+  assert.equal((await page.evaluate(()=>window.__zupernesTest.readSram()))[0],0xff,'fresh SRAM after erase');
+  assert.equal(await restoredByte(page,f.lorom),0xff,'reloading the cartridge restores nothing');
+  await page.close();
+});
+
+check('SRAM read before an erase is never written after it', async()=>{
+  // The pause flush has READ the pre-erase SRAM (reply held) when Erase is
+  // confirmed; the erase's own load reply is held too, so the old flush
+  // resumes while the old generation is still installed and enqueues its
+  // put AFTER the delete. The erase token taken before the read voids it.
+  const page=await holdPage();
+  await load(page,f.lorom,'A.sfc');await writeSave(page);
+  await evalIn(page,()=>{window.__holdReply.sram=1;document.getElementById('pause').click();});
+  await poll(()=>evalIn(page,()=>window.__heldReplyCount('sram')===1),'pause SRAM read held');
+  await evalIn(page,()=>{window.__holdReply.loaded=1;});
+  page.once('dialog',d=>d.accept());await page.locator('#forget').click();
+  await poll(()=>evalIn(page,()=>window.__heldReplyCount('loaded')===1),'erase delete done, cold-boot reply held');
+  await evalIn(page,()=>window.__releaseReply('sram'));
+  await evalIn(page,()=>window.__releaseReply('loaded'));
+  await poll(async()=>{const s=await state(page);return s.generation===2&&s.phase==='paused';},'erase cold boot');
+  assert.equal(await restoredByte(page,f.lorom),0xff,'pre-erase bytes resurrected the save');
+  await page.close();
+});
+
+check('an old pause completion cannot change an in-flight load', async()=>{
+  // Pause(A)'s write is held; B is selected (its load reply held too);
+  // the write is released. The pause must not flip the page to 'paused'
+  // while B loads (Play would then drive A's stale generation).
+  const page=await holdPage();
+  await load(page,f.lorom,'A.sfc');await writeSave(page);
+  await evalIn(page,()=>{window.__holdDb=1;document.getElementById('pause').click();});
+  await poll(()=>evalIn(page,()=>window.__heldDbCount()===1),'pause write held');
+  await evalIn(page,()=>{window.__holdReply.loaded=1;});
+  await setFiles(page,f.loromB,'B.sfc');
+  await evalIn(page,()=>window.__releaseDb());
+  await poll(()=>evalIn(page,()=>window.__heldReplyCount('loaded')===1),'B load reply held');
+  assert.equal((await state(page)).phase,'loading','B still owns the phase');
+  await clickPause(page);
+  assert.equal((await state(page)).phase,'loading','Play is refused while B loads');
+  await evalIn(page,()=>window.__releaseReply('loaded'));
+  await poll(async()=>{const s=await state(page);return s.fileName==='B.sfc'&&s.phase==='paused';},'B adopted');
+  await play(page);await assertConsistent(page,'after B');
+  assert.equal(await restoredByte(page,f.lorom),0x5a,"A's paused save persisted");
+  await page.close();
+});
+
+check('an old pause completion cannot change an in-flight erase', async()=>{
+  const page=await holdPage();
+  await load(page,f.lorom,'A.sfc');await writeSave(page);
+  await evalIn(page,()=>{window.__holdDb=2;document.getElementById('pause').click();});
+  await poll(()=>evalIn(page,()=>window.__heldDbCount()===1),'pause write held');
+  page.once('dialog',d=>d.accept());await page.locator('#forget').click();
+  await evalIn(page,()=>window.__releaseDb());
+  await poll(()=>evalIn(page,()=>window.__heldDbCount()===1),'erase delete held');
+  const during=await state(page);
+  assert.equal(during.phase,'loading','erase still owns the phase');
+  await clickPause(page);
+  const f0=(await state(page)).frame;
+  assert.equal(f0,during.frame,'no frames run during the erase');
+  await evalIn(page,()=>window.__releaseDb());
+  await poll(async()=>{const s=await state(page);return s.generation===2&&s.phase==='paused';},'erase cold boot');
+  assert.equal(await restoredByte(page,f.lorom),0xff,'save erased');
+  await page.close();
+});
+
+check('hiding the tab during a load does not interrupt it', async()=>{
+  const page=await holdPage();
+  await load(page,f.lorom,'A.sfc');
+  await evalIn(page,()=>{window.__holdReply.loaded=1;});
+  await setFiles(page,f.loromB,'B.sfc');
+  await poll(()=>evalIn(page,()=>window.__heldReplyCount('loaded')===1),'B load reply held');
+  await evalIn(page,()=>{
+    Object.defineProperty(document,'hidden',{configurable:true,get:()=>true});
+    document.dispatchEvent(new Event('visibilitychange'));
+    Object.defineProperty(document,'hidden',{configurable:true,get:()=>false});
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  assert.equal((await state(page)).phase,'loading','hidden must not claim a loading session');
+  await clickPause(page);
+  assert.equal((await state(page)).phase,'loading','Play refused while B loads');
+  await evalIn(page,()=>window.__releaseReply('loaded'));
+  await poll(async()=>{const s=await state(page);return s.fileName==='B.sfc'&&s.phase==='paused';},'B adopted');
+  await play(page);await assertConsistent(page,'after B');
+  await page.close();
+});
+
+// Reconciliation (O4): B commits in the worker but its reply is held; the
+// NEXT selection C is rejected. Whatever path rejects C, page and worker
+// must agree afterwards and Play must advance frames.
+async function reconcileScenario(rejectC,{priorRejection=false}={}){
+  const page=await holdPage();
+  await load(page,f.lorom,'A.sfc');
+  const dsp=Buffer.from(f.lorom);dsp[0x7fd6]=3; // coprocessor: worker rejects
+  if(priorRejection){
+    // An ordinary rejection where page and worker already agree must not
+    // disable later reconciliation.
+    await setFiles(page,dsp,'dsp-first.sfc');
+    await poll(async()=>{const s=await state(page);return !!s.lastError&&s.phase==='paused';},'first rejection');
+  }
+  await evalIn(page,()=>{window.__holdReply.loaded=1;});
+  await setFiles(page,f.loromB,'B.sfc');
+  await poll(()=>evalIn(page,()=>window.__heldReplyCount('loaded')===1),'B committed, reply held');
+  await rejectC(page,dsp);
+  await poll(async()=>{const s=await state(page);return !!s.lastError&&s.phase==='paused';},'C rejected visibly');
+  await evalIn(page,()=>window.__releaseReply('loaded'));
+  await assertConsistent(page,'after rejection');
+  const s=await state(page);
+  assert.equal(s.fileName,'A.sfc','the last adopted cartridge is retained');
+  await clickPause(page);
+  await poll(async()=>(await state(page)).frame>5,'frames advance on the retained cartridge');
+  await page.close();
+}
+check('worker-rejected selection after a held commit reconciles, even after an earlier rejection',
+  ()=>reconcileScenario((page,dsp)=>setFiles(page,dsp,'dsp-C.sfc'),{priorRejection:true}));
+check('page-rejected selection after a held commit reconciles',
+  ()=>reconcileScenario(page=>setFiles(page,Buffer.alloc(0x4000,0xea),'tiny-C.sfc')));
+
+check('WebGPU configure failure after context acquisition falls back to a live 2D canvas', async()=>{
+  // Distinct from the requestAdapter failure above: here the canvas has
+  // ALREADY handed out a WebGPU context, so it can never give a 2D one.
+  const page=await holdPage(()=>{
+    window.__configureThrew=false;
+    GPUCanvasContext.prototype.configure=function(){window.__configureThrew=true;throw Error('forced configure failure');};
+  });
+  await poll(async()=>(await state(page)).presenter!=='initializing','presenter settles');
+  assert.equal(await evalIn(page,()=>window.__configureThrew),true,'configure really ran on a WebGPU context');
+  assert.equal((await state(page)).presenter,'2d');
+  assert.equal(await page.locator('#screen').evaluate(c=>!!c.getContext('2d')),true,'replacement canvas has a 2D context');
+  await load(page,f.lorom);await play(page);
+  const p0=(await state(page)).paintCount;
+  await poll(async()=>(await state(page)).paintCount>p0+10,'2D paints continue');
+  // Pixels actually reach the visible canvas.
+  const lit=await page.locator('#screen').evaluate(c=>{const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data;let n=0;for(let i=0;i<d.length;i+=4)if(d[i]|d[i+1]|d[i+2])n++;return n;});
+  assert(lit>0,'visible canvas is blank');
+  assert.deepEqual(page.__errors,[]);
+  await page.close();
+});
+
+check('outgoing save failure stays visible after a successful replacement', async()=>{
+  // Review-2 finding 5: A's replace-time save write fails, non-battery B
+  // loads fine - the page must still say A's progress was not saved.
+  const page=await holdPage();
+  await load(page,f.lorom,'A.sfc');await writeSave(page);
+  await evalIn(page,()=>{indexedDB.open=()=>{throw Error('forced storage failure');};});
+  const noBattery=Buffer.from(f.loromB);noBattery[0x7fd6]=0;noBattery[0x7fd8]=0;
+  await load(page,noBattery,'B-no-battery.sfc');
+  const s=await state(page),status=await page.locator('#status').innerText();
+  assert.equal(s.fileName,'B-no-battery.sfc');
+  assert(s.lastError,'error state cleared by the load banner');
+  assert.match(status,/not saved|could not persist/i,'visible status hides the failure');
+  assert.doesNotMatch(status,/loaded - press Play/,'success banner replaced the warning');
   await page.close();
 });
 
