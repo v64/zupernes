@@ -1,3 +1,9 @@
+> **Status (2026-09-22):** superseded in part by `docs/timing-t3-report.md`.
+> The ordered profile now includes the Mesen2 DMA/HDMA controller, the power-on
+> origin, the short scanline and Mesen's interrupt model. It matches Mesen2
+> on every cross-oracle probe (143/143). Statements below about fixture-only
+> scope and the H=278 HDMA event describe the earlier stage.
+
 # DRAM refresh scheduler prototype
 
 This branch starts from the canonical ZuperNES pin
