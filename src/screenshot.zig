@@ -292,6 +292,7 @@ pub fn main() !void {
     var start_state_valid = false;
     var tm_force: ?u8 = null;
     var wram_path: ?[]const u8 = null;
+    var trace_wram: ?usize = null;
 
     var i: usize = 4;
     while (i < args.len) : (i += 1) {
@@ -351,6 +352,9 @@ pub fn main() !void {
             // Lua dump of the same frame to find diverging game state.
             i += 1;
             wram_path = args[i];
+        } else if (std.mem.eql(u8, args[i], "--trace-wram")) {
+            i += 1;
+            trace_wram = try std.fmt.parseInt(usize, args[i], 0);
         } else {
             std.debug.print("Unknown option: {s}\n", .{args[i]});
             return error.BadArgs;
@@ -453,6 +457,8 @@ pub fn main() !void {
     var when_active_until = try allocator.alloc(u32, when_inputs.items.len);
     defer allocator.free(when_active_until);
     @memset(when_active_until, 0);
+    var trace_wram_last: u8 = if (trace_wram) |addr| emulator.bus.wram[addr] else 0;
+    if (trace_wram) |addr| std.debug.print("trace-wram initial ${x:0>5}={x:0>2}\n", .{ addr, trace_wram_last });
     while (frame < total_frames) : (frame += 1) {
         // Input priority: movie playback, else the --input schedule
         // (overlapping events OR together)
@@ -562,6 +568,14 @@ pub fn main() !void {
         emulator.setJoypad(0, pad);
 
         emulator.runFrame();
+
+        if (trace_wram) |addr| {
+            const value = emulator.bus.wram[addr];
+            if (value != trace_wram_last) {
+                std.debug.print("trace-wram after frame {d} (completed {d}) ${x:0>5}: {x:0>2}->{x:0>2}\n", .{ frame, frame + 1, addr, trace_wram_last, value });
+                trace_wram_last = value;
+            }
+        }
 
         if (wav_path != null) {
             var chunk: [2048][2]i16 = undefined;
