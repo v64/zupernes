@@ -4,6 +4,14 @@
 const std = @import("std");
 const dbg = @import("debug.zig");
 
+// Anomie's measured HDMA costs, in SNES master clocks.  The global value is
+// approximate on hardware; 18 is the documented nominal used by timing
+// implementations and keeps the non-byte costs explicit rather than folding
+// them into the already-correct 8 clocks per transferred byte.
+const hdma_global_overhead: u32 = 18;
+const hdma_channel_overhead: u32 = 8;
+const hdma_indirect_fetch: u32 = 16;
+
 pub const Dma = struct {
     channels: [8]DmaChannel,
 
@@ -285,8 +293,8 @@ pub const Dma = struct {
         return total_cycles;
     }
 
-    /// Initialize HDMA at start of frame (scanline 0)
-    /// HDMA (H-Blank DMA) transfers data to PPU registers at the start of each scanline
+    /// Initialize HDMA near V=0/H=6.
+    /// HDMA (H-Blank DMA) transfers data to PPU registers near H=278.
     /// Used for effects like gradient backgrounds, window shaping (spotlight), IRQ timing, etc.
     pub fn initHdma(self: *Dma, bus: anytype) void {
         if (comptime dbg.trace_hdma) {
@@ -297,12 +305,20 @@ pub const Dma = struct {
 
         self.hdma_terminated = 0;
 
+        if (self.hdma_enable != 0) bus.tickDmaMasters(hdma_global_overhead);
+
         for (0..8) |i| {
             const channel_bit = @as(u8, 1) << @intCast(i);
             if ((self.hdma_enable & channel_bit) == 0) continue;
 
             const channel = &self.channels[i];
             const bank: u8 = @truncate(channel.a_addr >> 16);
+
+            // Frame initialization reads the line descriptor for every
+            // enabled channel and, in indirect mode, its 16-bit data pointer.
+            // Measured total: 8 clocks direct, 24 clocks indirect.
+            bus.tickDmaMasters(hdma_channel_overhead);
+            if (channel.control.indirect) bus.tickDmaMasters(hdma_indirect_fetch);
 
             // Load table address from A-bus address
             channel.hdma_addr = @truncate(channel.a_addr);
@@ -364,9 +380,13 @@ pub const Dma = struct {
         }
     }
 
-    /// Run HDMA at start of each scanline (H-blank)
-    /// Called once per visible scanline (0-224) when hdma_enable is non-zero
+    /// Run HDMA at H=278 during each visible scanline's H-blank.
+    /// Called once per visible scanline (0-224) when hdma_enable is non-zero.
     pub fn runHdma(self: *Dma, bus: anytype) void {
+        const active = self.hdma_enable & ~self.hdma_terminated;
+        if (active == 0) return;
+        bus.tickDmaMasters(hdma_global_overhead);
+
         for (0..8) |i| {
             const channel_bit = @as(u8, 1) << @intCast(i);
             if ((self.hdma_enable & channel_bit) == 0) continue;
@@ -375,6 +395,10 @@ pub const Dma = struct {
             const channel = &self.channels[i];
             const ctrl = channel.control;
             const bank: u8 = @truncate(channel.a_addr >> 16);
+
+            // Paid by every non-terminated channel on every HDMA line,
+            // including repeat-count lines on which no PPU byte is written.
+            bus.tickDmaMasters(hdma_channel_overhead);
 
             // Transfer data if flag is set
             if (channel.hdma_do_transfer) {
@@ -453,6 +477,7 @@ pub const Dma = struct {
 
                 // Reload indirect address if needed
                 if (ctrl.indirect) {
+                    bus.tickDmaMasters(hdma_indirect_fetch);
                     const lo = bus.read(bank, channel.hdma_addr);
                     channel.hdma_addr +%= 1;
                     const hi = bus.read(bank, channel.hdma_addr);

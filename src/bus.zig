@@ -32,6 +32,28 @@ const Apu = @import("apu/apu.zig").Apu;
 const Upd7725 = @import("coproc/upd7725.zig").Upd7725;
 const dbg = @import("debug.zig");
 
+const line_masters: u64 = @as(u64, @import("ppu/ppu.zig").DOTS_PER_SCANLINE) *
+    @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT;
+const frame_masters: u64 = line_masters * @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
+const nmi_set_master: u64 = 225 * line_masters + 2; // V=225, H=0.5
+const max_irq_transitions = 8;
+const max_nmi_edges = 4;
+
+const IrqTransition = struct {
+    master: u64,
+    level: bool,
+};
+
+fn absolutePpuMaster(ppu: *const Ppu) u64 {
+    return ppu.frame_count * frame_masters + @as(u64, ppu.scanline) * line_masters +
+        @as(u64, ppu.dot) * @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT + ppu.master_accum;
+}
+
+fn nextPeriodicAfter(now: u64, phase: u64, period: u64) u64 {
+    if (now < phase) return phase;
+    return phase + ((now - phase) / period + 1) * period;
+}
+
 pub const WramWrite = struct {
     addr: u24, // WRAM offset 0..$1FFFF (bank $7E = $00000, $7F = $10000)
     value: u8, // the byte written
@@ -174,6 +196,10 @@ pub const Bus = struct {
     // the I flag is clear) - games acknowledge by reading $4211 inside
     // the handler.
     irq_flag: bool,
+    // TIMEUP cannot be cleared during the four-master-clock pulse which sets
+    // it. Unlike the per-instruction transition journal below, this deadline
+    // is machine state and must survive a savestate taken on the edge.
+    irq_hold_until_master: u64,
 
     // =========================================================================
     // APU I/O PORTS ($2140-$2143) - SPC700 Communication Interface
@@ -300,13 +326,183 @@ pub const Bus = struct {
     // comparison.
     dma_masters: u32 = 0,
 
-    /// Account one DMA'd byte: 8 master cycles of bus time, during which
-    /// the cartridge coprocessor keeps running (see the comment at the
-    /// dma.zig call site - Super Mario Kart DMA-reads DSP-1 results at
+    // End-of-access timestamp projected from the PPU's last committed beam
+    // position. CPU.accountAccess supplies the cumulative instruction time;
+    // tickDmaByte advances it for each synchronous DMA byte. The PPU uses it
+    // only to timestamp render-register changes before root.zig commits the
+    // batched clocks with Ppu.tick().
+    ppu_cpu_timing_base: u32 = 0,
+    ppu_write_timing_offset: u32 = 0,
+    // Furthest projected/committed hardware time through which the CPU-side
+    // interrupt flags have been synchronized. This is transient scheduling
+    // state: root.zig always advances it to the committed beam before a step
+    // returns, and beginCpuInstruction establishes the next horizon.
+    interrupt_horizon_master: u64 = 0,
+    irq_level_at_instruction_start: bool = false,
+    irq_transitions: [max_irq_transitions]IrqTransition = undefined,
+    irq_transition_count: u8 = 0,
+    nmi_edges: [max_nmi_edges]u64 = undefined,
+    nmi_edge_count: u8 = 0,
+
+    /// Start timing a CPU instruction. HDMA billed by the preceding scanline
+    /// transition is still pending in dma_masters, and happens-before the CPU
+    /// access even though both are committed to Ppu.tick() together.
+    pub fn beginCpuInstruction(self: *Bus) void {
+        self.ppu_cpu_timing_base = self.dma_masters;
+        self.ppu_write_timing_offset = self.ppu_cpu_timing_base;
+        self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
+        self.interrupt_horizon_master = absolutePpuMaster(self.ppu);
+        self.irq_level_at_instruction_start = self.irq_flag;
+        self.irq_transition_count = 0;
+        self.nmi_edge_count = 0;
+    }
+
+    /// Start HDMA at the PPU's current beam position, outside a CPU
+    /// instruction. root.zig has already drained earlier DMA clocks here.
+    pub fn beginStandaloneDma(self: *Bus) void {
+        self.ppu_cpu_timing_base = 0;
+        self.ppu_write_timing_offset = 0;
+        self.ppu.setWriteTimingOffset(0);
+    }
+
+    /// Timestamp the end of the current CPU bus access.
+    pub fn setCpuAccessTiming(self: *Bus, instruction_masters: u32) void {
+        // Flat-memory mode (the 65816 SingleStepTests CPU vector harness;
+        // the SPC700 core uses its own test_flat_ram mechanism instead)
+        // has no PPU: `ppu` is undefined there and hardware-timing
+        // projection is meaningless against a flat array. The CPU vector
+        // harness previously crashed here once CPU accountAccess started
+        // calling this per access.
+        if (self.flat_mem != null) {
+            self.ppu_write_timing_offset = self.ppu_cpu_timing_base + instruction_masters;
+            return;
+        }
+        self.ppu_write_timing_offset = self.ppu_cpu_timing_base + instruction_masters;
+        self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
+        self.syncInterruptFlagsTo(absolutePpuMaster(self.ppu) + self.ppu_write_timing_offset);
+    }
+
+    /// Advance the CPU-visible RDNMI latch through hardware time without
+    /// moving the PPU. CPU accesses are executed before root.zig commits the
+    /// instruction's clocks, so projecting this tiny piece of hardware state
+    /// is what lets a $4210 read observe an edge inside its own instruction.
+    pub fn syncInterruptFlagsTo(self: *Bus, target_master: u64) void {
+        if (target_master <= self.interrupt_horizon_master) return;
+        var cursor = self.interrupt_horizon_master;
+        while (true) {
+            const set_at = nextPeriodicAfter(cursor, nmi_set_master, frame_masters);
+            const clear_at = nextPeriodicAfter(cursor, 0, frame_masters);
+            const irq_at = self.nextIrqEventAfter(cursor) orelse std.math.maxInt(u64);
+            const event_at = @min(@min(set_at, clear_at), irq_at);
+            if (event_at > target_master) break;
+            if (set_at == event_at) {
+                const nmi_line_was_active = self.nmi_flag and (self.nmitimen & 0x80) != 0;
+                self.nmi_flag = true;
+                if (!nmi_line_was_active and (self.nmitimen & 0x80) != 0) {
+                    self.recordNmiEdge(event_at);
+                }
+                if ((self.nmitimen & 0x01) != 0) self.autoJoypadRead();
+            }
+            if (clear_at == event_at) {
+                self.nmi_flag = false;
+            }
+            if (irq_at == event_at) {
+                self.irq_hold_until_master = event_at + 4;
+                self.setIrqFlagAt(true, event_at);
+            }
+            cursor = event_at;
+        }
+        self.interrupt_horizon_master = target_master;
+    }
+
+    /// Anomie's measured timer-output point. The counter comparison is
+    /// followed by the timer circuit's own delay: H/HV use 14+H*4 clocks
+    /// from line start (H+3.5 dots), while H=0/V-only emerge at clock 10.
+    fn nextIrqEventAfter(self: *const Bus, now: u64) ?u64 {
+        const mode = self.nmitimen & 0x30;
+        if (mode == 0) return null;
+        const h_delay: u64 = if (self.htime == 0) 10 else 14 + @as(u64, self.htime) * 4;
+        return switch (mode) {
+            0x10 => if (self.htime <= 339)
+                nextPeriodicAfter(now, h_delay, line_masters)
+            else
+                null,
+            0x20 => if (self.vtime < @import("ppu/ppu.zig").SCANLINES_PER_FRAME)
+                nextPeriodicAfter(now, @as(u64, self.vtime) * line_masters + 10, frame_masters)
+            else
+                null,
+            0x30 => if (self.htime <= 339 and self.vtime < @import("ppu/ppu.zig").SCANLINES_PER_FRAME)
+                nextPeriodicAfter(now, @as(u64, self.vtime) * line_masters + h_delay, frame_masters)
+            else
+                null,
+            else => null,
+        };
+    }
+
+    fn irqEventAt(self: *const Bus, master: u64) bool {
+        if (master == 0) return false;
+        return self.nextIrqEventAfter(master - 1) == master;
+    }
+
+    fn setIrqFlagAt(self: *Bus, level: bool, master: u64) void {
+        if (self.irq_flag == level) return;
+        self.irq_flag = level;
+        if (self.irq_transition_count < max_irq_transitions) {
+            self.irq_transitions[self.irq_transition_count] = .{ .master = master, .level = level };
+            self.irq_transition_count += 1;
+        } else {
+            // A normal 65816 instruction cannot approach this; fail loudly in
+            // tests instead of silently sampling a fabricated IRQ level.
+            std.debug.assert(false);
+        }
+    }
+
+    /// IRQ input level at the CPU's pre-final-cycle sample, reconstructed from
+    /// transitions which may include a later $4211 read already executed by
+    /// the instruction-granular core.
+    pub fn irqLineAt(self: *const Bus, master: u64) bool {
+        var level = self.irq_level_at_instruction_start;
+        for (self.irq_transitions[0..self.irq_transition_count]) |transition| {
+            if (transition.master > master) break;
+            level = transition.level;
+        }
+        return level;
+    }
+
+    fn recordNmiEdge(self: *Bus, master: u64) void {
+        if (self.nmi_edge_count < max_nmi_edges) {
+            self.nmi_edges[self.nmi_edge_count] = master;
+            self.nmi_edge_count += 1;
+        } else {
+            std.debug.assert(false);
+        }
+    }
+
+    /// Whether the internal CPU NMI input had a rising AND edge in the given
+    /// span. Edges come both from VBlank setting RDNMI and from $4200 bit 7
+    /// being enabled while RDNMI is already set.
+    pub fn nmiEdgeInRange(self: *const Bus, after: u64, through: u64) bool {
+        for (self.nmi_edges[0..self.nmi_edge_count]) |master| {
+            if (master > after and master <= through) return true;
+        }
+        return false;
+    }
+
+    /// Account DMA-controller bus time.  Besides transferred bytes, HDMA has
+    /// global, per-channel, and indirect-pointer overhead during which the CPU
+    /// is paused but the PPU, APU, and cartridge coprocessor keep running.
+    pub fn tickDmaMasters(self: *Bus, masters: u32) void {
+        self.dma_masters += masters;
+        self.ppu_write_timing_offset += masters;
+        self.ppu.setWriteTimingOffset(self.ppu_write_timing_offset);
+        self.tickDsp(masters);
+    }
+
+    /// Account one DMA'd byte: 8 master cycles of bus time (see the comment at
+    /// the dma.zig call site - Super Mario Kart DMA-reads DSP-1 results at
     /// exactly the pace the microcode streams them).
     pub fn tickDmaByte(self: *Bus) void {
-        self.dma_masters += 8;
-        self.tickDsp(8);
+        self.tickDmaMasters(8);
     }
 
     // ==========================================================================
@@ -409,6 +605,7 @@ pub const Bus = struct {
             .joy2_shift = 0,
             .nmi_flag = false,
             .irq_flag = false,
+            .irq_hold_until_master = 0,
             // APU with SPC700 CPU - initialized with IPL ROM ready signal
             // The SPC700 starts executing at $FFC0 (IPL ROM) and will
             // write $AA/$BB to ports 0/1 to signal readiness
@@ -538,6 +735,10 @@ pub const Bus = struct {
         if (effective_bank <= 0x3F) {
             if (addr < 0x2000) {
                 self.wram[addr] = value;
+                // Capture-only: SMW's logic tick is INC $13 through this
+                // low-RAM mirror. $2180-port writes are not hooked; the game
+                // never routes $13 through it.
+                if (addr == 0x0013) self.apu.noteLogicWrite();
                 if (self.wram_trace.enabled) {
                     const beam = self.ppu.beamPosition();
                     self.wram_trace.record(.{ .addr = addr, .value = value, .pc = self.writer_pc, .via = .mirror, .scanline = beam.scanline, .dot = beam.dot });
@@ -583,6 +784,7 @@ pub const Bus = struct {
             const wram_addr = (@as(u24, effective_bank - 0x7E) << 16) | addr;
             if (wram_addr < self.wram.len) {
                 self.wram[wram_addr] = value;
+                if (wram_addr == 0x0013) self.apu.noteLogicWrite();
                 if (self.wram_trace.enabled) {
                     const beam = self.ppu.beamPosition();
                     self.wram_trace.record(.{ .addr = wram_addr, .value = value, .pc = self.writer_pc, .via = .direct, .scanline = beam.scanline, .dot = beam.dot });
@@ -669,7 +871,13 @@ pub const Bus = struct {
                 // for correctness (returning "in vblank" level instead of the
                 // latched edge can hang wait loops).
                 const flag: u8 = if (self.nmi_flag) 0x80 else 0x00;
-                self.nmi_flag = false;
+                // The timer forces RDNMI high for the first four master
+                // clocks after its V=225/H=0.5 set edge. A read at H=0.5
+                // therefore returns bit 7 set but cannot clear it until H=1.5.
+                const now = @max(self.interrupt_horizon_master, absolutePpuMaster(self.ppu));
+                const in_set_hold = now >= nmi_set_master and
+                    (now - nmi_set_master) % frame_masters < 4;
+                if (!in_set_hold) self.nmi_flag = false;
                 return flag | 0x02; // Version bits: CPU version 2
             },
             0x4211 => {
@@ -678,7 +886,8 @@ pub const Bus = struct {
                 // IRQ line (the emulator syncs cpu.irq_pending from
                 // irq_flag each step).
                 const flag: u8 = if (self.irq_flag) 0x80 else 0x00;
-                self.irq_flag = false;
+                const now = @max(self.interrupt_horizon_master, absolutePpuMaster(self.ppu));
+                if (now >= self.irq_hold_until_master) self.setIrqFlagAt(false, now);
                 return flag;
             },
             0x4212 => {
@@ -721,11 +930,24 @@ pub const Bus = struct {
     fn writeSystemRegister(self: *Bus, addr: u16, value: u8) void {
         switch (addr) {
             0x4200 => {
+                const nmi_line_was_active = self.nmi_flag and (self.nmitimen & 0x80) != 0;
+                const old_irq_mode = self.nmitimen & 0x30;
                 self.nmitimen = value;
+                const nmi_line_is_active = self.nmi_flag and (value & 0x80) != 0;
+                if (!nmi_line_was_active and nmi_line_is_active) {
+                    // RDNMI is a latch, not merely the VBlank level. Enabling
+                    // bit 7 while it remains set creates a fresh internal NMI
+                    // edge immediately at the end of this $4200 access.
+                    self.recordNmiEdge(self.interrupt_horizon_master);
+                }
                 // Disabling both H/V IRQ sources (bits 4-5) acknowledges
                 // any pending timer IRQ - hardware drops the line.
                 if ((value & 0x30) == 0) {
-                    self.irq_flag = false;
+                    self.setIrqFlagAt(false, self.interrupt_horizon_master);
+                } else if (old_irq_mode == 0 and self.irqEventAt(self.interrupt_horizon_master)) {
+                    // Enabling on the exact output cycle still asserts IRQ.
+                    self.irq_hold_until_master = self.interrupt_horizon_master + 4;
+                    self.setIrqFlagAt(true, self.interrupt_horizon_master);
                 }
             },
 

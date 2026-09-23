@@ -15,6 +15,21 @@ pub const movie = @import("movie.zig");
 
 const zupernes_dots_per_line = @import("ppu/ppu.zig").DOTS_PER_SCANLINE;
 const zupernes_lines_per_frame = @import("ppu/ppu.zig").SCANLINES_PER_FRAME;
+const master_cycles_per_dot = @import("ppu/ppu.zig").MASTER_CYCLES_PER_DOT;
+const masters_per_line: u64 = @as(u64, zupernes_dots_per_line) * master_cycles_per_dot;
+const masters_per_frame: u64 = masters_per_line * zupernes_lines_per_frame;
+
+fn absolutePpuMaster(ppu: *const Ppu) u64 {
+    return ppu.frame_count * masters_per_frame + @as(u64, ppu.scanline) * masters_per_line +
+        @as(u64, ppu.dot) * master_cycles_per_dot + ppu.master_accum;
+}
+
+// Anomie's timing measurements place the frame-start HDMA initialization at
+// about V=0/H=6 and each visible-line transfer at H=278.  H-blank itself
+// begins at H=274; the later point is the DMA controller's bus-arbitration
+// event, not merely the PPU blanking edge.
+const hdma_init_dot: u16 = 6;
+const hdma_transfer_dot: u16 = 278;
 
 pub const Emulator = struct {
     cpu: Cpu,
@@ -63,16 +78,24 @@ pub const Emulator = struct {
         // This is correct - APU reset would reinitialize them, not clear them
     }
 
-    pub fn loadRom(self: *Emulator, rom_data: []const u8) !void {
+    pub fn loadRomFilesystemFree(self: *Emulator, rom_data: []const u8) !void {
+        // Build the machine minus the HOST part of cartridge bring-up: no
+        // microcode dump lookup, no filesystem. The browser-theater WASM
+        // adapter (wasm32-freestanding, no std.fs) calls this so native and
+        // WASM construct the identical machine through one shared code path.
+        // dsp1_present stays false here; a native host layers the microcode
+        // on top in loadRom below. For a non-DSP cartridge this IS the whole
+        // bring-up (the DSP microcode was reset by reset()).
         try self.bus.loadCartridge(rom_data);
-
-        // If the cartridge header announces a DSP coprocessor, try to load
-        // the uPD77C25 microcode dump from disk. Nearly all DSP-1 games use
-        // the DSP-1B revision (Super Mario Kart included); plain DSP-1 is
-        // the fallback for the few early boards (original Pilotwings).
-        // Missing microcode is not fatal - the game just hangs at its DSP
-        // handshake exactly as it did before this feature existed.
         self.bus.dsp1_present = false;
+        self.reset();
+    }
+
+    pub fn loadRom(self: *Emulator, rom_data: []const u8) !void {
+        // The portable machine first (cartridge, reset, APU boot) - the same
+        // call the browser-theater WASM adapter uses - then the HOST-only
+        // step below. See loadRomFilesystemFree for the split's rationale.
+        try self.loadRomFilesystemFree(rom_data);
         if (self.bus.cartridge.?.has_dsp) {
             const candidates = [_][]const u8{
                 "test/dsp/dsp1b.rom",
@@ -96,18 +119,10 @@ pub const Emulator = struct {
                 );
             }
         }
-
-        self.reset();
     }
 
     /// Run one CPU instruction
     pub fn step(self: *Emulator) void {
-        // Sync the level-triggered IRQ line: if the H/V timer flag was
-        // acknowledged (game read $4211) or disabled, drop the pending IRQ.
-        if (!self.bus.irq_flag) {
-            self.cpu.irq_pending = false;
-        }
-
         // Capture the instruction's PBR:PC for the VRAM- and WRAM-write source
         // traces (capture-only; no effect when the traces are disabled).
         self.ppu.writer_pc = (@as(u24, self.cpu.pbr) << 16) | self.cpu.pc;
@@ -115,6 +130,7 @@ pub const Emulator = struct {
         // Capture-only; see `traceExec`. One never-taken branch when disabled.
         self.exec_trace.record(self.ppu.writer_pc);
 
+        self.bus.beginCpuInstruction();
         const cycles = self.cpu.step();
 
         // ======================================================================
@@ -154,10 +170,9 @@ pub const Emulator = struct {
         // only the instruction's trailing internal cycles remain here.
         self.bus.tickDsp((internal -| self.cpu.internal_flushed) * 6);
 
-        // Track current position before tick (for scanline-transition and
-        // IRQ-point crossing detection below)
-        const prev_scanline = self.ppu.scanline;
-        const prev_dot = self.ppu.dot;
+        // Absolute hardware time is the origin for placing interrupt edges
+        // within this instruction.
+        const instruction_start = absolutePpuMaster(&self.ppu);
 
         // Advance the PPU by the instruction's true master-cycle cost (one
         // PPU dot is 4 master clocks, one scanline 1364), plus any DMA time
@@ -165,93 +180,115 @@ pub const Emulator = struct {
         // speeds here is what fixes the CPU-vs-frame pacing: at flat 6 the
         // CPU got ~30% more instructions per frame than hardware in
         // SlowROM code.
-        self.ppu.tick(master + dma_extra);
+        // The 65816 samples NMI/IRQ immediately before the instruction's last
+        // CPU cycle. Split the independent-clock advance there: an NMI edge
+        // in the earlier span is eligible at the next boundary, while one in
+        // the final 6/8/12-clock cycle is latched until one more instruction
+        // reaches its sample point.
+        const elapsed = master + dma_extra;
+        const final_cycle = @min(self.cpu.finalCycleMasters(), elapsed);
+        self.advancePpuWithHdma(elapsed - final_cycle);
+        const sample_master = absolutePpuMaster(&self.ppu);
+        self.bus.syncInterruptFlagsTo(sample_master);
 
-        // ======================================================================
-        // H/V TIMER IRQ ($4200 bits 4-5, $4207-$420A)
-        // ======================================================================
-        // The PPU's H/V counters trigger an IRQ when they pass the point
-        // configured in HTIME/VTIME:
-        //   H-IRQ only:  every scanline at H = HTIME
-        //   V-IRQ only:  once per frame at V = VTIME, H = ~2
-        //   H+V IRQ:     once per frame at V = VTIME, H = HTIME
-        // We detect whether the (scanline, dot) position crossed the trigger
-        // point during this instruction. Out-of-range HTIME (>340) or VTIME
-        // (>261) values simply never match - that's how games "disable" the
-        // timer without touching NMITIMEN.
-        // ======================================================================
-        const irq_mode = self.bus.nmitimen & 0x30;
-        if (irq_mode != 0) {
-            const dots_per_line: u32 = @intCast(zupernes_dots_per_line);
-            const total: u32 = dots_per_line * @as(u32, @intCast(zupernes_lines_per_frame));
-            const prev_pos: u32 = @as(u32, prev_scanline) * dots_per_line + prev_dot;
-            const cur_pos: u32 = @as(u32, self.ppu.scanline) * dots_per_line + self.ppu.dot;
-            // Unwrap across the frame boundary so cur is always >= prev
-            const cur_unwrapped = if (cur_pos >= prev_pos) cur_pos else cur_pos + total;
-
-            var crossed = false;
-            if (irq_mode == 0x10) {
-                // H-IRQ every line: find the first position after prev_pos
-                // whose dot component equals HTIME
-                const h: u32 = self.bus.htime;
-                if (h < dots_per_line) {
-                    const line_start = (prev_pos / dots_per_line) * dots_per_line;
-                    const candidate = line_start + h;
-                    const target = if (candidate > prev_pos) candidate else candidate + dots_per_line;
-                    crossed = target <= cur_unwrapped;
-                }
-            } else {
-                // V-IRQ (with or without H component): a single point per frame
-                const h: u32 = if (irq_mode == 0x20) 2 else self.bus.htime;
-                const v: u32 = self.bus.vtime;
-                if (h < dots_per_line and v < zupernes_lines_per_frame) {
-                    const point = v * dots_per_line + h;
-                    const target = if (point > prev_pos) point else point + total;
-                    crossed = target <= cur_unwrapped;
-                }
-            }
-
-            if (crossed) {
-                self.bus.irq_flag = true;
-                self.cpu.triggerIrq();
-            }
+        if (self.cpu.nmi_latched or self.bus.nmiEdgeInRange(instruction_start, sample_master)) {
+            self.cpu.triggerNmi();
+        }
+        const irq_at_sample = self.bus.irqLineAt(sample_master);
+        if (irq_at_sample) {
+            self.cpu.wakeFromIrqLine();
+            if (!self.cpu.irq_sample_i) self.cpu.triggerIrq();
         }
 
-        // Check for scanline transitions
-        if (self.ppu.scanline != prev_scanline) {
-            // New scanline started
-            if (self.ppu.scanline == 0) {
-                // Start of new frame - initialize HDMA
-                self.bus.dma.initHdma(&self.bus);
+        self.advancePpuWithHdma(final_cycle);
+        const instruction_end = absolutePpuMaster(&self.ppu);
+        self.bus.syncInterruptFlagsTo(instruction_end);
+        // An IRQ edge in the final CPU cycle misses this instruction's
+        // acceptance sample, but its level still terminates WAI immediately.
+        if (!irq_at_sample and self.bus.irqLineAt(instruction_end)) {
+            self.cpu.wakeFromIrqLine();
+        }
+        if (self.bus.nmiEdgeInRange(sample_master, instruction_end)) {
+            self.cpu.latchNmi();
+        }
+    }
+
+    const HdmaEvent = struct {
+        kind: enum { init, transfer },
+        masters_until: u32,
+    };
+
+    /// Return the next hardware HDMA point strictly after the PPU's committed
+    /// beam position.  Keeping this in master-clock units preserves the PPU's
+    /// sub-dot accumulator when an instruction ends between dots.
+    fn nextHdmaEvent(self: *const Emulator) HdmaEvent {
+        const line_masters: u32 = @as(u32, zupernes_dots_per_line) * master_cycles_per_dot;
+        const frame_masters: u32 = line_masters * @as(u32, zupernes_lines_per_frame);
+        const now: u32 = @as(u32, self.ppu.scanline) * line_masters +
+            @as(u32, self.ppu.dot) * master_cycles_per_dot + self.ppu.master_accum;
+
+        const init_at: u32 = @as(u32, hdma_init_dot) * master_cycles_per_dot;
+        const init_delta = if (init_at > now)
+            init_at - now
+        else
+            frame_masters - now + init_at;
+
+        const transfer_offset: u32 = @as(u32, hdma_transfer_dot) * master_cycles_per_dot;
+        var transfer_at: u32 = undefined;
+        if (self.ppu.scanline <= 224) {
+            const this_line = @as(u32, self.ppu.scanline) * line_masters + transfer_offset;
+            if (this_line > now) {
+                transfer_at = this_line;
+            } else if (self.ppu.scanline < 224) {
+                transfer_at = (@as(u32, self.ppu.scanline) + 1) * line_masters + transfer_offset;
+            } else {
+                transfer_at = frame_masters + transfer_offset;
+            }
+        } else {
+            transfer_at = frame_masters + transfer_offset;
+        }
+        const transfer_delta = transfer_at - now;
+
+        if (init_delta < transfer_delta) {
+            return .{ .kind = .init, .masters_until = init_delta };
+        }
+        return .{ .kind = .transfer, .masters_until = transfer_delta };
+    }
+
+    /// Advance the PPU through one completed CPU instruction, stopping at the
+    /// DMA controller's hardware beam points.  CPU execution is still at
+    /// instruction granularity, but PPU/APU time is split at the event so an
+    /// HDMA register write is journaled at H=278 plus its byte-transfer time,
+    /// rather than at the following scanline's H=0.
+    fn advancePpuWithHdma(self: *Emulator, elapsed_masters: u32) void {
+        var remaining = elapsed_masters;
+        while (remaining != 0) {
+            const event = self.nextHdmaEvent();
+            if (event.masters_until > remaining) {
+                self.ppu.tick(remaining);
+                return;
             }
 
-            // Start of VBlank (scanline 225):
-            if (self.ppu.scanline == 225) {
-                // Set the RDNMI ($4210) flag - it latches regardless of
-                // whether NMI generation is enabled, and is cleared when
-                // the CPU reads $4210 (or when VBlank ends, below).
-                self.bus.nmi_flag = true;
+            self.ppu.tick(event.masters_until);
+            remaining -= event.masters_until;
 
-                // Auto-joypad read: hardware serially clocks the controllers
-                // into $4218-$421F at VBlank start when NMITIMEN bit 0 is set
-                if ((self.bus.nmitimen & 0x01) != 0) {
-                    self.bus.autoJoypadRead();
-                }
-
-                // Trigger NMI if enabled (NMITIMEN bit 7)
-                if ((self.bus.nmitimen & 0x80) != 0) {
-                    self.cpu.triggerNmi();
-                }
+            self.bus.beginStandaloneDma();
+            switch (event.kind) {
+                .init => self.bus.dma.initHdma(&self.bus),
+                .transfer => if (self.bus.hdmaen != 0) {
+                    self.bus.dma.runHdma(&self.bus);
+                },
             }
 
-            // End of VBlank: the RDNMI flag clears itself even if never read
-            if (self.ppu.scanline == 0) {
-                self.bus.nmi_flag = false;
-            }
-
-            // Run HDMA at H-blank (start of each scanline during visible area)
-            if (self.bus.hdmaen != 0 and self.ppu.scanline <= 224) {
-                self.bus.dma.runHdma(&self.bus);
+            // HDMA byte time is produced synchronously by tickDmaByte().  It
+            // is stolen from the CPU at this beam point, so commit it now;
+            // leaving it for the next instruction would put the PPU write at
+            // the right projected dot but pause the actual beam too late.
+            const hdma_masters = self.bus.dma_masters;
+            self.bus.dma_masters = 0;
+            if (hdma_masters != 0) {
+                self.bus.runApu(hdma_masters);
+                self.ppu.tick(hdma_masters);
             }
         }
     }
@@ -629,4 +666,356 @@ test "recording is off by default and does not survive into a savestate" {
     var buf: [4]u16 = undefined;
     emu.recordInputs(&buf);
     try std.testing.expectEqual(before, Emulator.state_len);
+}
+
+test "HDMA initialization occurs at line zero H=6" {
+    var emu = Emulator.init();
+    emu.setup();
+
+    emu.bus.hdmaen = 0x01;
+    emu.bus.dma.hdma_enable = 0x01;
+    emu.bus.dma.channels[0].a_addr = 0x7E0000;
+    emu.bus.wram[0] = 0x81;
+
+    emu.advancePpuWithHdma(hdma_init_dot * master_cycles_per_dot - 1);
+    try std.testing.expectEqual(@as(u16, 0), emu.bus.dma.channels[0].hdma_addr);
+    try std.testing.expectEqual(@as(u8, 0), emu.bus.dma.channels[0].line_counter);
+
+    emu.advancePpuWithHdma(1);
+    // H=6 plus 18 global and 8 direct-channel initialization clocks.
+    try std.testing.expectEqual(@as(u16, 12), emu.ppu.dot);
+    try std.testing.expectEqual(@as(u32, 2), emu.ppu.master_accum);
+    try std.testing.expectEqual(@as(u16, 1), emu.bus.dma.channels[0].hdma_addr);
+    try std.testing.expectEqual(@as(u8, 0x81), emu.bus.dma.channels[0].line_counter);
+    try std.testing.expect(emu.bus.dma.channels[0].hdma_do_transfer);
+}
+
+test "visible-line HDMA write is journaled from H=278, not line start" {
+    var emu = Emulator.init();
+    emu.setup();
+
+    // Begin just after the separate H=6 initialization point and prepare one
+    // direct mode-0 byte to INIDISP.  A zero next line descriptor terminates
+    // the channel after this transfer.
+    emu.ppu.tick(277 * master_cycles_per_dot);
+    emu.bus.hdmaen = 0x01;
+    emu.bus.dma.hdma_enable = 0x01;
+    emu.bus.dma.channels[0].a_addr = 0x7E0000;
+    emu.bus.dma.channels[0].hdma_addr = 0;
+    emu.bus.dma.channels[0].line_counter = 1;
+    emu.bus.dma.channels[0].hdma_do_transfer = true;
+    emu.bus.wram[0] = 0x0F;
+    emu.bus.wram[1] = 0;
+
+    const before = emu.ppu.inidisp;
+    emu.advancePpuWithHdma(master_cycles_per_dot - 1);
+    try std.testing.expectEqual(before, emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(usize, 0), emu.ppu.render_event_count);
+
+    emu.advancePpuWithHdma(1);
+    try std.testing.expectEqual(@as(u8, 0x0F), emu.ppu.inidisp);
+    try std.testing.expectEqual(@as(usize, 1), emu.ppu.render_event_count);
+    // 18 global + 8 channel + 8 byte clocks put the end-of-byte register
+    // write at H=286 with two master clocks left within that dot.
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 8), emu.ppu.render_events[0].dot);
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 8), emu.ppu.dot);
+    try std.testing.expectEqual(@as(u32, 2), emu.ppu.master_accum);
+    try std.testing.expectEqual(@as(u32, 0), emu.bus.dma_masters);
+}
+
+test "active HDMA channel bills overhead on a no-transfer line" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.tick(277 * master_cycles_per_dot);
+
+    emu.bus.hdmaen = 0x01;
+    emu.bus.dma.hdma_enable = 0x01;
+    emu.bus.dma.channels[0].a_addr = 0x7E0000;
+    emu.bus.dma.channels[0].line_counter = 2;
+    emu.bus.dma.channels[0].hdma_do_transfer = false;
+
+    emu.advancePpuWithHdma(master_cycles_per_dot);
+    // 18 global + 8 channel clocks, despite writing no PPU byte.
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 6), emu.ppu.dot);
+    try std.testing.expectEqual(@as(u32, 2), emu.ppu.master_accum);
+    try std.testing.expectEqual(@as(u8, 1), emu.bus.dma.channels[0].line_counter);
+    try std.testing.expectEqual(@as(usize, 0), emu.ppu.render_event_count);
+}
+
+test "HDMA indirect descriptor reload bills its extra 16 clocks" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.tick(277 * master_cycles_per_dot);
+
+    emu.bus.hdmaen = 0x01;
+    emu.bus.dma.hdma_enable = 0x01;
+    emu.bus.dma.channels[0].control.indirect = true;
+    emu.bus.dma.channels[0].a_addr = 0x7E0000;
+    emu.bus.dma.channels[0].hdma_addr = 0;
+    emu.bus.dma.channels[0].line_counter = 1;
+    emu.bus.dma.channels[0].hdma_do_transfer = false;
+    emu.bus.wram[0] = 0x82;
+    emu.bus.wram[1] = 0x34;
+    emu.bus.wram[2] = 0x12;
+
+    emu.advancePpuWithHdma(master_cycles_per_dot);
+    // 18 global + 8 channel + 16 indirect-pointer clocks.
+    try std.testing.expectEqual(@as(u16, hdma_transfer_dot + 10), emu.ppu.dot);
+    try std.testing.expectEqual(@as(u32, 2), emu.ppu.master_accum);
+    try std.testing.expectEqual(@as(u8, 0x82), emu.bus.dma.channels[0].line_counter);
+    try std.testing.expectEqual(@as(u16, 0x1234), emu.bus.dma.channels[0].byte_count);
+    try std.testing.expectEqual(@as(u16, 3), emu.bus.dma.channels[0].hdma_addr);
+    try std.testing.expect(emu.bus.dma.channels[0].hdma_do_transfer);
+}
+
+test "RDNMI sets at V=225 H=0.5 and exact-edge reads cannot clear it for four clocks" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.scanline = 224;
+    emu.ppu.dot = 340;
+    emu.bus.beginCpuInstruction();
+
+    // Four clocks reach V=225/H=0; the latch does not set until two more.
+    emu.bus.setCpuAccessTiming(5);
+    try std.testing.expectEqual(@as(u8, 0x02), emu.bus.read(0, 0x4210));
+    try std.testing.expect(!emu.bus.nmi_flag);
+
+    // At H=0.5 the read sees bit 7, but the timer holds the latch set through
+    // H=1.5 so an exact-edge acknowledge cannot erase the just-arrived flag.
+    emu.bus.setCpuAccessTiming(6);
+    try std.testing.expectEqual(@as(u8, 0x82), emu.bus.read(0, 0x4210));
+    try std.testing.expect(emu.bus.nmi_flag);
+    emu.bus.setCpuAccessTiming(9);
+    try std.testing.expectEqual(@as(u8, 0x82), emu.bus.read(0, 0x4210));
+    try std.testing.expect(emu.bus.nmi_flag);
+
+    emu.bus.setCpuAccessTiming(10);
+    try std.testing.expectEqual(@as(u8, 0x82), emu.bus.read(0, 0x4210));
+    try std.testing.expect(!emu.bus.nmi_flag);
+}
+
+test "NMI service jitters by one instruction around the pre-final-cycle sample" {
+    // A low-WRAM LDA #imm has two 8-clock fetch cycles. The interrupt sample
+    // is therefore 8 clocks after the instruction begins, immediately before
+    // its final operand-fetch cycle.
+    var early = Emulator.init();
+    early.setup();
+    early.cpu.pc = 0;
+    early.bus.wram[0] = 0xA9;
+    early.bus.wram[1] = 0;
+    early.bus.nmitimen = 0x80;
+    early.ppu.scanline = 224;
+    early.ppu.dot = 340; // NMI edge is 6 clocks away: before the sample.
+    early.step();
+    try std.testing.expectEqual(@as(u16, 2), early.cpu.pc);
+    try std.testing.expect(early.cpu.nmi_pending);
+    try std.testing.expect(!early.cpu.nmi_latched);
+    early.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), early.cpu.sp);
+
+    var late = Emulator.init();
+    late.setup();
+    late.cpu.pc = 0;
+    late.bus.wram[0] = 0xA9;
+    late.bus.wram[1] = 0;
+    late.bus.wram[2] = 0xA9;
+    late.bus.wram[3] = 0;
+    late.bus.nmitimen = 0x80;
+    late.ppu.scanline = 224;
+    late.ppu.dot = 339; // NMI edge is 10 clocks away: in the final cycle.
+    late.step();
+    try std.testing.expectEqual(@as(u16, 2), late.cpu.pc);
+    try std.testing.expect(!late.cpu.nmi_pending);
+    try std.testing.expect(late.cpu.nmi_latched);
+    late.step();
+    try std.testing.expectEqual(@as(u16, 4), late.cpu.pc);
+    try std.testing.expect(late.cpu.nmi_pending);
+    try std.testing.expect(!late.cpu.nmi_latched);
+    late.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), late.cpu.sp);
+}
+
+test "H and V timer flags include the measured compare-to-output delay" {
+    var hirq = Emulator.init();
+    hirq.setup();
+    hirq.ppu.scanline = 10;
+    hirq.ppu.dot = 102;
+    hirq.bus.nmitimen = 0x10;
+    hirq.bus.htime = 100;
+    hirq.bus.beginCpuInstruction();
+
+    // HTIME=100 compares at H=100; the timer output is 14+100*4 clocks
+    // from line start, H=103.5. Starting at H=102 puts that edge 6 clocks
+    // away, not at the already-passed programmed dot.
+    hirq.bus.setCpuAccessTiming(5);
+    try std.testing.expect(!hirq.bus.irq_flag);
+    hirq.bus.setCpuAccessTiming(6);
+    try std.testing.expect(hirq.bus.irq_flag);
+
+    // TIMEUP is forced set for four clocks around its edge, mirroring the
+    // RDNMI read-clear race.
+    try std.testing.expectEqual(@as(u8, 0x80), hirq.bus.read(0, 0x4211));
+    try std.testing.expect(hirq.bus.irq_flag);
+    hirq.bus.setCpuAccessTiming(9);
+    try std.testing.expectEqual(@as(u8, 0x80), hirq.bus.read(0, 0x4211));
+    try std.testing.expect(hirq.bus.irq_flag);
+    hirq.bus.setCpuAccessTiming(10);
+    try std.testing.expectEqual(@as(u8, 0x80), hirq.bus.read(0, 0x4211));
+    try std.testing.expect(!hirq.bus.irq_flag);
+
+    var virq = Emulator.init();
+    virq.setup();
+    virq.ppu.scanline = 9;
+    virq.ppu.dot = 340;
+    virq.bus.nmitimen = 0x20;
+    virq.bus.vtime = 10;
+    virq.bus.beginCpuInstruction();
+    // Four clocks finish V=9, then the V-only output appears at V=10/H=2.5.
+    virq.bus.setCpuAccessTiming(13);
+    try std.testing.expect(!virq.bus.irq_flag);
+    virq.bus.setCpuAccessTiming(14);
+    try std.testing.expect(virq.bus.irq_flag);
+}
+
+test "IRQ service has boundary jitter and samples I before final-cycle flag updates" {
+    var early = Emulator.init();
+    early.setup();
+    early.cpu.pc = 0;
+    early.cpu.p.i = false;
+    early.bus.wram[0] = 0xA9;
+    early.bus.wram[1] = 0;
+    early.bus.nmitimen = 0x10;
+    early.bus.htime = 100;
+    early.ppu.scanline = 10;
+    early.ppu.dot = 102; // IRQ output 6 clocks away, before sample at 8.
+    early.step();
+    try std.testing.expect(early.cpu.irq_pending);
+    early.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), early.cpu.sp);
+
+    var late = Emulator.init();
+    late.setup();
+    late.cpu.pc = 0;
+    late.cpu.p.i = false;
+    late.bus.wram[0] = 0xA9;
+    late.bus.wram[1] = 0;
+    late.bus.wram[2] = 0xA9;
+    late.bus.wram[3] = 0;
+    late.bus.nmitimen = 0x10;
+    late.bus.htime = 100;
+    late.ppu.scanline = 10;
+    late.ppu.dot = 101; // IRQ output 10 clocks away, in the final cycle.
+    late.step();
+    try std.testing.expect(!late.cpu.irq_pending);
+    late.step();
+    try std.testing.expectEqual(@as(u16, 4), late.cpu.pc);
+    try std.testing.expect(late.cpu.irq_pending);
+    late.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), late.cpu.sp);
+
+    var flags = Emulator.init();
+    flags.setup();
+    flags.cpu.pc = 0;
+    flags.cpu.p.i = true;
+    flags.bus.wram[0] = 0x58; // CLI: sample sees old I=1, so no IRQ yet.
+    flags.bus.wram[1] = 0x78; // SEI: sample sees old I=0, so IRQ is accepted.
+    flags.bus.irq_flag = true;
+    flags.step();
+    try std.testing.expect(!flags.cpu.irq_pending);
+    try std.testing.expect(!flags.cpu.p.i);
+    flags.step();
+    try std.testing.expect(flags.cpu.irq_pending);
+    try std.testing.expect(flags.cpu.p.i);
+    flags.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), flags.cpu.sp);
+}
+
+test "masked IRQ wakes WAI and pays the 12-master-clock resume delay" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.cpu.pc = 0;
+    emu.cpu.p.i = true;
+    emu.cpu.waiting = true;
+    emu.bus.wram[0] = 0xEA;
+    emu.bus.irq_flag = true;
+
+    emu.step();
+    try std.testing.expect(!emu.cpu.waiting);
+    try std.testing.expectEqual(@as(u8, 2), emu.cpu.wai_resume_cycles);
+    try std.testing.expect(!emu.cpu.irq_pending);
+    try std.testing.expectEqual(@as(u16, 0), emu.cpu.pc);
+
+    emu.step();
+    try std.testing.expectEqual(@as(u8, 0), emu.cpu.wai_resume_cycles);
+    try std.testing.expectEqual(@as(u16, 0), emu.cpu.pc);
+    try std.testing.expect(!emu.cpu.irq_pending);
+
+    emu.step();
+    try std.testing.expectEqual(@as(u16, 1), emu.cpu.pc);
+}
+
+test "$4200 enable during VBlank creates an immediate NMI edge only while RDNMI is set" {
+    var edges = Emulator.init();
+    edges.setup();
+    edges.ppu.scanline = 225;
+    edges.ppu.dot = 100;
+    edges.bus.nmi_flag = true;
+    edges.bus.nmitimen = 0x80;
+    edges.bus.beginCpuInstruction();
+    const start = absolutePpuMaster(&edges.ppu);
+
+    edges.bus.setCpuAccessTiming(6);
+    edges.bus.write(0, 0x4200, 0x80); // Already enabled: no new edge.
+    try std.testing.expect(!edges.bus.nmiEdgeInRange(start, start + 6));
+    edges.bus.setCpuAccessTiming(12);
+    edges.bus.write(0, 0x4200, 0x00); // Disable does not acknowledge RDNMI.
+    try std.testing.expect(edges.bus.nmi_flag);
+    edges.bus.setCpuAccessTiming(18);
+    edges.bus.write(0, 0x4200, 0x80); // 0->1 while RDNMI=1: immediate edge.
+    try std.testing.expect(edges.bus.nmiEdgeInRange(start + 12, start + 18));
+
+    var acknowledged = Emulator.init();
+    acknowledged.setup();
+    acknowledged.ppu.scanline = 225;
+    acknowledged.ppu.dot = 100;
+    acknowledged.bus.nmi_flag = true;
+    acknowledged.bus.nmitimen = 0x80;
+    acknowledged.bus.beginCpuInstruction();
+    const acknowledged_start = absolutePpuMaster(&acknowledged.ppu);
+    acknowledged.bus.setCpuAccessTiming(6);
+    acknowledged.bus.write(0, 0x4200, 0x00);
+    acknowledged.bus.setCpuAccessTiming(12);
+    try std.testing.expectEqual(@as(u8, 0x82), acknowledged.bus.read(0, 0x4210));
+    try std.testing.expect(!acknowledged.bus.nmi_flag);
+    acknowledged.bus.setCpuAccessTiming(18);
+    acknowledged.bus.write(0, 0x4200, 0x80);
+    try std.testing.expect(!acknowledged.bus.nmiEdgeInRange(acknowledged_start, acknowledged_start + 18));
+}
+
+test "$4200 immediate NMI still waits for the next instruction sample" {
+    var emu = Emulator.init();
+    emu.setup();
+    emu.ppu.scanline = 225;
+    emu.ppu.dot = 100;
+    emu.bus.nmi_flag = true;
+    emu.bus.nmitimen = 0;
+    emu.cpu.pc = 0;
+    emu.cpu.a = 0x80;
+    emu.bus.wram[0] = 0x8D; // STA $4200: write is its final 6-clock cycle.
+    emu.bus.wram[1] = 0x00;
+    emu.bus.wram[2] = 0x42;
+    emu.bus.wram[3] = 0xA9; // The late edge lets this LDA #imm execute.
+    emu.bus.wram[4] = 0;
+
+    emu.step();
+    try std.testing.expectEqual(@as(u8, 0x80), emu.bus.nmitimen);
+    try std.testing.expectEqual(@as(u16, 3), emu.cpu.pc);
+    try std.testing.expect(!emu.cpu.nmi_pending);
+    try std.testing.expect(emu.cpu.nmi_latched);
+
+    emu.step();
+    try std.testing.expectEqual(@as(u16, 5), emu.cpu.pc);
+    try std.testing.expect(emu.cpu.nmi_pending);
+    emu.step();
+    try std.testing.expectEqual(@as(u16, 0x01FC), emu.cpu.sp);
 }

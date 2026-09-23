@@ -86,6 +86,12 @@ Everything below builds on a correct emulator.
 - `zig build screenshot -- <rom> <frames> <out.ppm> [options]` runs any ROM
   headless and dumps the framebuffer. Options:
   - `--input F:BTNS` presses buttons at frame F, held 30 frames
+  - `--input-when 'PRED[,PRED...]:BTNS[:HOLD[:SETTLE]]'` fires one trigger
+    when the generic physical-WRAM byte predicates hold (declaration order,
+    once each; default hold 2 frames and settle 4 consecutive polls). Each
+    press is followed by a mandatory neutral released frame before the next
+    trigger can arm; a predicate already true after the prior trigger must
+    still leave and return before it fires.
     (S=Start, s=Select, A/B/X/Y, U/D/L/R dpad, l/r shoulders) - chain
     several to script a path into gameplay
   - `--every N DIR` dumps a screenshot every N frames
@@ -158,23 +164,53 @@ The goal is pixel-per-pixel and sample-per-sample identical output to
 hardware. Current model: instruction-granularity CPU, scanline-
 granularity PPU rendering, dot-granularity PPU counters. The path:
 
-1. **Per-access memory timing**: CPU cycles are counted per instruction
-   table and multiplied by 6 master cycles; real accesses cost 6/8/12
-   depending on region (and MEMSEL). Requires the CPU to report memory
-   accesses, not just cycle counts. This is the prerequisite for
-   everything below.
-2. **DMA cycle accounting**: runDma returns cycles but the caller
-   discards them (bus.zig $420B write). DMA also has 8-cycle-per-byte +
-   per-channel overhead and syncs to whole CPU cycles.
-3. **Mid-scanline register changes**: renderScanline() samples registers
-   once per line. Games that write PPU registers mid-line (via HDMA or
-   tight IRQ loops - the inidisp/hdma test ROMs in test/snes-test-roms
-   exercise exactly this) need either dot-based rendering or a
-   change-log replayed during line rendering.
-4. **HDMA timing**: currently fires at scanline start; hardware runs it
-   at H≈278 with specific per-channel costs.
-5. **NMI/IRQ jitter**: interrupts are polled between instructions;
-   hardware delays them by specific cycle counts after the trigger dot.
+1. **Per-access memory timing — DONE (fc411d6)**: CPU cycles are counted
+   per instruction table and real accesses cost 6/8/12 depending on region
+   (and MEMSEL), with the CPU reporting each access. Interrupt entry now also
+   accounts both NMI/IRQ vector reads through the same path, completing the
+   remaining vector-fetch hole.
+2. **DMA cycle accounting**: CLOSED as a byte-timing item, re-scoped
+   2026-08-22. The old claim ("runDma returns cycles but the caller
+   discards them") went stale at fc411d6: tickDmaByte() bills 8 master
+   cycles per transferred byte into dma_masters, which root.zig drains
+   into the PPU/APU clocks — plumbing runDma's return would double-charge
+   every byte. What remains unmodeled is overhead and synchronization
+   only: 8 fixed clocks per transfer, 8 per active channel, and 2-8-clock
+   start/end alignment waits (SNESdev DMA registers; superfamicom wiki
+   timing; bsnes dma.cpp; Mesen2 SnesDmaController.cpp). A measured trial
+   adding the fixed+per-channel overhead left a 2900-frame SMW trace
+   byte-identical and Mesen2 transition alignment unchanged, so this only
+   matters once a scheduler models the CPU pausing mid-instruction —
+   today DMA executes synchronously inside the $420B write. Re-open only
+   together with that scheduler work.
+3. **Mid-scanline register changes — DONE (mid-scanline branch)**: render-
+   control writes are timestamped at the end of their CPU/DMA access and the
+   deferred scanline renderer replays decoded state across constant horizontal
+   spans. The replay journal is savestated and has unit, INIDISP/HDMA ROM,
+   29-ROM corpus, savestate-resume, and 2900-frame SMW neutrality evidence in
+   `docs/mid-scanline-register-replay.md`. Register-specific latch delays,
+   active-display OAM/VRAM/CGRAM port behavior, and moving HDMA to hardware
+   H-blank remain deliberately separate timing stages.
+4. **HDMA timing — DONE (`f0d49a4` + overhead stage)**: the PPU/APU timeline now
+   stops for initialization near V=0/H=6 and for visible-line HDMA at H=278.
+   The controller bills the nominal ~18-clock global overhead, 8 clocks per
+   active channel, 16 clocks for an indirect-pointer reload, and the existing
+   8 clocks per byte without double-charging. Register writes use the render
+   journal on the correct absolute line. Unit, 29-ROM, savestate-resume, and
+   2,900-frame SMW evidence is in `docs/hdma-transfer-timing.md`. Exact
+   within-instruction CPU-cycle pause alignment and mid-general-DMA HDMA
+   priority remain future scheduler refinements.
+5. **NMI/IRQ jitter — DONE (`6e84543`, `1bc1235`, `f4d4957`)**: RDNMI sets at
+   V=225/H=0.5 with its exact-edge read-clear hold, H/V timer compare output
+   uses the measured 14-clock (or H=0/V-only 10-clock) circuit timing, and the
+   CPU samples both inputs before each instruction's final 6/8/12-clock cycle.
+   Late edges therefore produce instruction-length jitter without mid-opcode
+   service. CLI/SEI/PLP/REP/SEP old-I sampling, WAI's 12-clock wake, TIMEUP's
+   set-edge hold, and `$4200` enable-during-VBlank NMI edges are covered by
+   focused tests. Unit, 29-ROM before/after, savestate-resume, and 2,900-frame
+   SMW evidence is in `docs/nmi-irq-timing.md`. Exact pause-cycle alignment and
+   the post-general-DMA NMI sequence remain part of the already-scoped future
+   mid-instruction DMA scheduler refinement, not this interrupt-boundary item.
 6. **Golden-image regression suite**: the harness + test/snes-test-roms
    are ready for this - capture known-good screenshots per test ROM
    (compare against bsnes/Mesen output or hardware photos) and wire

@@ -1,11 +1,16 @@
 # 65816 Test-Vector Verification — Status & Resume Notes
 
-## Current state (2026-07-03)
+## Session state (2026-07-03; HISTORICAL, predates the 2026-09-20
+## direct-page change below)
 
-**5,120,000 / 5,120,000 vectors passing (100%)** — the CPU is fully
-vector-clean. Suite: SingleStepTests 65816 (10,000 tests per opcode per
-mode). Remaining CPU work is per-cycle timing only (2.65M cycle-count
-mismatches tallied as telemetry; see OPTIMIZATIONS.md roadmap).
+**5,120,000 / 5,120,000 vectors passing (100%)** — the CPU was fully
+vector-clean as of that session. Suite: SingleStepTests 65816 (10,000
+tests per opcode per mode). Remaining CPU work is per-cycle timing only
+(2.65M cycle-count mismatches tallied as telemetry; see OPTIMIZATIONS.md
+roadmap). NOTE: no full-suite rerun has been done since 2026-07-03, and
+the 2026-09-20 direct-page correction deliberately trades one vector
+(see item 8) for Mesen agreement, so the 100% figure below no longer
+reflects the current core; no new suite percentage is claimed.
 
 - Vectors live in the session scratchpad (`65816-main/v1/`, 2.7GB). To
   re-fetch: `curl -L codeload.github.com/SingleStepTests/65816/tar.gz/refs/heads/main`
@@ -43,24 +48,42 @@ mismatches tallied as telemetry; see OPTIMIZATIONS.md roadmap).
 8. **DL=0 direct-page wrap in e-mode** (fixed 2026-07-03): dp,X / dp,Y
    ADDRESS computation wraps within the page (8-bit add) when the
    direct-page register's low byte is 0 - 6502 zero-page indexing.
-   Crucially the pointer FETCHES of (dp)/(dp,X)/(dp),Y do NOT wrap
-   (no 6502 ($FF)-bug reproduction): proven by vector "e1 e 8669"
-   (D=$F400, pointer at $F4FF reads its high byte from $F500). An
-   initial implementation that wrapped the pointer fetch passed
-   5,119,999/5,120,000 - one vector in five million caught it.
+   Pointer FETCHES: updated 2026-09-20. The original claim that
+   (dp)/(dp,X)/(dp),Y pointer fetches "do NOT wrap (proven by vector
+   'e1 e 8669')" was overstated - the evidence is CONFLICTING, not
+   proven. Vector "e1 e 8669" (E=1, D=$F400, pointer low byte at
+   $F4FF) really reads its high byte from $F500 (no wrap). But the
+   pinned-Mesen comparison ROM (test/mesen/dp-indirect.md) shows E=1/
+   DL=0 pointer fetches DO wrap within D's page, matching Mesen's
+   GetDirectAddress and ares' readDirect - the two suites flatly
+   disagree on this quirk and neither constitutes physical-hardware
+   evidence. Since this repo targets 5A22/Mesen compatibility, the
+   pointer fetch now follows Mesen (wrapping, see addrDirectIndirect
+   in src/cpu/cpu.zig).
+   OBSERVED 2026-09-20: as expected from that conflict, "e1 e 8669"
+   alone (run in isolation via the cpu-vectors harness) FAILS on the
+   current core (a/p mismatch; see
+   .zig-cache/dp-indirect/observed-candidate-e18669-fails.log) and
+   PASSED on the pre-change implementation
+   (observed-oldimpl-e18669-passes.log). This is one measured vector,
+   NOT a fresh full-suite count - the full suite has not been rerun
+   and no current percentage is asserted.
 
-Games verified pixel-identical after all fixes (SMW 2000-frame capture
-byte-for-byte vs pre-fix). SMW runs in native mode, so these were mostly
-latent bugs - but latent CPU bugs poison oracle traces eventually.
+HISTORICAL (2026-07-03 session): games verified pixel-identical after
+all fixes (SMW 2000-frame capture byte-for-byte vs pre-fix). SMW runs
+in native mode, so these were mostly latent bugs - but latent CPU bugs
+poison oracle traces eventually.
 
-## Remaining: none (functional). Per-cycle timing only.
+## Remaining (as of 2026-07-03 session): none (functional). Per-cycle timing only.
 
-All 512 files pass completely. Games verified pixel-identical after the
-final fixes (SMW 2800-frame movie replay byte-for-byte). The 2.65M
-cycle-count mismatches are the per-access 6/8/12 master-cycle work
-already in OPTIMIZATIONS.md - a separate project, and the same gap the
-Mesen2 cross-validation quantified at the frame level (boot +17, level
-loads 14-26 frames; see test/mesen/README.md).
+HISTORICAL (2026-07-03 session, before the 2026-09-20 direct-page
+change): all 512 files passed completely. Games verified
+pixel-identical after the final fixes (SMW 2800-frame movie replay
+byte-for-byte). The 2.65M cycle-count mismatches are the per-access
+6/8/12 master-cycle work already in OPTIMIZATIONS.md - a separate
+project, and the same gap the Mesen2 cross-validation quantified at
+the frame level (boot +17, level loads 14-26 frames; see
+test/mesen/README.md).
 
 ## Where this fits
 

@@ -1,0 +1,129 @@
+/* ZuperNES browser theater styling.
+   - Layout adapted from ZuperWorld's src/theater/css/theater.css
+     (commit 954e3f72): dark scheme, 33px toolbar buttons, keyboard guide.
+   - The frame is ALWAYS 256:224 (the core's native picture; no
+     widescreen): #stage letterboxes it, canvas keeps the aspect ratio,
+     integer-scale where possible (see main.mjs fitCanvas). */
+
+:root { color-scheme: dark; }
+body {
+  background: #0b0e13;
+  color: #c9d4df;
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  margin: 0;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-height: 100vh;
+}
+
+/* ---- stage: letterboxed 256:224 viewport ---- */
+#stage {
+  position: relative;
+  background: #000;
+  width: min(96vw, 76vh * 256 / 224);
+  aspect-ratio: 256 / 224;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+#screen {
+  width: 100%;
+  height: 100%;
+  display: block;
+  image-rendering: pixelated;
+  object-fit: contain;
+  outline: none;
+}
+#start-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(6, 10, 16, .72);
+}
+#start-overlay[hidden] { display: none; }
+#start-session {
+  font-size: 18px;
+  padding: 8px 26px;
+}
+/* drop zone shown while no cartridge is loaded */
+#drop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  text-align: center;
+  gap: 6px;
+  color: #8b98a8;
+  border: 2px dashed #2a3542;
+  padding: 12px;
+}
+#drop[hidden] { display: none; }
+#drop.armed { border-color: #7ec8ff; background: rgba(16,28,40,.9); }
+#drop b { color: #ffd166; }
+#drop small { color: #55636f; }
+
+/* ---- toolbar ---- */
+#bar { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+#bar button {
+  height: 33px;
+  box-sizing: border-box;
+  padding: 5px 9px;
+  white-space: nowrap;
+}
+button, select {
+  font: inherit;
+  color: #c9d4df;
+  background: #12161d;
+  border: 1px solid #2a3542;
+  border-radius: 4px;
+  cursor: pointer;
+}
+button:hover { border-color: #7ec8ff; }
+button:focus-visible { outline: 2px solid #7ec8ff; outline-offset: 2px; }
+button:disabled { color: #55636f; cursor: default; }
+
+#title {
+  color: #e6f0fa;
+  font-weight: 600;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
+#status {
+  color: #7d8a99;
+  min-height: 1.5em;
+  max-width: min(96vw, 720px);
+  text-align: center;
+}
+#status.error { color: #e88; }
+
+/* ---- keyboard legend ---- */
+#keyboard h2 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: .12em;
+  color: #66737f;
+  text-transform: uppercase;
+}
+.kb { display: flex; gap: 48px; align-items: flex-start; }
+.kcluster { display: flex; flex-direction: column; gap: 4px; }
+.krow { display: flex; gap: 4px; }
+.key {
+  display: grid;
+  place-items: center;
+  min-width: 30px;
+  padding: 3px 6px;
+  background: #1a2430;
+  border: 1px solid #33455c;
+  border-radius: 3px;
+}
+.key b { font-size: 13px; color: #cfd8e3; }
+.key small { font-size: 8.5px; color: #7d8a99; }
+
+@media (max-width: 560px) {
+  .kb { gap: 22px; }
+  body { padding: 8px; }
+}

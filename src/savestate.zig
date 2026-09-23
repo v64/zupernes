@@ -56,9 +56,21 @@ const Apu = @import("apu/apu.zig").Apu;
 /// everything captured, and `read` refuses a mismatch. The version covers a
 /// deliberate REORDER at equal size; the length covers every accidental
 /// change, which is the one that actually happens.
-pub const magic = "ZNSAVE\x00\x02";
+pub const magic = "ZNSAVE\x00\x05";
 
 const fb_bytes = ppu_mod.SCREEN_WIDTH * ppu_mod.SCREEN_HEIGHT * 2;
+const render_state_bytes = blk: {
+    var n: usize = 0;
+    for (@typeInfo(Ppu.RenderState).@"struct".fields) |field| {
+        n += switch (field.type) {
+            u8 => 1,
+            u16, i16 => 2,
+            else => @compileError("unsupported PPU RenderState field type: " ++ @typeName(field.type)),
+        };
+    }
+    break :blk n;
+};
+const render_event_bytes = 8 + 2 + render_state_bytes;
 
 pub const Error = error{ BadMagic, BadLayout, ShortBuffer };
 
@@ -219,6 +231,30 @@ fn getI16(src: []const u8, at: *usize) i16 {
     return @bitCast(getU16(src, at));
 }
 
+fn putRenderState(dst: []u8, at: *usize, state: Ppu.RenderState) void {
+    inline for (@typeInfo(Ppu.RenderState).@"struct".fields) |field| {
+        switch (field.type) {
+            u8 => putU8(dst, at, @field(state, field.name)),
+            u16 => putU16(dst, at, @field(state, field.name)),
+            i16 => putI16(dst, at, @field(state, field.name)),
+            else => unreachable,
+        }
+    }
+}
+
+fn getRenderState(src: []const u8, at: *usize) Ppu.RenderState {
+    var state: Ppu.RenderState = undefined;
+    inline for (@typeInfo(Ppu.RenderState).@"struct".fields) |field| {
+        @field(state, field.name) = switch (field.type) {
+            u8 => getU8(src, at),
+            u16 => getU16(src, at),
+            i16 => getI16(src, at),
+            else => unreachable,
+        };
+    }
+    return state;
+}
+
 // ---- sizing ------------------------------------------------------------------
 
 /// Exact snapshot size. Asserted against the cursor at the end of both
@@ -226,19 +262,23 @@ fn getI16(src: []const u8, at: *usize) i16 {
 pub const state_len: usize = blk: {
     var n: usize = magic.len + 4; // magic + the u32 layout length below
     // CPU
-    n += 2 * 5 + 3 + 2 + 1 + 1 + 1 + 4 + 1 + 4 + 8 + 8 + 3;
+    n += 2 * 5 + 3 + 2 + 1 + 1 + 1 + 4 + 1 + 4 + 8 + 8 + 4 + 1;
     // PPU arrays
     n += 64 * 1024 + 512 + 544 + fb_bytes;
     // PPU scalars
     n += 15 + 8 * 2 + 1 + 2 + 1 + 13 + 2 + 1 + 1 + 1 + 8 * 2 + 1 + 4 +
-        2 + 2 + 2 + 1 + 2 + 2 + 2 + 8 + 4 + 1 + 4 + 4;
+        2 + 2 + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 8 + 4 + 1 + 4 + 4;
+    // PPU mid-scanline render replay: line-start state, queue metadata, and a
+    // fixed-size event array. Unused event slots are encoded as zeroes so the
+    // snapshot stays deterministic and state_len remains a compile-time guard.
+    n += render_state_bytes + 4 + 8 + 4 + Ppu.render_event_capacity * render_event_bytes;
     // Bus arrays
     n += 128 * 1024 + 1 + 32 * 1024;
     // DMA
     n += 8 * (1 + 1 + 4 + 2 + 1 + 2 + 1 + 1) + 2;
     // Bus scalars
     n += 4 + 1 + 2 + 2 + 1 + 1 + 1 + 1 + 2 + 1 + 2 + 2 + 1 +
-        2 + 2 + 1 + 2 + 2 + 1 + 4 + 4 + 1 + 1 + 1 + 4 + 4 + 4;
+        2 + 2 + 1 + 2 + 2 + 1 + 4 + 4 + 1 + 1 + 1 + 8 + 4 + 4 + 4;
     // APU
     n += Apu.state_len;
     // DSP-1 mutable state: ram, pc, stack, sp, a, b, flaga, flagb,
@@ -283,8 +323,10 @@ pub fn write(
     putU64(dst, &at, cpu.total_cycles);
     putU64(dst, &at, cpu.instruction_count);
     putBool(dst, &at, cpu.nmi_pending);
+    putBool(dst, &at, cpu.nmi_latched);
     putBool(dst, &at, cpu.irq_pending);
     putBool(dst, &at, cpu.waiting);
+    putU8(dst, &at, cpu.wai_resume_cycles);
 
     // ---- PPU memories ----
     @memcpy(dst[at..][0 .. 64 * 1024], &ppu.vram);
@@ -310,17 +352,17 @@ pub fn write(
     putU8(dst, &at, ppu.tm_force orelse 0);
     putU8(dst, &at, ppu.ts);
     for ([_]u8{
-        ppu.w12sel, ppu.w34sel,  ppu.wobjsel, ppu.wh0, ppu.wh1,
-        ppu.wh2,    ppu.wh3,     ppu.wbglog,  ppu.wobjlog,
-        ppu.tmw,    ppu.tsw,     ppu.cgwsel,  ppu.cgadsub,
+        ppu.w12sel, ppu.w34sel, ppu.wobjsel, ppu.wh0,     ppu.wh1,
+        ppu.wh2,    ppu.wh3,    ppu.wbglog,  ppu.wobjlog, ppu.tmw,
+        ppu.tsw,    ppu.cgwsel, ppu.cgadsub,
     }) |v| putU8(dst, &at, v);
     putU16(dst, &at, ppu.coldata);
     putU8(dst, &at, ppu.scroll_latch);
     putBool(dst, &at, ppu.scroll_latch_set);
     putU8(dst, &at, ppu.m7sel);
     for ([_]i16{
-        ppu.m7a, ppu.m7b, ppu.m7c,     ppu.m7d,
-        ppu.m7x, ppu.m7y, ppu.m7hofs,  ppu.m7vofs,
+        ppu.m7a, ppu.m7b, ppu.m7c,    ppu.m7d,
+        ppu.m7x, ppu.m7y, ppu.m7hofs, ppu.m7vofs,
     }) |v| putI16(dst, &at, v);
     putU8(dst, &at, ppu.m7_latch);
     putU32(dst, &at, @bitCast(ppu.mpy_result));
@@ -329,6 +371,10 @@ pub fn write(
     putU16(dst, &at, ppu.oam_addr);
     putU8(dst, &at, ppu.cgram_latch);
     putU16(dst, &at, ppu.vram_prefetch);
+    putU8(dst, &at, ppu.ppu1_mdr);
+    putU8(dst, &at, ppu.ppu2_mdr);
+    putBool(dst, &at, ppu.h_counter_high);
+    putBool(dst, &at, ppu.v_counter_high);
     putU16(dst, &at, ppu.scanline);
     putU16(dst, &at, ppu.dot);
     putU64(dst, &at, ppu.frame_count);
@@ -336,6 +382,23 @@ pub fn write(
     putU8(dst, &at, ppu.vram_read_buffer);
     putU32(dst, &at, ppu.writer_pc);
     putU32(dst, &at, ppu.dma_src);
+
+    // ---- PPU mid-scanline render replay ----
+    putRenderState(dst, &at, ppu.render_line_state);
+    putU32(dst, &at, @intCast(ppu.render_event_count));
+    putU64(dst, &at, ppu.render_events_dropped);
+    putU32(dst, &at, ppu.write_timing_offset);
+    const empty_event: Ppu.RenderEvent = .{
+        .line = 0,
+        .dot = 0,
+        .state = std.mem.zeroes(Ppu.RenderState),
+    };
+    for (0..Ppu.render_event_capacity) |i| {
+        const event = if (i < ppu.render_event_count) ppu.render_events[i] else empty_event;
+        putU64(dst, &at, event.line);
+        putU16(dst, &at, event.dot);
+        putRenderState(dst, &at, event.state);
+    }
 
     // ---- Bus memories ----
     @memcpy(dst[at..][0 .. 128 * 1024], &bus.wram);
@@ -386,6 +449,7 @@ pub fn write(
     putU32(dst, &at, bus.joy2_shift);
     putBool(dst, &at, bus.nmi_flag);
     putBool(dst, &at, bus.irq_flag);
+    putU64(dst, &at, bus.irq_hold_until_master);
     putBool(dst, &at, bus.dsp1_present);
     putU32(dst, &at, bus.writer_pc);
     putU32(dst, &at, bus.dsp_accum);
@@ -404,7 +468,7 @@ pub fn write(
     putU8(dst, &at, packDspFlags(bus.dsp1.flaga));
     putU8(dst, &at, packDspFlags(bus.dsp1.flagb));
     for ([_]u16{
-        bus.dsp1.tr, bus.dsp1.trb, bus.dsp1.rp, bus.dsp1.k, bus.dsp1.l,
+        bus.dsp1.tr, bus.dsp1.trb, bus.dsp1.rp, bus.dsp1.k,  bus.dsp1.l,
         bus.dsp1.m,  bus.dsp1.n,   bus.dsp1.dr, bus.dsp1.sr, bus.dsp1.so,
         bus.dsp1.si,
     }) |v| putU16(dst, &at, v);
@@ -457,8 +521,10 @@ pub fn read(
     cpu.total_cycles = getU64(src, &at);
     cpu.instruction_count = getU64(src, &at);
     cpu.nmi_pending = getBool(src, &at);
+    cpu.nmi_latched = getBool(src, &at);
     cpu.irq_pending = getBool(src, &at);
     cpu.waiting = getBool(src, &at);
+    cpu.wai_resume_cycles = getU8(src, &at);
 
     // ---- PPU memories ----
     @memcpy(&ppu.vram, src[at..][0 .. 64 * 1024]);
@@ -485,9 +551,9 @@ pub fn read(
     ppu.tm_force = if (tm_force_present) tm_force_value else null;
     ppu.ts = getU8(src, &at);
     inline for (.{
-        "w12sel", "w34sel", "wobjsel", "wh0", "wh1",
-        "wh2",    "wh3",    "wbglog",  "wobjlog",
-        "tmw",    "tsw",    "cgwsel",  "cgadsub",
+        "w12sel", "w34sel", "wobjsel", "wh0",     "wh1",
+        "wh2",    "wh3",    "wbglog",  "wobjlog", "tmw",
+        "tsw",    "cgwsel", "cgadsub",
     }) |name| @field(ppu, name) = getU8(src, &at);
     ppu.coldata = getU16(src, &at);
     ppu.scroll_latch = getU8(src, &at);
@@ -504,6 +570,10 @@ pub fn read(
     ppu.oam_addr = @truncate(getU16(src, &at));
     ppu.cgram_latch = getU8(src, &at);
     ppu.vram_prefetch = getU16(src, &at);
+    ppu.ppu1_mdr = getU8(src, &at);
+    ppu.ppu2_mdr = getU8(src, &at);
+    ppu.h_counter_high = getBool(src, &at);
+    ppu.v_counter_high = getBool(src, &at);
     ppu.scanline = getU16(src, &at);
     ppu.dot = getU16(src, &at);
     ppu.frame_count = getU64(src, &at);
@@ -511,6 +581,22 @@ pub fn read(
     ppu.vram_read_buffer = getU8(src, &at);
     ppu.writer_pc = @truncate(getU32(src, &at));
     ppu.dma_src = @truncate(getU32(src, &at));
+
+    // ---- PPU mid-scanline render replay ----
+    ppu.render_line_state = getRenderState(src, &at);
+    const render_event_count = getU32(src, &at);
+    if (render_event_count > Ppu.render_event_capacity) return Error.BadLayout;
+    ppu.render_event_count = @intCast(render_event_count);
+    ppu.render_events_dropped = std.math.cast(usize, getU64(src, &at)) orelse return Error.BadLayout;
+    ppu.write_timing_offset = getU32(src, &at);
+    for (0..Ppu.render_event_capacity) |i| {
+        const event: Ppu.RenderEvent = .{
+            .line = getU64(src, &at),
+            .dot = getU16(src, &at),
+            .state = getRenderState(src, &at),
+        };
+        if (i < ppu.render_event_count) ppu.render_events[i] = event;
+    }
 
     // ---- Bus memories ----
     @memcpy(&bus.wram, src[at..][0 .. 128 * 1024]);
@@ -559,6 +645,7 @@ pub fn read(
     bus.joy2_shift = getU32(src, &at);
     bus.nmi_flag = getBool(src, &at);
     bus.irq_flag = getBool(src, &at);
+    bus.irq_hold_until_master = getU64(src, &at);
     bus.dsp1_present = getBool(src, &at);
     bus.writer_pc = @truncate(getU32(src, &at));
     bus.dsp_accum = getU32(src, &at);
@@ -661,23 +748,60 @@ test "read preserves interior pointers and round-trips scalars" {
     var cpu = Cpu.init(&bus);
     cpu.a = 0x1234;
     cpu.pbr = 0x7E;
+    cpu.nmi_latched = true;
+    cpu.wai_resume_cycles = 2;
     ppu.frame_count = 99;
     bus.wram[0x1234] = 0xAB;
+    bus.irq_hold_until_master = 0x123456789ABCDEF0;
     _ = try write(&cpu, &ppu, &bus, 7, buf);
 
     cpu.a = 0;
     cpu.pbr = 0;
+    cpu.nmi_latched = false;
+    cpu.wai_resume_cycles = 0;
     ppu.frame_count = 0;
     bus.wram[0x1234] = 0;
+    bus.irq_hold_until_master = 0;
     var last: u16 = 0;
     _ = try read(&cpu, &ppu, &bus, &last, buf);
 
     try std.testing.expectEqual(@as(u16, 0x1234), cpu.a);
     try std.testing.expectEqual(@as(u8, 0x7E), cpu.pbr);
+    try std.testing.expect(cpu.nmi_latched);
+    try std.testing.expectEqual(@as(u8, 2), cpu.wai_resume_cycles);
     try std.testing.expectEqual(@as(u64, 99), ppu.frame_count);
     try std.testing.expectEqual(@as(u8, 0xAB), bus.wram[0x1234]);
+    try std.testing.expectEqual(@as(u64, 0x123456789ABCDEF0), bus.irq_hold_until_master);
     try std.testing.expectEqual(@as(u16, 7), last);
     // The pointers restore() must never touch.
     try std.testing.expectEqual(&bus, cpu.bus);
     try std.testing.expectEqual(&ppu, bus.ppu);
+}
+
+test "savestate preserves an unfinished mid-scanline render journal" {
+    const buf = try std.testing.allocator.alloc(u8, state_len);
+    defer std.testing.allocator.free(buf);
+    var ppu = Ppu.init();
+    var bus = Bus.init(&ppu);
+    var cpu = Cpu.init(&bus);
+
+    // White backdrop, enabled display. Line 0 is the pre-render line; line 1
+    // is the visible line whose unfinished journal the snapshot must retain.
+    ppu.cgram[0] = 0xFF;
+    ppu.cgram[1] = 0x7F;
+    ppu.writeRegister(0x2100, 0x0F);
+    ppu.tick(ppu_mod.DOTS_PER_SCANLINE * ppu_mod.MASTER_CYCLES_PER_DOT);
+    ppu.tick(80 * ppu_mod.MASTER_CYCLES_PER_DOT);
+    ppu.writeRegister(0x2100, 0x8F);
+
+    _ = try write(&cpu, &ppu, &bus, 1, buf);
+    const clocks_left = (ppu_mod.DOTS_PER_SCANLINE - 80) * ppu_mod.MASTER_CYCLES_PER_DOT;
+    ppu.tick(clocks_left);
+    const expected = ppu.framebuffer;
+
+    var last: u16 = 0;
+    _ = try read(&cpu, &ppu, &bus, &last, buf);
+    ppu.tick(clocks_left);
+    try std.testing.expectEqualSlices(u16, &expected, &ppu.framebuffer);
+    try std.testing.expectEqual(@as(u16, 1), last);
 }

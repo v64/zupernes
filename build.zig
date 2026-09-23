@@ -221,6 +221,67 @@ pub fn build(b: *std.Build) void {
     }
 
     // Unit tests
+
+    // ------------------------------------------------------------------
+    // Browser theater: the real emulator core compiled to freestanding
+    // wasm32, exported with the zn_* adapter contract (src/theater/wasm/
+    // main.zig). The browser page loads the artifact from
+    // src/theater/zupernes.wasm; the InstallArtifact step with a custom
+    // dest_dir stages the built wasm from zig-out into the source tree so
+    // the static app and the artifact live in one folder that
+    // `python3 src/theater/serve.py` ships.
+    //
+    // `zig build theater -Doptimize=ReleaseFast` is the exact build the
+    // page uses (TASK.md); the staged binary is gitignored.
+    // ------------------------------------------------------------------
+    const theater_target = b.resolveTargetQuery(.{
+        .cpu_arch = .wasm32,
+        .os_tag = .freestanding,
+        .cpu_model = .baseline,
+    });
+    const theater_wasm = b.addExecutable(.{
+        .name = "zupernes",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/theater/wasm/main.zig"),
+            .target = theater_target,
+            .optimize = optimize,
+            .imports = &.{
+                // Same zupernes module the native frontends import: the WASM
+                // build runs the REAL core through the same code paths
+                // native runs for the parity fixtures.
+                .{ .name = "zupernes", .module = emu_mod },
+            },
+        }),
+    });
+    theater_wasm.entry = .disabled;
+    // wasm GC strips unreferenced export fns; rdynamic adds ALL symbols to
+    // the dynamic symbol table, which is what makes the zn_* exports survive
+    // into the wasm export section (verified: only `memory` survives without
+    // it - Zig 0.15 marks exports, wasm-ld still relies on the symbol table).
+    theater_wasm.rdynamic = true;
+    // The adapter constructs the ~940 KB Emulator by value (Emulator.init()
+    // returns it, then it is copied into its heap slot); the temporary lives
+    // on the wasm shadow stack, so the default stack is far too small. 4 MB
+    // covers construction plus the deepest emulator call paths.
+    theater_wasm.stack_size = 4 * 1024 * 1024;
+    // STAGING: the page loads the artifact from src/theater/zupernes.wasm
+    // (the directory `python3 src/theater/serve.py` serves), but a custom
+    // InstallDir is still relative to zig-out - install alone can only
+    // produce zig-out/src/theater/zupernes.wasm, invisible to the server
+    // (and to a clean checkout with no zig-out). The copy into the source
+    // tree is therefore part of THE BUILD GRAPH: a Run step whose cwd is
+    // the build root copies the installed artifact from zig-out into
+    // src/theater/. Nothing is manual, and the artifact stays gitignored.
+    const theater_step = b.step("theater", "Build the browser-theater WASM adapter");
+    const install_theater = b.addInstallArtifact(theater_wasm, .{
+        .dest_dir = .{ .override = .{ .custom = "src/theater" } },
+    });
+    const stage_theater = b.addSystemCommand(&.{ "cp", "-f" });
+    stage_theater.setCwd(.{ .cwd_relative = b.build_root.path orelse "." });
+    stage_theater.addFileArg(install_theater.emitted_bin.?);
+    stage_theater.addArg("src/theater/zupernes.wasm");
+    stage_theater.step.dependOn(&install_theater.step);
+    theater_step.dependOn(&stage_theater.step);
     const emu_tests = b.addTest(.{
         .root_module = emu_mod,
     });

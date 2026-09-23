@@ -96,10 +96,29 @@ pub const Cpu = struct {
 
     // Interrupt flags
     nmi_pending: bool,
+    // An NMI edge which arrived after this instruction's interrupt-sampling
+    // point. It is remembered until the next instruction boundary rather
+    // than being taken immediately at the end of the instruction whose last
+    // cycle contained the edge.
+    nmi_latched: bool,
     irq_pending: bool,
+
+    // Duration of the most recent bus-access cycle. This is transient
+    // instruction bookkeeping: Emulator.step() uses it immediately to place
+    // the interrupt sample before the final CPU cycle, and Cpu.step() resets
+    // it before executing the next instruction.
+    last_access_masters: u8,
+    // I-flag value seen by the interrupt check before the final CPU cycle.
+    // CLI/SEI/PLP/REP/SEP change I during that final cycle, so this can differ
+    // from the architectural P value left at the instruction boundary.
+    irq_sample_i: bool,
 
     // WAI (wait for interrupt) state
     waiting: bool,
+    // After an interrupt input wakes WAI, hardware spends two internal CPU
+    // cycles (12 master clocks) ending the instruction before either taking
+    // the interrupt or resuming the next opcode.
+    wai_resume_cycles: u8,
 
     pub fn init(bus: *Bus) Cpu {
         return Cpu{
@@ -122,21 +141,46 @@ pub const Cpu = struct {
             .total_cycles = 0,
             .instruction_count = 0,
             .nmi_pending = false,
+            .nmi_latched = false,
             .irq_pending = false,
+            .last_access_masters = 6,
+            .irq_sample_i = true,
             .waiting = false,
+            .wai_resume_cycles = 0,
         };
+    }
+
+    fn wakeForInterrupt(self: *Cpu) void {
+        if (self.waiting) {
+            self.waiting = false;
+            self.wai_resume_cycles = 2;
+        }
     }
 
     /// Trigger NMI (called at start of VBlank if NMI is enabled)
     pub fn triggerNmi(self: *Cpu) void {
         self.nmi_pending = true;
-        self.waiting = false; // Wake from WAI
+        self.nmi_latched = false;
+        self.wakeForInterrupt();
+    }
+
+    /// Remember an NMI edge that was too late for the current instruction's
+    /// sample. The line may return high before the next boundary; the 65816's
+    /// internal edge latch must still retain it.
+    pub fn latchNmi(self: *Cpu) void {
+        self.nmi_latched = true;
+        self.wakeForInterrupt();
     }
 
     /// Trigger IRQ
     pub fn triggerIrq(self: *Cpu) void {
         self.irq_pending = true;
-        self.waiting = false; // Wake from WAI
+        self.wakeForInterrupt();
+    }
+
+    /// The IRQ input terminates WAI even while I masks IRQ service.
+    pub fn wakeFromIrqLine(self: *Cpu) void {
+        self.wakeForInterrupt();
     }
 
     pub fn reset(self: *Cpu) void {
@@ -147,8 +191,10 @@ pub const Cpu = struct {
         self.pbr = 0;
         self.dp = 0;
         self.nmi_pending = false;
+        self.nmi_latched = false;
         self.irq_pending = false;
         self.waiting = false;
+        self.wai_resume_cycles = 0;
         self.instruction_count = 0;
         self.total_cycles = 0;
 
@@ -162,6 +208,15 @@ pub const Cpu = struct {
         self.mem_masters = 0;
         self.mem_accesses = 0;
         self.internal_flushed = 0;
+        self.last_access_masters = 6;
+        self.irq_sample_i = self.p.i;
+
+        if (self.wai_resume_cycles != 0) {
+            self.cycles = self.wai_resume_cycles;
+            self.wai_resume_cycles = 0;
+            self.total_cycles += self.cycles;
+            return self.cycles;
+        }
 
         // =====================================================================
         // INTERRUPT HANDLING
@@ -172,14 +227,17 @@ pub const Cpu = struct {
         // =====================================================================
         if (self.nmi_pending) {
             self.nmi_pending = false;
+            self.irq_pending = false; // NMI wins a simultaneous sample.
             self.handleNmi();
+            self.irq_sample_i = self.p.i;
             self.total_cycles += self.cycles;
             return self.cycles;
         }
 
-        if (self.irq_pending and !self.p.i) {
+        if (self.irq_pending) {
             self.irq_pending = false;
             self.handleIrq();
+            self.irq_sample_i = self.p.i;
             self.total_cycles += self.cycles;
             return self.cycles;
         }
@@ -187,6 +245,7 @@ pub const Cpu = struct {
         // WAI instruction puts CPU to sleep until next interrupt
         if (self.waiting) {
             self.cycles = 1;
+            self.irq_sample_i = self.p.i;
             self.total_cycles += self.cycles;
             return self.cycles;
         }
@@ -195,6 +254,7 @@ pub const Cpu = struct {
         // INSTRUCTION FETCH AND TRACE
         // =====================================================================
         const trace_pc = self.pc;
+        const i_before = self.p.i;
         const opcode = self.fetchByte();
 
         // CPU trace controlled by debug.zig configuration
@@ -230,6 +290,13 @@ pub const Cpu = struct {
             self.sp = 0x0100 | (self.sp & 0xFF);
         }
         self.executeOpcode(opcode);
+        self.irq_sample_i = switch (opcode) {
+            // These instructions update I in their final cycle, after the
+            // interrupt check. RTI/BRK/COP update it early enough and use the
+            // normal post-instruction value.
+            0x28, 0x58, 0x78, 0xC2, 0xE2 => i_before,
+            else => self.p.i,
+        };
         if (self.emulation_mode) {
             self.sp = 0x0100 | (self.sp & 0xFF);
         }
@@ -237,8 +304,17 @@ pub const Cpu = struct {
         return self.cycles;
     }
 
+    /// Master clocks in the final CPU cycle of the just-completed step.
+    /// Interrupt inputs are sampled immediately before this cycle. Trailing
+    /// internal cycles are always 6 clocks; otherwise the last cycle was the
+    /// most recently priced 6/8/12-clock bus access.
+    pub fn finalCycleMasters(self: *const Cpu) u32 {
+        const internal = @as(u32, self.cycles) -| self.mem_accesses;
+        return if (internal > self.internal_flushed) 6 else self.last_access_masters;
+    }
+
     fn handleNmi(self: *Cpu) void {
-        self.cycles = 7;
+        self.cycles = 0;
 
         if (self.emulation_mode) {
             // Emulation mode: push PC and P
@@ -259,13 +335,14 @@ pub const Cpu = struct {
 
         // Read NMI vector
         const vector_addr: u16 = if (self.emulation_mode) 0xFFFA else 0xFFEA;
-        const low = self.bus.read(0, vector_addr);
-        const high = self.bus.read(0, vector_addr + 1);
+        const low = self.readByte(0, vector_addr);
+        const high = self.readByte(0, vector_addr + 1);
         self.pc = @as(u16, high) << 8 | low;
+        self.cycles += 2; // interrupt-internal cycles
     }
 
     fn handleIrq(self: *Cpu) void {
-        self.cycles = 7;
+        self.cycles = 0;
 
         if (self.emulation_mode) {
             self.pushByte(@truncate(self.pc >> 8));
@@ -283,9 +360,10 @@ pub const Cpu = struct {
         self.pbr = 0;
 
         const vector_addr: u16 = if (self.emulation_mode) 0xFFFE else 0xFFEE;
-        const low = self.bus.read(0, vector_addr);
-        const high = self.bus.read(0, vector_addr + 1);
+        const low = self.readByte(0, vector_addr);
+        const high = self.readByte(0, vector_addr + 1);
         self.pc = @as(u16, high) << 8 | low;
+        self.cycles += 2; // interrupt-internal cycles
     }
 
     // ==================== Memory Access ====================
@@ -313,6 +391,8 @@ pub const Cpu = struct {
         self.internal_flushed += internal;
         self.mem_masters += speed;
         self.mem_accesses +%= 1;
+        self.last_access_masters = @intCast(speed);
+        self.bus.setCpuAccessTiming(self.mem_masters + self.internal_flushed * 6);
     }
 
     fn fetchByte(self: *Cpu) u8 {
@@ -524,22 +604,82 @@ pub const Cpu = struct {
         return .{ .bank = @truncate(result >> 16), .addr = @truncate(result) };
     }
 
+    /// One direct-page byte address, Mesen GetDirectAddress(offset)
+    /// (allowEmulationMode=true): E/DL=0 truncates the offset to 8 bits
+    /// and ORs it into D's page; otherwise the full 16-bit sum. `addr`
+    /// is an already-summed D+offset value.
+    fn directResolved(self: *Cpu, addr: u16) u16 {
+        if (self.emulation_mode and (self.dp & 0xFF) == 0) {
+            return (self.dp & 0xFF00) | @as(u8, @truncate(addr));
+        }
+        return addr;
+    }
+
+    /// Byte-wise pointer fetch for the 16-bit indirect pointers of
+    /// (dp)/(dp),Y (Mesen GetDirectAddressIndirectWord): each byte
+    /// resolves its address through the direct-page rules INDEPENDENTLY,
+    /// so the high byte is not a linear addr+1 read. In E mode with
+    /// DL=0 both pointer bytes wrap within D's page - a pointer at
+    /// $xxFF reads its high byte from $xx00 (the 6502 ($FF) pointer
+    /// wrap, reproduced by the 5A22 here).
+    fn readDirectWord(self: *Cpu, addr: u16) u16 {
+        const lo: u16 = self.readByte(0, self.directResolved(addr));
+        const hi: u16 = self.readByte(0, self.directResolved(addr +% 1));
+        return lo | (hi << 8);
+    }
+
+    /// (dp,X) pointer fetch (Mesen GetDirectAddressIndirectWordWithPageWrap):
+    /// same as readDirectWord for E/DL=0 and native mode, but in E mode
+    /// with DL!=0 the pages are NOT merged and a high-byte address that
+    /// lands exactly on a page boundary is instead read from addr-$100
+    /// (the "crossed to next page, wrap to previous page" bug).
+    fn readDirectWordPageWrap(self: *Cpu, addr: u16) u16 {
+        const lo: u16 = self.readByte(0, self.directResolved(addr));
+        var hi_addr = self.directResolved(addr +% 1);
+        if (self.emulation_mode and (self.dp & 0xFF) != 0 and (hi_addr & 0xFF) == 0) {
+            hi_addr = hi_addr -% 0x100; // crossed a page: wrap back instead
+        }
+        const hi: u16 = self.readByte(0, hi_addr);
+        return lo | (hi << 8);
+    }
+
     /// Direct Page Indirect: (dp)
     ///
-    /// NOTE on a quirk we deliberately DON'T have: one might expect the
-    /// classic 6502 ($FF) pointer-wrap bug in emulation mode with DL=0
-    /// (pointer at $xxFF reading its high byte from $xx00). The
-    /// SingleStepTests vectors prove the 65816 does NOT do this - e.g.
-    /// vector "e1 e 8669" (SBC (dp,X), D=$F400, pointer at $F4FF) reads
-    /// the high byte from $F500. Only the INDEXED ADDRESS computation
-    /// wraps with DL=0 (see addrDirectX); pointer fetches are 16-bit.
+    /// E-mode pointer-fetch behavior (Mesen GetDirectAddress /
+    /// GetDirectAddressIndirectWord, corroborated by ares readDirect;
+    /// test/mesen/dp-indirect.md holds the comparison ROM evidence):
+    ///
+    /// 1. E=1/DL=0: BOTH pointer bytes wrap within D's page - a pointer
+    ///    at $xxFF reads its high byte from $xx00 (the 6502 ($FF)
+    ///    pointer-wrap bug IS reproduced by the 5A22 here).
+    /// 2. E=1/DL!=0: full 16-bit D+offset per byte, pages NOT merged.
+    /// 3. Native mode: full 16-bit sums, no wrap.
+    ///
+    /// CONFLICTING EVIDENCE - documented honestly, not rewritten to agree:
+    /// SingleStepTests vector "e1 e 8669" (SBC (dp,X), E=1, D=$F400,
+    /// pointer low byte at $F4FF) really reads the pointer high byte
+    /// from $F500 - i.e. NO wrap (cycle trace in the persisted vector
+    /// file: $F4FF then $F500). That vector CONTRADICTS the frozen Mesen
+    /// fixture this repository compares against; the old comment claimed
+    /// the vector "proved" no-wrap behavior, which overstated it: the two
+    /// suites simply disagree, and neither settles what PHYSICAL silicon
+    /// does. This repo's CPU targets the SNES 5A22 with Mesen as the
+    /// compatibility reference (test/mesen/dp-indirect.md), so it follows
+    /// Mesen/ares here. Physical-hardware verification remains an open
+    /// measurement, and no external vector (Mesen's or SingleStepTests')
+    /// was rewritten to make this change pass.
     fn addrDirectIndirect(self: *Cpu) u16 {
         const dp_addr = self.addrDirect();
         self.ea_bank = self.dbr;
-        return self.readWord(0, dp_addr);
+        return self.readDirectWord(dp_addr);
     }
 
     /// Direct Page Indirect Long: [dp]
+    ///
+    /// Long pointers never wrap: Mesen's GetDirectAddressIndirectLong
+    /// reads all three bytes with allowEmulationMode=false (plain
+    /// D+offset arithmetic, linearly continuing past page boundaries) -
+    /// deliberately different from the 16-bit pointer fetches.
     fn addrDirectIndirectLong(self: *Cpu) struct { bank: u8, addr: u16 } {
         const dp_addr = self.addrDirect();
         const addr = self.readWord(0, dp_addr);
@@ -548,16 +688,23 @@ pub const Cpu = struct {
     }
 
     /// Direct Page Indexed Indirect: (dp,X)
+    ///
+    /// Two E-mode quirks compose (Mesen AddrMode_DirIdxIndX): the indexed
+    /// direct address uses the dp,X DL=0 page wrap (see addrDirectX), then
+    /// the pointer word is fetched by readDirectWordPageWrap, which also
+    /// models Mesen's DL!=0 page-boundary pullback in
+    /// GetDirectAddressIndirectWordWithPageWrap (a high-byte address that
+    /// lands exactly on a page boundary is read from addr-$100 instead).
     fn addrDirectIndexedIndirect(self: *Cpu) u16 {
         const dp_addr = self.addrDirectX();
         self.ea_bank = self.dbr;
-        return self.readWord(0, dp_addr);
+        return self.readDirectWordPageWrap(dp_addr);
     }
 
     /// Direct Page Indirect Indexed: (dp),Y
     fn addrDirectIndirectIndexed(self: *Cpu, check_page: bool) u16 {
         const dp_addr = self.addrDirect();
-        const base = self.readWord(0, dp_addr);
+        const base = self.readDirectWord(dp_addr);
         const idx = if (self.p.x) @as(u16, @truncate(self.y)) else self.y;
         if (check_page and (base & 0xFF00) != ((base +% idx) & 0xFF00)) {
             self.cycles += 1;
@@ -2991,6 +3138,28 @@ test "cpu flags" {
     try std.testing.expect(restored.z == true);
 }
 
+test "interrupt entry accounts both SlowROM vector fetches" {
+    var ppu = @import("../ppu/ppu.zig").Ppu.init();
+    var bus = Bus.init(&ppu);
+    var cpu = Cpu.init(&bus);
+
+    // Three stack writes and two vector reads are SlowROM/WRAM accesses at
+    // 8 master clocks each. The seven-cycle interrupt sequence has two
+    // internal cycles at 6 clocks each: 5 * 8 + 2 * 6 = 52.
+    cpu.triggerNmi();
+    try std.testing.expectEqual(@as(u8, 7), cpu.step());
+    try std.testing.expectEqual(@as(u8, 5), cpu.mem_accesses);
+    try std.testing.expectEqual(@as(u32, 40), cpu.mem_masters);
+    try std.testing.expectEqual(@as(u32, 52), cpu.mem_masters + (@as(u32, cpu.cycles) - cpu.mem_accesses) * 6);
+
+    cpu.p.i = false;
+    cpu.triggerIrq();
+    try std.testing.expectEqual(@as(u8, 7), cpu.step());
+    try std.testing.expectEqual(@as(u8, 5), cpu.mem_accesses);
+    try std.testing.expectEqual(@as(u32, 40), cpu.mem_masters);
+    try std.testing.expectEqual(@as(u32, 52), cpu.mem_masters + (@as(u32, cpu.cycles) - cpu.mem_accesses) * 6);
+}
+
 test "adc 8-bit" {
     var ppu = @import("../ppu/ppu.zig").Ppu.init();
     var bus = Bus.init(&ppu);
@@ -3015,4 +3184,187 @@ test "adc 8-bit overflow" {
     try std.testing.expectEqual(@as(u16, 0x80), cpu.a & 0xFF);
     try std.testing.expect(!cpu.p.c);
     try std.testing.expect(cpu.p.v); // Overflow: positive + positive = negative
+}
+
+// ---------------------------------------------------------------------------
+// E-mode direct-page pointer-fetch wrap regressions (Mesen comparison)
+//
+// Expectations derived from Mesen's GetDirectAddress /
+// GetDirectAddressIndirectWord semantics (see the addrDirectIndirect
+// comment): with E=1 and DL=0 each pointer byte resolves to
+// (D & $FF00) | low(offset), so a pointer whose low byte sits at $xxFF
+// has its high byte read from $xx00, not $xx00+page. The addresses below
+// are deliberately different from the test/mesen probe ROM's (D=$0300,
+// pointers $037E/$03FF, X=3): these use D=$0200, operand $FF/$06+$F9.
+// ---------------------------------------------------------------------------
+
+/// Run one opcode at $0800 with the given operand byte and verify the
+/// opcode/operand landed before executing. Tests use a 16 MiB flat-memory
+/// Bus (the same mode as the SingleStepTests CPU harness), so EVERY byte
+/// of the 24-bit address space is real writable RAM - notably the decoy
+/// addresses in bank $00/$7E below, which the simplified Bus mapping
+/// would otherwise ignore (banks $40-$6F/$C0-$FF etc. are not WRAM).
+fn runOneOp(cpu: *Cpu, opcode: u8, operand: u8) void {
+    cpu.pc = 0x0800;
+    cpu.bus.write(0, 0x0800, opcode);
+    cpu.bus.write(0, 0x0801, operand);
+    if (cpu.bus.read(0, 0x0800) != opcode) @panic("test setup: opcode write ignored");
+    if (cpu.bus.read(0, 0x0801) != operand) @panic("test setup: operand write ignored");
+    _ = cpu.step();
+}
+
+/// Flat-memory Bus for the DP-wrap tests: the decoy bytes written at
+/// "what the old linear fetch would read" addresses must be real RAM, or
+/// an ignored write would silently turn the decoys into $FF and weaken
+/// the assertion. The 16 MiB backing lives in static storage (16 MiB on
+/// a test thread's stack overflows it). The caller owns both `bus` and
+/// `cpu` storage; the CPU is constructed only AFTER the bus sits at its
+/// final address so `cpu.bus` points at the caller's Bus, never at a
+/// moved temporary (the previous helper returned Bus+Cpu by value, which
+/// copied the Bus but left `cpu.bus` pointing into the expired helper
+/// frame).
+var dp_test_flat: [16 * 1024 * 1024]u8 = undefined;
+
+fn flatTestCpu(bus: *Bus, cpu: *Cpu) void {
+    @memset(&dp_test_flat, 0);
+    bus.* = Bus.init(undefined); // no PPU in flat mode
+    bus.flat_mem = dp_test_flat[0..];
+    cpu.* = Cpu.init(bus); // after bus has its final stable address
+}
+
+test "cmp (dp,X) e-mode DL=0 wraps pointer high byte to D page" {
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
+    cpu.emulation_mode = true; // E=1, D.l=0
+    cpu.dp = 0x0200;
+    cpu.p.m = true; // 8-bit A
+    cpu.a = 0x99;
+
+    // (dp,X) with operand $06, X=$F9: indexed sum wraps to $02FF (the
+    // addrDirectX DL=0 rule). The pointer's HIGH byte then wraps back to
+    // $0200 instead of reading $0300, giving pointer $1234 and data $99:
+    // CMP yields Z=1/C=1. A linear high-byte fetch would read $0300,
+    // form pointer $5634, find $EE there and clear Z.
+    cpu.x = 0xF9;
+    cpu.bus.write(0, 0x02FF, 0x34); // pointer low byte (at $02FF)
+    cpu.bus.write(0, 0x0200, 0x12); // pointer high byte (wrapped from $0300)
+    cpu.bus.write(0, 0x0300, 0x56); // decoy: what a linear fetch would read
+    cpu.bus.write(0, 0x1234, 0x99); // data at the wrapped pointer target
+    cpu.bus.write(0, 0x5634, 0xEE); // what the linear fetch would compare
+    // Setup verification: each seed byte is read back through the bus
+    // (load-bearing pointer/data/decoy bytes).
+    try std.testing.expectEqual(@as(u8, 0x34), cpu.bus.read(0, 0x02FF));
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0200));
+    try std.testing.expectEqual(@as(u8, 0x56), cpu.bus.read(0, 0x0300));
+    try std.testing.expectEqual(@as(u8, 0x99), cpu.bus.read(0, 0x1234));
+    try std.testing.expectEqual(@as(u8, 0xEE), cpu.bus.read(0, 0x5634));
+    runOneOp(&cpu, 0xC1, 0x06); // CMP (dp,X)
+    try std.testing.expect(cpu.p.z);
+    try std.testing.expect(cpu.p.c);
+}
+
+test "lda (dp) e-mode DL=0 wraps pointer high byte to D page" {
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
+    cpu.emulation_mode = true;
+    cpu.dp = 0x0200;
+    cpu.p.m = true;
+
+    // Operand $FF puts the pointer's low byte at $02FF; the high byte must
+    // wrap to $0200, forming pointer $1234 and loading $5A. The linear
+    // (old) fetch would read the decoy at $0300, form pointer $5634 and
+    // load its real RAM content $EE instead.
+    cpu.bus.write(0, 0x02FF, 0x34);
+    cpu.bus.write(0, 0x0200, 0x12);
+    cpu.bus.write(0, 0x0300, 0x56);
+    cpu.bus.write(0, 0x1234, 0x5A);
+    cpu.bus.write(0, 0x5634, 0xEE);
+    try std.testing.expectEqual(@as(u8, 0x34), cpu.bus.read(0, 0x02FF));
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0200));
+    try std.testing.expectEqual(@as(u8, 0x5A), cpu.bus.read(0, 0x1234));
+    try std.testing.expectEqual(@as(u8, 0xEE), cpu.bus.read(0, 0x5634));
+    runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
+    try std.testing.expectEqual(@as(u16, 0x5A), cpu.a & 0xFF);
+}
+
+test "lda (dp),y e-mode DL=0 wraps pointer high byte before Y add" {
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
+    cpu.emulation_mode = true;
+    cpu.dp = 0x0200;
+    cpu.p.m = true;
+    cpu.y = 0x10;
+
+    // Same DL=0 pointer wrap, through the (dp),Y helper: base $1234 plus
+    // Y=$10 reads $7E from $1244. The linear fetch would read decoy $0300
+    // as the high byte and load from $5644 instead.
+    cpu.bus.write(0, 0x02FF, 0x34);
+    cpu.bus.write(0, 0x0200, 0x12);
+    cpu.bus.write(0, 0x0300, 0x56);
+    cpu.bus.write(0, 0x1244, 0x7E);
+    cpu.bus.write(0, 0x5644, 0xEE);
+    try std.testing.expectEqual(@as(u8, 0x7E), cpu.bus.read(0, 0x1244));
+    try std.testing.expectEqual(@as(u8, 0xEE), cpu.bus.read(0, 0x5644));
+    runOneOp(&cpu, 0xB1, 0xFF); // LDA (dp),Y
+    try std.testing.expectEqual(@as(u16, 0x7E), cpu.a & 0xFF);
+}
+
+test "lda (dp) e-mode DL!=0 fetches pointer linearly" {
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
+    cpu.emulation_mode = true;
+    cpu.dp = 0x0201; // D.l != 0: no page merging at all
+    cpu.p.m = true;
+
+    // D+operand = $0300; the high byte continues linearly to $0301.
+    cpu.bus.write(0, 0x0300, 0x34);
+    cpu.bus.write(0, 0x0301, 0x12);
+    cpu.bus.write(0, 0x1234, 0xAB);
+    try std.testing.expectEqual(@as(u8, 0x34), cpu.bus.read(0, 0x0300));
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0301));
+    try std.testing.expectEqual(@as(u8, 0xAB), cpu.bus.read(0, 0x1234));
+    runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
+    try std.testing.expectEqual(@as(u16, 0xAB), cpu.a & 0xFF);
+}
+
+test "lda (dp) native mode fetches pointer linearly across page" {
+    var bus: Bus = undefined;
+    var cpu: Cpu = undefined;
+    flatTestCpu(&bus, &cpu);
+    // Ownership assertion FIRST, before any bus access: the CPU must point
+    // at the caller-owned Bus (catches a by-value copy moving the Bus out
+    // from under cpu.bus - the lifetime bug this suite once had).
+    try std.testing.expectEqual(@intFromPtr(&bus), @intFromPtr(cpu.bus));
+    cpu.emulation_mode = false;
+    cpu.dp = 0x0200;
+    cpu.p.m = true;
+
+    // Native mode: pointer high byte reads $0300 even with D.l=0.
+    cpu.bus.write(0, 0x02FF, 0x34);
+    cpu.bus.write(0, 0x0300, 0x12);
+    cpu.bus.write(0, 0x1234, 0xCD);
+    try std.testing.expectEqual(@as(u8, 0x12), cpu.bus.read(0, 0x0300));
+    try std.testing.expectEqual(@as(u8, 0xCD), cpu.bus.read(0, 0x1234));
+    runOneOp(&cpu, 0xB2, 0xFF); // LDA (dp)
+    try std.testing.expectEqual(@as(u16, 0xCD), cpu.a & 0xFF);
 }
