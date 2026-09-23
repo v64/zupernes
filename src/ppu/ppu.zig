@@ -1058,7 +1058,10 @@ pub const Ppu = struct {
         // Get background mode
         const mode: u3 = @truncate(self.bgmode);
 
-        // Render sprites for this scanline
+        // Render the physical OBJ layer once for either screen, just as the
+        // BG pass below renders every layer selected by TM or TS once.  The
+        // main/sub compositors independently apply their designation and
+        // window bits to this shared line.
         var sprite_buffer: [SCREEN_WIDTH]?SpritePixel = undefined;
         self.renderSprites(y, &sprite_buffer);
 
@@ -1269,26 +1272,31 @@ pub const Ppu = struct {
             var final_layer: u8 = bg_layer;
             var obj_math_eligible = false;
 
-            if (sprite_buffer[x]) |sprite| {
-                const sprite_wins = self.spritePriorityWins(mode, sprite.priority, bg_layer, bg_tile_prio);
+            // The OBJ line is rendered once for either screen (TM or TS);
+            // the main screen applies its own designation (TM bit 4) and
+            // window (TMW bit 4) to it (subscreen-obj, Anomie $212C/$212E).
+            if ((self.tm & 0x10) != 0 and !self.isWindowMasked(4, @intCast(x))) {
+                if (sprite_buffer[x]) |sprite| {
+                    const sprite_wins = self.spritePriorityWins(mode, sprite.priority, bg_layer, bg_tile_prio);
 
-                // Debug: trace sprite priority decisions at frame 700
-                if (comptime dbg.enabled) {
-                    // Log sprite pixels that overlap with BG at frame 700
-                    if (self.frame_count == 700 and bg_layer != 0) {
-                        std.debug.print("[PRIO] x={d} y={d} s_pri={d} bg_l={d} bg_p={d} wins={}\n", .{
-                            x, y, sprite.priority, bg_layer, bg_priority, sprite_wins,
-                        });
+                    // Debug: trace sprite priority decisions at frame 700
+                    if (comptime dbg.enabled) {
+                        // Log sprite pixels that overlap with BG at frame 700
+                        if (self.frame_count == 700 and bg_layer != 0) {
+                            std.debug.print("[PRIO] x={d} y={d} s_pri={d} bg_l={d} bg_p={d} wins={}\n", .{
+                                x, y, sprite.priority, bg_layer, bg_priority, sprite_wins,
+                            });
+                        }
                     }
-                }
 
-                if (sprite_wins) {
-                    color = sprite.color;
-                    final_layer = 5; // OBJ won
-                    // CGADSUB's OBJ bit applies only to sprite palettes
-                    // 4..7 (stored here as CGRAM palette rows 12..15).
-                    // OBJ palettes 0..3 always bypass color math.
-                    obj_math_eligible = sprite.palette >= 12;
+                    if (sprite_wins) {
+                        color = sprite.color;
+                        final_layer = 5; // OBJ won
+                        // CGADSUB's OBJ bit applies only to sprite palettes
+                        // 4..7 (stored here as CGRAM palette rows 12..15).
+                        // OBJ palettes 0..3 always bypass color math.
+                        obj_math_eligible = sprite.palette >= 12;
+                    }
                 }
             }
 
@@ -1381,7 +1389,7 @@ pub const Ppu = struct {
                 var blend_color: u16 = undefined;
                 var subscreen_transparent = false;
                 if (use_subscreen) {
-                    if (self.renderSubscreenPixel(&bg_lines, @intCast(x), y, mode)) |sub| {
+                    if (self.renderSubscreenPixel(&bg_lines, &sprite_buffer, @intCast(x), y, mode)) |sub| {
                         blend_color = sub;
                     } else {
                         blend_color = self.coldata;
@@ -2038,61 +2046,66 @@ pub const Ppu = struct {
     /// The subscreen uses the TS register ($212D) instead of TM ($212C) to
     /// determine which layers are enabled. This is used for transparency effects.
     ///
-    /// Unlike the main screen which composites layers back-to-front with priority,
-    /// the subscreen result is simply blended with the main screen via color math.
+    /// The selected subscreen layers are composited with the same priority rules
+    /// as the main screen. The winning pixel is then the second color-math operand.
     /// ==========================================================================
     /// Render the subscreen pixel at (x, y), or null if every enabled
     /// subscreen layer is transparent there. The distinction matters:
     /// a fully-transparent subscreen makes "add subscreen" color math
     /// fall back to the fixed color instead of adding the backdrop.
-    /// Reads the same per-scanline BG line buffers the main screen uses -
-    /// the subscreen shows the SAME rendered layers, just selected by TS
-    /// instead of TM, so one buffer pass serves both screens.
-    fn renderSubscreenPixel(self: *Ppu, bg_lines: *const [4]BgLine, x: u16, y: u16, mode: u3) ?u16 {
+    /// Reads the same per-scanline BG and OBJ line buffers the main screen uses:
+    /// TS ($212D) has the same BG1-BG4/OBJ layout as TM ($212C), while TSW
+    /// ($212F) independently selects which layer windows affect the subscreen.
+    ///
+    /// References:
+    /// - Anomie's Register Doc, $212D TS and $212F TSW:
+    ///   https://github.com/gilligan/snesdev/blob/master/docs/snes_registers.txt
+    /// - fullsnes, "SNES PPU Color Math":
+    ///   https://problemkaputt.de/fullsnes.htm#snesppucolormath
+    fn renderSubscreenPixel(
+        self: *Ppu,
+        bg_lines: *const [4]BgLine,
+        sprite_buffer: *const [SCREEN_WIDTH]?SpritePixel,
+        x: u16,
+        y: u16,
+        mode: u3,
+    ) ?u16 {
         var color: ?u16 = null;
-        // Absolute priority rank of the winning subscreen pixel; mirrors the
-        // main-screen composite loop but driven by TS ($212D) instead of TM.
-        // The tile priority bit alone is not a z value (see renderScanlineRange).
+        // Absolute priority rank of the winning subscreen BG pixel; mirrors the
+        // main-screen composite loop but driven by TS ($212D) instead of TM,
+        // and by TSW ($212F) instead of TMW for the per-layer windows. The
+        // tile priority bit alone is not a z value (see renderScanlineRange).
         var rank: u8 = 0;
+        // Winning BG layer (1-4, 0 = none) and its tile priority bit, for the
+        // OBJ comparison below (the same inputs spritePriorityWins takes on
+        // the main screen).
+        var bg_layer: u8 = 0;
+        var bg_tile_prio: u8 = 0;
+        const x8: u8 = @intCast(x);
 
-        // Note: Subscreen doesn't use window masking for layer enable
-        // (though the color window affects where color math applies)
+        // Offer one BG pixel with its absolute rank; the strictly greater
+        // rank wins, equal ranks keep the earlier (backward) pixel.
+        const Offer = struct {
+            fn bg(c_color: *?u16, c_rank: *u8, c_layer: *u8, c_prio: *u8, px: anytype, layer: u8, r: u8) void {
+                if (c_rank.* == 0 or r > c_rank.*) {
+                    c_color.* = px.color;
+                    c_rank.* = r;
+                    c_layer.* = layer;
+                    c_prio.* = px.priority;
+                }
+            }
+        };
 
         switch (mode) {
             0 => {
                 // Mode 0 ranks, front to back: BG1H=11 BG2H=10 BG1L=8 BG2L=7
                 // BG3H=5 BG4H=4 BG3L=2 BG4L=1 (Mesen RenderMode0).
-                if ((self.ts & 0x01) != 0) {
-                    if (bg_lines[0].pixel(x)) |c| {
-                        color = c.color;
-                        rank = if (c.priority != 0) 11 else 8;
-                    }
-                }
-                if ((self.ts & 0x02) != 0) {
-                    if (bg_lines[1].pixel(x)) |c| {
-                        const r: u8 = if (c.priority != 0) 10 else 7;
-                        if (rank == 0 or r > rank) {
-                            color = c.color;
-                            rank = r;
-                        }
-                    }
-                }
-                if ((self.ts & 0x04) != 0) {
-                    if (bg_lines[2].pixel(x)) |c| {
-                        const r: u8 = if (c.priority != 0) 5 else 2;
-                        if (rank == 0 or r > rank) {
-                            color = c.color;
-                            rank = r;
-                        }
-                    }
-                }
-                if ((self.ts & 0x08) != 0) {
-                    if (bg_lines[3].pixel(x)) |c| {
-                        const r: u8 = if (c.priority != 0) 4 else 1;
-                        if (rank == 0 or r > rank) {
-                            color = c.color;
-                            rank = r;
-                        }
+                const ranks = [4][2]u8{ .{ 8, 11 }, .{ 7, 10 }, .{ 2, 5 }, .{ 1, 4 } };
+                for (0..4) |l| {
+                    const bit = @as(u8, 1) << @intCast(l);
+                    if ((self.ts & bit) == 0 or self.isSubscreenWindowMasked(@intCast(l), x8)) continue;
+                    if (bg_lines[l].pixel(x)) |c| {
+                        Offer.bg(&color, &rank, &bg_layer, &bg_tile_prio, c, @intCast(l + 1), ranks[l][@intFromBool(c.priority != 0)]);
                     }
                 }
             },
@@ -2100,28 +2113,12 @@ pub const Ppu = struct {
                 // Mode 1 ranks: BG1H=9 BG2H=8 BG1L=6 BG2L=5 3H(bit3)=11
                 // 3H=3 3L=1 (Mesen RenderMode1).
                 const bg3_h_rank: u8 = if ((self.bgmode & 0x08) != 0) 11 else 3;
-                if ((self.ts & 0x01) != 0) {
-                    if (bg_lines[0].pixel(x)) |c| {
-                        color = c.color;
-                        rank = if (c.priority != 0) 9 else 6;
-                    }
-                }
-                if ((self.ts & 0x02) != 0) {
-                    if (bg_lines[1].pixel(x)) |c| {
-                        const r: u8 = if (c.priority != 0) 8 else 5;
-                        if (rank == 0 or r > rank) {
-                            color = c.color;
-                            rank = r;
-                        }
-                    }
-                }
-                if ((self.ts & 0x04) != 0) {
-                    if (bg_lines[2].pixel(x)) |c| {
-                        const r: u8 = if (c.priority != 0) bg3_h_rank else 1;
-                        if (rank == 0 or r > rank) {
-                            color = c.color;
-                            rank = r;
-                        }
+                const ranks = [3][2]u8{ .{ 6, 9 }, .{ 5, 8 }, .{ 1, bg3_h_rank } };
+                for (0..3) |l| {
+                    const bit = @as(u8, 1) << @intCast(l);
+                    if ((self.ts & bit) == 0 or self.isSubscreenWindowMasked(@intCast(l), x8)) continue;
+                    if (bg_lines[l].pixel(x)) |c| {
+                        Offer.bg(&color, &rank, &bg_layer, &bg_tile_prio, c, @intCast(l + 1), ranks[l][@intFromBool(c.priority != 0)]);
                     }
                 }
             },
@@ -2130,34 +2127,40 @@ pub const Ppu = struct {
                 // BG2H=5 BG2L=1. Mode 6 has different BG1 ranks (RenderMode6:
                 // BG1 1/5, no BG2) and is not corrected here - a documented
                 // limitation outside the modes 0-4 campaign scope.
-                if (mode != 6 and (self.ts & 0x02) != 0) {
+                if (mode != 6 and (self.ts & 0x02) != 0 and !self.isSubscreenWindowMasked(1, x8)) {
                     if (bg_lines[1].pixel(x)) |c| {
-                        color = c.color;
-                        rank = if (c.priority != 0) 5 else 1;
+                        Offer.bg(&color, &rank, &bg_layer, &bg_tile_prio, c, 2, if (c.priority != 0) 5 else 1);
                     }
                 }
-                if ((self.ts & 0x01) != 0) {
+                if ((self.ts & 0x01) != 0 and !self.isSubscreenWindowMasked(0, x8)) {
                     if (bg_lines[0].pixel(x)) |c| {
-                        const r: u8 = if (c.priority != 0) 7 else 3;
-                        if (rank == 0 or r > rank) {
-                            color = c.color;
-                            rank = r;
-                        }
+                        Offer.bg(&color, &rank, &bg_layer, &bg_tile_prio, c, 1, if (c.priority != 0) 7 else 3);
                     }
                 }
             },
             7 => {
                 // Mode 7 on the subscreen - per-pixel affine, not buffered
-                if ((self.ts & 0x01) != 0) {
+                if ((self.ts & 0x01) != 0 and !self.isSubscreenWindowMasked(0, x8)) {
                     if (self.renderMode7Pixel(x, y)) |c| {
                         color = c.color;
+                        bg_layer = 1;
+                        bg_tile_prio = c.priority;
                     }
                 }
             },
         }
 
-        // Note: Subscreen sprites (OBJ) would be handled here if TS bit 4 is set
-        // For now we don't render subscreen sprites, as it's less common
+        // OBJ on the subscreen (subscreen-obj): the shared OBJ line, selected
+        // by TS bit 4 and masked by TSW bit 4, competes with the winning BG by
+        // the same per-mode rank rule as the main screen. The main-screen-only
+        // OBJ palette 4-7 color-math gate does not apply to the operand.
+        if ((self.ts & 0x10) != 0 and !self.isSubscreenWindowMasked(4, x8)) {
+            if (sprite_buffer[x]) |sprite| {
+                if (self.spritePriorityWins(mode, sprite.priority, bg_layer, bg_tile_prio)) {
+                    color = sprite.color;
+                }
+            }
+        }
 
         return color;
     }
@@ -2241,9 +2244,16 @@ pub const Ppu = struct {
     // the given layer. Layer: 0=BG1, 1=BG2, 2=BG3, 3=BG4, 4=OBJ
     // ==========================================================================
     fn isWindowMasked(self: *Ppu, layer: u3, x: u8) bool {
-        // Check if window masking is enabled for this layer on main screen
-        const tmw_bit = @as(u8, 1) << layer;
-        if ((self.tmw & tmw_bit) == 0) return false;
+        return self.isWindowMaskedOnScreen(self.tmw, layer, x);
+    }
+
+    fn isSubscreenWindowMasked(self: *Ppu, layer: u3, x: u8) bool {
+        return self.isWindowMaskedOnScreen(self.tsw, layer, x);
+    }
+
+    fn isWindowMaskedOnScreen(self: *Ppu, window_designation: u8, layer: u3, x: u8) bool {
+        const window_bit = @as(u8, 1) << layer;
+        if ((window_designation & window_bit) == 0) return false;
 
         // Get window settings for this layer
         const w_sel: u8 = switch (layer) {
@@ -2395,7 +2405,10 @@ pub const Ppu = struct {
             p.* = null;
         }
 
-        if ((self.tm & 0x10) == 0) return; // OBJ not enabled on main screen
+        // OBJ evaluation feeds both screens. If either TM or TS selects OBJ,
+        // build the one physical sprite line and let each compositor apply
+        // its own designation/window state.
+        if (((self.tm | self.ts) & 0x10) == 0) return;
 
         const sizes = self.getSpriteSizes();
 
@@ -3733,4 +3746,58 @@ test "lower OAM index wins overlapping OBJ pixels" {
     var line: [SCREEN_WIDTH]?Ppu.SpritePixel = undefined;
     ppu.renderSprites(1, &line);
     try std.testing.expectEqual(@as(u16, 0x001F), line[0].?.color);
+}
+
+test "TS OBJ is composited as the color-math operand and obeys TSW" {
+    var ppu = Ppu.init();
+    ppu.inidisp = 0x0F; // display enabled, full brightness
+    ppu.bgmode = 1;
+
+    // This is the castle-entrance register scene: main BG3, sub BG1/BG2/OBJ,
+    // and color math on the main backdrop. CGWSEL bit 1 selects the composed
+    // subscreen instead of fixed color as the second operand.
+    ppu.tm = 0x04;
+    ppu.ts = 0x13;
+    ppu.cgadsub = 0x20;
+    ppu.cgwsel = 0x02;
+
+    // Keep the three selected BGs transparent and their tilemaps away from
+    // OBJ tile 0. The test intentionally selects BGs too: it exercises the
+    // actual TM=$04/TS=$13 scene rather than reducing TS to OBJ alone.
+    ppu.bg1sc = 0x40;
+    ppu.bg2sc = 0x44;
+    ppu.bg3sc = 0x48;
+    ppu.bg12nba = 0x11;
+    ppu.bg34nba = 0x02;
+
+    // One palette-0 sprite covers x=0..7 on scanline 1. Palette 0 is
+    // deliberate: fullsnes's palette-4..7 restriction decides whether an
+    // OBJ pixel on the MAIN screen may receive math; it does not prevent any
+    // OBJ palette from supplying the SUB screen operand.
+    for (0..128) |i| ppu.oam[i * 4 + 1] = 0xF0;
+    ppu.oam[0..4].* = .{ 0, 0, 0, 0 };
+    ppu.vram[0] = 0xFF; // OBJ tile 0, row 0, color index 1
+
+    // Main backdrop = red 16; OBJ = green 16; fixed color = blue 1.
+    ppu.cgram[0] = 0x10;
+    ppu.cgram[129 * 2] = 0x00;
+    ppu.cgram[129 * 2 + 1] = 0x02;
+    ppu.coldata = 0x0400;
+
+    // TMW is independent of the subscreen: masking OBJ on main must not hide
+    // the TS-selected sprite. Backdrop + OBJ produces red16 + green16.
+    ppu.tmw = 0x10;
+    ppu.renderScanlineRange(1, 0, 2);
+    try std.testing.expectEqual(@as(u16, 0x0210), ppu.framebuffer[SCREEN_WIDTH]);
+
+    // Enable the OBJ window on the SUB screen and mask x=0 only. There the
+    // transparent subscreen correctly falls back to COLDATA; x=1 still uses
+    // the sprite. WOBJSEL bit 1 enables window 1 without inversion.
+    ppu.tsw = 0x10;
+    ppu.wobjsel = 0x02;
+    ppu.wh0 = 0;
+    ppu.wh1 = 0;
+    ppu.renderScanlineRange(1, 0, 2);
+    try std.testing.expectEqual(@as(u16, 0x0410), ppu.framebuffer[SCREEN_WIDTH]);
+    try std.testing.expectEqual(@as(u16, 0x0210), ppu.framebuffer[SCREEN_WIDTH + 1]);
 }
