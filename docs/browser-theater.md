@@ -70,21 +70,36 @@ editable element never leaks into the emulated pad.
 
 ## Operation ownership
 
-One rule governs play/pause/reset/erase/load/hidden and every delayed
-continuation: each operation captures an epoch (selection serial,
-session generation+identity, command serial) when it begins, and a
-continuation may commit only while its epoch is current - an old or
-superseded operation can never change a newer operation's phase,
-presentation, inputs, audio or save identity. All storage writes and
-deletes flow through one serialized mutation queue; an erase invalidates
-older queued writes for the same cartridge, so a held write can never
-resurrect a deleted save, and writes/deletes order totally at the actual
-IndexedDB side effect. The worker rejects run/reset/read/import requests
-naming any generation other than its live machine, so page and worker
-cannot disagree about the live cartridge. A rejected selection whose
-install left the worker ahead of the page reloads the last successful
-selection, keeping the retained cartridge, identity, SRAM and
-generation in agreement.
+Everything that changes what the player sees or controls obeys one rule
+(`src/theater/js/main.mjs`, header comment O1-O4):
+
+- **One owner token.** Load, Erase Save, Play, Pause, Reset, and hiding
+  the tab while a game runs each *claim* the token synchronously when they
+  start. Only the newest claimant may change the phase, the stop flag,
+  inputs, audio or the picture.
+- **Continuations re-check.** Code that resumes after an await (a save
+  landing, a worker reply) first checks that it still owns the token. If
+  not, it returns without touching anything, so a slow Pause can never
+  pause or un-stop a cartridge loaded or erased after it.
+- **Refuse, don't race.** Play only from paused, Pause only while running,
+  Reset/Erase never while a load/erase/reset is in progress, and a hidden
+  tab only stops a *running* game; a load in progress continues and ends
+  paused.
+- **Page and worker agree.** If a newer selection is rejected - by the
+  page (size, unreadable file) or by the worker (coprocessor, mapping) -
+  the page asks the worker which machine it holds. If a skipped earlier
+  load committed there, the page reinstalls its own last adopted
+  cartridge before showing the error.
+
+Saves have their own ordering rule. All writes and deletes run through
+one serialized queue, so IndexedDB sees them in request order. Erase
+Save advances a per-cartridge *erase token* at the moment it is
+requested, and every write carries the token that was current when its
+SRAM bytes were read from the worker. Bytes read before an erase are
+never written after it, however late their write is queued. A write
+already executing when the erase is requested finishes first and is then
+deleted. The worker also refuses run/reset/SRAM requests that name
+another cartridge's generation.
 
 ## Battery saves
 
@@ -108,7 +123,7 @@ zig build theater -Doptimize=ReleaseFast
 node test/theater/wasm-check.mjs          # 20 exact RGB/WRAM/PCM parity checkpoints
 python3 src/theater/serve.py --port 8380 &  # then:
 node test/theater/browser-check.mjs http://127.0.0.1:8380   # supplied UI smoke gate
-node test/theater/feature-check.mjs http://127.0.0.1:8380   # extended gate (14 scenarios)
+node test/theater/feature-check.mjs http://127.0.0.1:8380   # extended gate (28 scenarios)
 node test/theater/perf-check.mjs http://127.0.0.1:8380 10  # real headed Chrome
 zig build && zig build test               # native behavior unchanged
 ```
@@ -134,25 +149,33 @@ zig build && zig build test               # native behavior unchanged
   Chrome after warmup: 60.1 fps (100.0% of NTSC) with the WebGPU
   presenter; toolbar response 38-43 ms measured from before the click
   dispatch (harness transit included).
-- **feature-check.mjs round-3 scenarios** (20 total), each tied to what
-  its assertions actually measure: a held-loaded-reply regression (real
-  Worker.onmessage interception from an addInitScript - no timed sleeps)
-  where a committed-but-unheld B followed by a rejected C reconciles the
-  page to its last successful selection and Play advances frames;
-  A->B->A replacement with an unpaused save; a held pause write that
-  cannot resurrect an erased save (the storage mutation queue orders
-  every put/delete and erase-invalidates older writes); old pause
-  completion epoch-guarded against newer sessions; real worker startup
-  failure and crash injection with recovery; a worker-side
-  1,000-iteration interleaved alloc/free churn (the allocation.json
-  scenario executed for real through `__allocChurn`) asserting the wasm
-  memory plateau; real GPUDevice.destroy() and forced
-  GPUCanvasContext.configure-failure recovery through a fresh canvas
-  with provably continuing paints; display-refresh independence - a
-  30 Hz driver runs at ~100.3% NTSC and a MEASURED ~109.5/s fast
-  driver at ~100.5%, both asserting minimum progress and no
-  acceleration; REAL listener/worker counts via prototype instrumentation
-  (test-mode only).
+- **feature-check.mjs ownership and storage regressions** (the gate
+  runs 28 scenarios in total). Each one holds a real worker reply or
+  IndexedDB open, performs the racing operation, releases it, and asserts
+  the result; none uses a sleep as synchronization:
+  - held Pause write vs Erase Save (no resurrection);
+  - SRAM read before an Erase, written after the delete (skipped);
+  - old Pause completion vs an in-flight load and vs an in-flight erase;
+  - tab hidden during a load;
+  - a committed-but-unadopted load followed by a worker-rejected (after
+    an earlier ordinary rejection) or page-rejected selection
+    (reconciles, frames advance);
+  - the original held-reply/rejected-follow-up case;
+  - WebGPU `configure` throwing after the canvas handed out a WebGPU
+    context (live 2D replacement canvas with lit pixels);
+  - an outgoing save failure that stays visible after a successful
+    no-battery replacement.
+
+  Each new regression fails on the pre-fix code and passes now:
+  `.zig-cache/round-4-evidence/summary.md`, local, not committed.
+  Robustness checks:
+  - real GPUDevice.destroy() recovery with continuing paints;
+  - 1,000 worker-side alloc/free pairs plus 34 load cycles, asserting
+    that WASM memory plateaus;
+  - Worker constructions counted through a Proxy construct trap, and
+    window/canvas listener counts across 30 replacement cycles;
+  - a 30 Hz driver and a measured ~110 callbacks/s driver, each asserting
+    minimum progress and no acceleration.
 
 ### Tested environment
 
