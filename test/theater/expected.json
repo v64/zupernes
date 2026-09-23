@@ -1,0 +1,207 @@
+{
+  "schema": 1,
+  "base": "a51c7240d9e60e6176b7e1bef96d18cd0fb39678",
+  "fixtureSource": "a7c2d4a431556bc27c3c9e2a4d49a4b46b705caf553e342d3629bb3844fc1ebf",
+  "cases": [
+    {
+      "name": "lorom",
+      "frames": 2,
+      "romSha": "fb6a704eb4320fe6c278c28980ecfb296d1b1030402c9f9c20d5d2c201ff1ee8",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "4de777071c55ff97e42ae17bd7bcaf6a4212d56f7faf426a7990bb2e21f16b79",
+      "pcmSha": "36b8fd9476dc908ee1786200390a7362402591ebbd255ca10df75d96a7f89303",
+      "pcmFrames": 1064,
+      "pad": 0
+    },
+    {
+      "name": "lorom",
+      "frames": 60,
+      "romSha": "fb6a704eb4320fe6c278c28980ecfb296d1b1030402c9f9c20d5d2c201ff1ee8",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "e4f281183e2a2b5d5e25fd9b5f57a92217522078d82bae7fa6cc79166c660f7c",
+      "pcmSha": "63790eea2114ed0c51485e770151effa079d9c5d0ba1f88a4432af06cdc5f677",
+      "pcmFrames": 31939,
+      "pad": 0
+    },
+    {
+      "name": "lorom",
+      "frames": 65,
+      "romSha": "fb6a704eb4320fe6c278c28980ecfb296d1b1030402c9f9c20d5d2c201ff1ee8",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "be41c4d626310b21329495441e51a3dc858fa351571f45d69df8186226963760",
+      "pcmSha": "2b8fce262ff15781d661ee3e83b84ae1107e58bf2f1dbd98a5f9c631c0c76fac",
+      "pcmFrames": 34601,
+      "pad": 16384
+    },
+    {
+      "name": "lorom",
+      "frames": 110,
+      "romSha": "fb6a704eb4320fe6c278c28980ecfb296d1b1030402c9f9c20d5d2c201ff1ee8",
+      "rgbSha": "581c4985a421ba4e1459654579f7f5c757bb0bc7f8bd9bb5a35a2b0b3cf59ef3",
+      "wramSha": "dae03709cd89cf0fd75e9009c78df32e9fd3a3166d967e5b00b13774094b8bff",
+      "pcmSha": "d1ebde0d54e7ab77a1d80079d327b2d7f5d8c37ce0edbf7702896a06ceb09d17",
+      "pcmFrames": 58556,
+      "pad": 35200
+    },
+    {
+      "name": "lorom",
+      "frames": 120,
+      "romSha": "fb6a704eb4320fe6c278c28980ecfb296d1b1030402c9f9c20d5d2c201ff1ee8",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "b0a8b21307810c78abeebcb8aaa3ef2c56fe1cc437bbcbc122b89cf669352625",
+      "pcmSha": "1be2ec4c3a613c34ebd8e9f6b4979477ca6f659cc4f34b60efde259884f2a92b",
+      "pcmFrames": 63879,
+      "pad": 0
+    },
+    {
+      "name": "loromB",
+      "frames": 2,
+      "romSha": "4b4dcc442c2e518c4498ce6d392215ca9cfcf308518adf0f9140cc85ae281666",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "3624eef92b361750864a6096ff5c96ce1bd13fcc869dc42ae7229b4681d7a520",
+      "pcmSha": "36b8fd9476dc908ee1786200390a7362402591ebbd255ca10df75d96a7f89303",
+      "pcmFrames": 1064,
+      "pad": 0
+    },
+    {
+      "name": "loromB",
+      "frames": 60,
+      "romSha": "4b4dcc442c2e518c4498ce6d392215ca9cfcf308518adf0f9140cc85ae281666",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "d3fed1e6f3f248a0a396d2d6a00a0ac7d8f6cb3f6347aec614f8ac3dac73cb29",
+      "pcmSha": "63790eea2114ed0c51485e770151effa079d9c5d0ba1f88a4432af06cdc5f677",
+      "pcmFrames": 31939,
+      "pad": 0
+    },
+    {
+      "name": "loromB",
+      "frames": 65,
+      "romSha": "4b4dcc442c2e518c4498ce6d392215ca9cfcf308518adf0f9140cc85ae281666",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "cd2b26f252baec2289e2f89858e06e962df7d6cf532b1a0f77e3c3e398d8e1c7",
+      "pcmSha": "2b8fce262ff15781d661ee3e83b84ae1107e58bf2f1dbd98a5f9c631c0c76fac",
+      "pcmFrames": 34601,
+      "pad": 16384
+    },
+    {
+      "name": "loromB",
+      "frames": 110,
+      "romSha": "4b4dcc442c2e518c4498ce6d392215ca9cfcf308518adf0f9140cc85ae281666",
+      "rgbSha": "581c4985a421ba4e1459654579f7f5c757bb0bc7f8bd9bb5a35a2b0b3cf59ef3",
+      "wramSha": "a97631ef8eca5a4445fea929cb0e46e2f90f7c948389bbd9d4b04f726fc11b57",
+      "pcmSha": "d1ebde0d54e7ab77a1d80079d327b2d7f5d8c37ce0edbf7702896a06ceb09d17",
+      "pcmFrames": 58556,
+      "pad": 35200
+    },
+    {
+      "name": "loromB",
+      "frames": 120,
+      "romSha": "4b4dcc442c2e518c4498ce6d392215ca9cfcf308518adf0f9140cc85ae281666",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "388886336d71ac1d41aaf115a479ee24686821a69ebf5c36e0ff87f718b354f7",
+      "pcmSha": "1be2ec4c3a613c34ebd8e9f6b4979477ca6f659cc4f34b60efde259884f2a92b",
+      "pcmFrames": 63879,
+      "pad": 0
+    },
+    {
+      "name": "headered",
+      "frames": 2,
+      "romSha": "f32c5a4ebc92afb05601414382f71a1b00aaa27137bc7c87e66244392bc04bb8",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "4de777071c55ff97e42ae17bd7bcaf6a4212d56f7faf426a7990bb2e21f16b79",
+      "pcmSha": "36b8fd9476dc908ee1786200390a7362402591ebbd255ca10df75d96a7f89303",
+      "pcmFrames": 1064,
+      "pad": 0
+    },
+    {
+      "name": "headered",
+      "frames": 60,
+      "romSha": "f32c5a4ebc92afb05601414382f71a1b00aaa27137bc7c87e66244392bc04bb8",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "e4f281183e2a2b5d5e25fd9b5f57a92217522078d82bae7fa6cc79166c660f7c",
+      "pcmSha": "63790eea2114ed0c51485e770151effa079d9c5d0ba1f88a4432af06cdc5f677",
+      "pcmFrames": 31939,
+      "pad": 0
+    },
+    {
+      "name": "headered",
+      "frames": 65,
+      "romSha": "f32c5a4ebc92afb05601414382f71a1b00aaa27137bc7c87e66244392bc04bb8",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "be41c4d626310b21329495441e51a3dc858fa351571f45d69df8186226963760",
+      "pcmSha": "2b8fce262ff15781d661ee3e83b84ae1107e58bf2f1dbd98a5f9c631c0c76fac",
+      "pcmFrames": 34601,
+      "pad": 16384
+    },
+    {
+      "name": "headered",
+      "frames": 110,
+      "romSha": "f32c5a4ebc92afb05601414382f71a1b00aaa27137bc7c87e66244392bc04bb8",
+      "rgbSha": "581c4985a421ba4e1459654579f7f5c757bb0bc7f8bd9bb5a35a2b0b3cf59ef3",
+      "wramSha": "dae03709cd89cf0fd75e9009c78df32e9fd3a3166d967e5b00b13774094b8bff",
+      "pcmSha": "d1ebde0d54e7ab77a1d80079d327b2d7f5d8c37ce0edbf7702896a06ceb09d17",
+      "pcmFrames": 58556,
+      "pad": 35200
+    },
+    {
+      "name": "headered",
+      "frames": 120,
+      "romSha": "f32c5a4ebc92afb05601414382f71a1b00aaa27137bc7c87e66244392bc04bb8",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "b0a8b21307810c78abeebcb8aaa3ef2c56fe1cc437bbcbc122b89cf669352625",
+      "pcmSha": "1be2ec4c3a613c34ebd8e9f6b4979477ca6f659cc4f34b60efde259884f2a92b",
+      "pcmFrames": 63879,
+      "pad": 0
+    },
+    {
+      "name": "hirom",
+      "frames": 2,
+      "romSha": "960e29eb44e60fa1e6117dc759e62761866ea100cfabf680a60e7430d317f178",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "4de777071c55ff97e42ae17bd7bcaf6a4212d56f7faf426a7990bb2e21f16b79",
+      "pcmSha": "36b8fd9476dc908ee1786200390a7362402591ebbd255ca10df75d96a7f89303",
+      "pcmFrames": 1064,
+      "pad": 0
+    },
+    {
+      "name": "hirom",
+      "frames": 60,
+      "romSha": "960e29eb44e60fa1e6117dc759e62761866ea100cfabf680a60e7430d317f178",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "e4f281183e2a2b5d5e25fd9b5f57a92217522078d82bae7fa6cc79166c660f7c",
+      "pcmSha": "63790eea2114ed0c51485e770151effa079d9c5d0ba1f88a4432af06cdc5f677",
+      "pcmFrames": 31939,
+      "pad": 0
+    },
+    {
+      "name": "hirom",
+      "frames": 65,
+      "romSha": "960e29eb44e60fa1e6117dc759e62761866ea100cfabf680a60e7430d317f178",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "be41c4d626310b21329495441e51a3dc858fa351571f45d69df8186226963760",
+      "pcmSha": "2b8fce262ff15781d661ee3e83b84ae1107e58bf2f1dbd98a5f9c631c0c76fac",
+      "pcmFrames": 34601,
+      "pad": 16384
+    },
+    {
+      "name": "hirom",
+      "frames": 110,
+      "romSha": "960e29eb44e60fa1e6117dc759e62761866ea100cfabf680a60e7430d317f178",
+      "rgbSha": "581c4985a421ba4e1459654579f7f5c757bb0bc7f8bd9bb5a35a2b0b3cf59ef3",
+      "wramSha": "dae03709cd89cf0fd75e9009c78df32e9fd3a3166d967e5b00b13774094b8bff",
+      "pcmSha": "d1ebde0d54e7ab77a1d80079d327b2d7f5d8c37ce0edbf7702896a06ceb09d17",
+      "pcmFrames": 58556,
+      "pad": 35200
+    },
+    {
+      "name": "hirom",
+      "frames": 120,
+      "romSha": "960e29eb44e60fa1e6117dc759e62761866ea100cfabf680a60e7430d317f178",
+      "rgbSha": "3526f110c38e46b5f078836a4285d90f219df5613318cf1fac805d8723f95bef",
+      "wramSha": "b0a8b21307810c78abeebcb8aaa3ef2c56fe1cc437bbcbc122b89cf669352625",
+      "pcmSha": "1be2ec4c3a613c34ebd8e9f6b4979477ca6f659cc4f34b60efde259884f2a92b",
+      "pcmFrames": 63879,
+      "pad": 0
+    }
+  ]
+}

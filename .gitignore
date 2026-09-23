@@ -19,3 +19,4 @@ test/dsp/
 
 # Local Git worktrees
 /.worktrees/
+src/theater/zupernes.wasm
