@@ -58,7 +58,7 @@ const RefreshTimeline = refresh_timing.Timeline;
 /// everything captured, and `read` refuses a mismatch. The version covers a
 /// deliberate REORDER at equal size; the length covers every accidental
 /// change, which is the one that actually happens.
-pub const magic = "ZNSAVE\x00\x08";
+pub const magic = "ZNSAVE\x00\x09"; // v9: DSP KON/KOFF latches
 
 /// Clock ownership changes observable execution order, so it is part of the
 /// diagnostic state's compatibility contract even though the callback

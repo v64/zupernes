@@ -134,10 +134,6 @@ const Voice = struct {
 
     // Output of this voice's last sample (pre-volume), used for pitch mod
     out_sample: i16 = 0,
-
-    // Key-on happens with a short delay on hardware; we start immediately
-    // but track a "just keyed" state to reset BRR decoding cleanly.
-    keyed_on: bool = false,
 };
 
 const EnvMode = enum { attack, decay, sustain, release, gain };
@@ -159,6 +155,20 @@ pub const Dsp = struct {
 
     // ENDX register state (bit per voice, set when the end block is decoded)
     endx: u8,
+
+    // ---- Key on / key off (Mesen2 3b058f9 Dsp.cpp, after blargg/anomie) ----
+    // KON ($4C) is WRITE-triggered, not a level: every write latches its 1
+    // bits into `new_kon`, even when the register already held that value.
+    // Every other sample the DSP drops latch bits for voices it keyed on in
+    // the previous two samples, then loads `kon_latch` from the latch and
+    // `koff_latch` from KOFF ($5C); voices act on those loaded values. A game
+    // that writes KON=$40 twice without clearing it in between (SMW's
+    // "Nintendo Presents" chime: note, KOFF, KON again) therefore restarts
+    // the voice on the second write.
+    new_kon: u8 = 0,
+    kon_latch: u8 = 0,
+    koff_latch: u8 = 0,
+    every_other: bool = true,
 
     // ---------------------------------------------------------------------
     // Output: a small ring buffer of stereo frames the frontend drains.
@@ -201,9 +211,9 @@ pub const Dsp = struct {
         const a = addr & 0x7F;
 
         switch (a) {
-            0x4C => { // KON - key on
-                // Store it; voices start at the next sample tick
+            0x4C => { // KON - key on: write-triggered latch (see new_kon)
                 self.regs[a] = value;
+                self.new_kon = value;
             },
             0x7C => {
                 // Any write to ENDX clears all bits (hardware quirk)
@@ -231,20 +241,24 @@ pub const Dsp = struct {
         }
 
         // ---------------- Key on / key off ----------------
-        const kon = self.regs[0x4C];
-        const kof = self.regs[0x5C];
-        for (0..8) |i| {
-            const bit = @as(u8, 1) << @intCast(i);
-            const v = &self.voices[i];
-            if ((kon & bit) != 0 and !v.keyed_on) {
-                self.keyOn(@intCast(i), ram);
+        // Voices act on the values loaded at the previous poll (every other
+        // sample): KOFF releases, KON keys on - KON wins when both are set
+        // (Mesen2 DspVoice step 3c).
+        if (self.every_other) {
+            for (0..8) |i| {
+                const bit = @as(u8, 1) << @intCast(i);
+                const v = &self.voices[i];
+                if ((self.koff_latch & bit) != 0) v.env_mode = .release;
+                if ((self.kon_latch & bit) != 0) self.keyOn(@intCast(i), ram);
             }
-            if ((kof & bit) != 0 and v.env_mode != .release) {
-                v.env_mode = .release;
-            }
-            if ((kon & bit) == 0) {
-                v.keyed_on = false;
-            }
+        }
+        // Poll (Mesen2 Dsp steps 29/30): toggle, then on the polling sample
+        // clear latch bits already keyed on and load the next KON/KOFF.
+        self.every_other = !self.every_other;
+        if (self.every_other) {
+            self.new_kon &= ~self.kon_latch;
+            self.kon_latch = self.new_kon;
+            self.koff_latch = self.regs[0x5C];
         }
 
         // ---------------- Noise generator ----------------
@@ -407,7 +421,8 @@ pub const Dsp = struct {
     /// Canonical, pointer-free S-DSP state used by emulator capture APIs.
     /// The output ring is deliberately excluded: callers drain at the anchor,
     /// and restored playback starts a new continuous stream from that sample.
-    pub const state_len: usize = 128 + 8 * 42 + 42;
+    // v9: the per-voice keyed_on byte became the KON/KOFF latch state (+4).
+    pub const state_len: usize = 128 + 8 * 41 + 42 + 4;
 
     pub fn writeState(self: *const Dsp, dst: []u8) usize {
         std.debug.assert(dst.len >= state_len);
@@ -429,8 +444,6 @@ pub const Dsp = struct {
             at += 1;
             putU16(dst, &at, v.env_timer);
             putU16(dst, &at, @bitCast(v.out_sample));
-            dst[at] = @intFromBool(v.keyed_on);
-            at += 1;
         }
         putU16(dst, &at, self.noise_lfsr);
         putU16(dst, &at, self.noise_timer);
@@ -440,7 +453,11 @@ pub const Dsp = struct {
             putU16(dst, &at, @bitCast(sample));
         dst[at] = self.fir_pos;
         dst[at + 1] = self.endx;
-        at += 2;
+        dst[at + 2] = self.new_kon;
+        dst[at + 3] = self.kon_latch;
+        dst[at + 4] = self.koff_latch;
+        dst[at + 5] = @intFromBool(self.every_other);
+        at += 6;
         std.debug.assert(at == state_len);
         return at;
     }
@@ -465,8 +482,6 @@ pub const Dsp = struct {
             at += 1;
             v.env_timer = getU16(src, &at);
             v.out_sample = @bitCast(getU16(src, &at));
-            v.keyed_on = src[at] != 0;
-            at += 1;
         }
         self.noise_lfsr = @truncate(getU16(src, &at));
         self.noise_timer = getU16(src, &at);
@@ -477,7 +492,11 @@ pub const Dsp = struct {
         }
         self.fir_pos = src[at];
         self.endx = src[at + 1];
-        at += 2;
+        self.new_kon = src[at + 2];
+        self.kon_latch = src[at + 3];
+        self.koff_latch = src[at + 4];
+        self.every_other = src[at + 5] != 0;
+        at += 6;
         self.out_read = 0;
         self.out_write = 0;
         std.debug.assert(at == state_len);
@@ -516,7 +535,6 @@ pub const Dsp = struct {
         v.counter = 0;
         v.env = 0;
         v.env_timer = 0;
-        v.keyed_on = true;
         v.env_mode = if ((self.regs[base + 5] & 0x80) != 0) .attack else .gain;
         self.endx &= ~(@as(u8, 1) << voice);
 
@@ -785,4 +803,28 @@ test "brr decode filter 0" {
     dsp.keyOn(0, &ram);
     // keyOn primes 3 samples; first decoded is nibble 7
     try std.testing.expectEqual(@as(i16, 14336), dsp.voices[0].decode_buf[0]);
+}
+
+test "KON is write-triggered: rewriting the same value restarts the voice" {
+    // SMW's "Nintendo Presents" chime plays voice 6 with KON=$40, releases
+    // it with KOFF=$40, clears KOFF and writes KON=$40 AGAIN - never writing
+    // a 0 to KON in between. On hardware (and Mesen2 3b058f9, which latches
+    // NewKeyOn on every KON write) the second write restarts the voice; a
+    // level-triggered KON ignored it and cut the chime short.
+    var ram = [_]u8{0} ** 65536;
+    var dsp = Dsp.init();
+    dsp.write(0x6C, 0x20); // FLG: leave soft reset, mute off
+    dsp.write(0x65, 0x8F); // voice 6 ADSR1: ADSR mode, fastest attack
+    dsp.write(0x4C, 0x40);
+    for (0..8) |_| dsp.tick(&ram);
+    try std.testing.expect(dsp.voices[6].env_mode != .release);
+
+    dsp.write(0x5C, 0x40); // key off
+    for (0..8) |_| dsp.tick(&ram);
+    try std.testing.expectEqual(EnvMode.release, dsp.voices[6].env_mode);
+
+    dsp.write(0x5C, 0x00);
+    dsp.write(0x4C, 0x40); // same value as before - must still key on
+    for (0..8) |_| dsp.tick(&ram);
+    try std.testing.expect(dsp.voices[6].env_mode != .release);
 }
