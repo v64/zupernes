@@ -1,4 +1,6 @@
-// Reviewer-owned baseline recorder. GLM must not regenerate expected.json.
+// Reviewer-owned baseline recorder: native-build goldens for the WASM parity
+// gate. Recapture only when native emulation changes deliberately (e.g. the
+// 2026-09 switch to the ordered timing profile); record the commit it ran on.
 import {readFileSync,writeFileSync,mkdirSync} from 'node:fs';
 import {resolve,join} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -8,7 +10,7 @@ import {checkpoints,movie,sha,ppmPixels,wavPcm} from './contract.mjs';
 if(process.argv[2]!=='--capture')throw Error('Explicit --capture required; reviewer only');
 const out=resolve('.zig-cache/theater-native-reference');mkdirSync(out,{recursive:true});
 writeFileSync(join(out,'input.zmov'),movie);
-const expected={schema:1,base:'a51c7240d9e60e6176b7e1bef96d18cd0fb39678',fixtureSource:sha(readFileSync(new URL('./fixtures.mjs',import.meta.url))),cases:[]};
+const expected={schema:1,base:spawnSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).stdout.trim(),fixtureSource:sha(readFileSync(new URL('./fixtures.mjs',import.meta.url))),cases:[]};
 for(const [name,rom] of Object.entries(fixtures())) {
  const path=join(out,name+'.sfc');writeFileSync(path,rom);
  for(const frames of checkpoints) {

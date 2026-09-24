@@ -9,6 +9,10 @@
 //     --dep build_options -Mzupernes=<tree>/src/root.zig -Mbuild_options=<options.zig>
 //   frame_log <rom> <frames> <out.tsv> [--ordered] [--dump-every N] ADDR...
 //
+// (On trees after the 2026-09 default switch the ordered profile is already
+// active; --ordered is then a no-op. On the pinned 39935fa tree it is
+// unavailable.)
+//
 // --dump-every N also writes the full 128 KiB WRAM at the start of every
 // Nth frame to <out.tsv>.<frame>.wram (compare with the Mesen side).
 // --exec-dump ADDR N instead dumps WRAM at every Nth time the instruction

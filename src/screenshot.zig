@@ -15,7 +15,9 @@
 //                       ADDR (0-0x1FFFF, $7E0000-based) changes value
 //
 // Timing profile:
-//   --ordered           run on the ordered wall owner from power-on
+//   (default)           the ordered wall owner (Mesen2-exact timing)
+//   --aggregate         the pre-2026-09 per-instruction clock, for comparison
+//   --ordered           accepted, same as the default
 //
 // Input injection:
 //   --input 120:S       press Start at frame 120 (held for 30 frames)
@@ -286,7 +288,7 @@ pub fn main() !void {
     var range_end: u32 = std.math.maxInt(u32);
     var dump_path: ?[]const u8 = null;
     var wav_path: ?[]const u8 = null;
-    var ordered = false;
+    var aggregate = false;
     var movie_path: ?[]const u8 = null;
     var record_path: ?[]const u8 = null;
     const SaveStateSpec = struct { frame: u32, path: []const u8 };
@@ -323,10 +325,10 @@ pub fn main() !void {
             i += 1;
             wav_path = args[i];
         } else if (std.mem.eql(u8, args[i], "--ordered")) {
-            // Run on the execution-ordered wall owner (refresh, DMA/HDMA
-            // controller, short scanline) from power-on instead of the
-            // aggregate runtime. Research profile; see src/refresh_timing.zig.
-            ordered = true;
+            // The default since 2026-09; accepted for old command lines.
+        } else if (std.mem.eql(u8, args[i], "--aggregate")) {
+            // The pre-2026-09 per-instruction clock, for comparisons.
+            aggregate = true;
         } else if (std.mem.eql(u8, args[i], "--tm")) {
             i += 1;
             tm_force = try std.fmt.parseInt(u8, args[i], 0);
@@ -376,8 +378,8 @@ pub fn main() !void {
 
     emulator = Emulator.init();
     emulator.setup();
+    if (aggregate) emulator.timing_profile = .aggregate;
     try emulator.loadRom(rom_data);
-    if (ordered) emulator.enableOrderedClockFromPowerOn();
     emulator.ppu.tm_force = tm_force;
 
     var playback: ?zupernes.movie.Movie = null;

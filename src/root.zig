@@ -37,6 +37,8 @@ fn absolutePpuMaster(ppu: *const Ppu) u64 {
 const hdma_init_dot: u16 = 6;
 const hdma_transfer_dot: u16 = 278;
 
+pub const TimingProfile = enum { ordered, aggregate };
+
 pub const Emulator = struct {
     cpu: Cpu,
     ppu: Ppu,
@@ -52,6 +54,18 @@ pub const Emulator = struct {
     // Mesen2 SnesCpuState::IrqLock: set when the most recent CPU cycle
     // start serviced a DMA/HDMA transfer. Consumed by the interrupt model.
     ordered_irq_lock: bool = false,
+    // Set once the ordered profile has run its power-on startup interval
+    // for the current reset, so attaching again is a no-op.
+    ordered_powered_on: bool = false,
+
+    /// Timing model used from the next reset (loadRom resets).
+    ///   .ordered    execution-ordered wall owner: DRAM refresh, the Mesen2
+    ///               DMA/HDMA controller, short scanline, Mesen2 interrupt
+    ///               model. Matches Mesen2 3b058f9 exactly on every timing
+    ///               probe (docs/timing-t3-report.md). The default.
+    ///   .aggregate  the pre-2026-09 per-instruction clock, kept for
+    ///               comparisons (screenshot --aggregate) and unit tests.
+    timing_profile: TimingProfile = .ordered,
     // Wall master at which the current instruction began (ordered path).
     ordered_instruction_start: u64 = 0,
 
@@ -96,8 +110,13 @@ pub const Emulator = struct {
         self.last_scanline = 0;
         self.refresh_timeline = RefreshTimeline.reset();
         self.ordered_last_cpu_cycle_start = 0;
+        self.ordered_powered_on = false;
         // Note: APU ports (apu_out) keep their boot signature ($AA, $BB)
         // This is correct - APU reset would reinitialize them, not clear them
+
+        // Reset is the power-on/reset instant the ordered profile is defined
+        // from: attach it here so every ROM load and soft reset runs on it.
+        if (self.timing_profile == .ordered) self.enableOrderedClockFromPowerOn();
     }
 
     pub fn loadRomFilesystemFree(self: *Emulator, rom_data: []const u8) !void {
@@ -452,11 +471,13 @@ pub const Emulator = struct {
     pub const power_on_startup_masters: u64 = 186;
 
     /// Connect the ordered wall owner to a machine that has just been reset
-    /// (wall 0, beam at V=0 H=0) and run the power-on startup interval
-    /// through it, so the first instruction starts at the hardware phase.
-    /// Used by the timing-trace tool; the default runtime stays aggregate.
+    /// (beam at V=0 H=0) and run the power-on startup interval through it, so
+    /// the first instruction starts at the hardware phase. Emulator.reset
+    /// calls this for the default .ordered profile; tools may call it too.
     pub fn enableOrderedClockFromPowerOn(self: *Emulator) void {
-        std.debug.assert(absolutePpuMaster(&self.ppu) == 0);
+        // Idempotent per reset: the default profile already attached it.
+        if (self.ordered_powered_on and self.bus.orderedClockConnected()) return;
+        self.ordered_powered_on = true;
         self.enableOrderedClockFixture();
         var sink = OrderedClockSink{ .emu = self };
         self.refresh_timeline.advanceWorkOrdered(power_on_startup_masters, &sink);
@@ -2043,6 +2064,10 @@ test "$4212 samples the mapped-read handler phase at the H=274 half-cycle" {
 test "$4212 never reuses a stale CPU sample across direct DMA and reset boundaries" {
     var emu = Emulator.init();
     emu.setup();
+    // The projected CPU read sample is an aggregate-profile mechanism (the
+    // ordered profile reads the live beam); keep reset on that profile so it
+    // leaves the beam at H=0 instead of running the power-on startup.
+    emu.timing_profile = .aggregate;
     emu.ppu.scanline = 36;
     emu.ppu.dot = 100;
 

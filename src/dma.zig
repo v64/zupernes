@@ -150,6 +150,13 @@ pub const Dma = struct {
         }
         self.hdma_enable = 0;
         self.hdma_terminated = 0;
+        // Ordered controller requests do not survive a reset.
+        self.general_pending = false;
+        self.start_delay = false;
+        self.hdma_pending = false;
+        self.hdma_init_pending = false;
+        self.general_active = 0;
+        self.clock_counter = 0;
     }
 
     /// Read DMA register

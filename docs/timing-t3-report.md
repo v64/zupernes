@@ -1,19 +1,31 @@
-# T3 ordered-timing report (branch `arch/timing-t3`)
+# T3 ordered-timing report
 
-Research line for ZuperWorld's T3 timing work, continued from the banked
-2026-09-12 checkpoint (`zuperworld/docs/timing-checkpoint-20260912.md`).
-**Nothing here is promoted**: the ZuperWorld oracle stays pinned at
-`39935fa`, and this branch is not merged. Promotion is the owner's
-decision.
+ZuperWorld's T3 timing work, continued from the banked 2026-09-12
+checkpoint (`zuperworld/docs/timing-checkpoint-20260912.md`). It was merged
+into `main` (`00b95a1`) on 2026-09-23. The same day **the ordered profile
+became the ZuperNES default**.
 
-## What the ordered profile is
+## The ordered profile (default)
 
-`Emulator.enableOrderedClockFromPowerOn()` (and `screenshot --ordered`,
-`timing-trace`) runs the machine on one execution-ordered wall owner
-(`src/refresh_timing.zig`). Every CPU cycle, DMA/HDMA byte, DRAM refresh
-stall and line boundary advances the PPU, APU and DSP in order. The default
-runtime still uses the pin's aggregate clock; only the CPU cycle
-corrections below apply to both paths.
+Every reset attaches the execution-ordered wall owner
+(`src/refresh_timing.zig`), and every ROM load resets. Every CPU cycle,
+DMA/HDMA byte, DRAM refresh stall and line boundary advances the PPU, APU
+and DSP in order.
+
+`Emulator.timing_profile = .aggregate` (set before `loadRom`, or
+`screenshot --aggregate`) selects the pre-2026-09 per-instruction clock,
+kept for comparisons and aggregate-path unit tests.
+
+Verified on the default at the switch:
+- unit tests 115/115 (Debug and ReleaseSafe);
+- cross-oracle 143/143;
+- savestate-verify bit-identical resumes (SMW at four snapshot points,
+  Super Mario Kart, DKC);
+- record-verify 2,000 frames;
+- browser theater: exact native/WASM parity after recapturing the native
+  goldens, 28/28 feature scenarios, 60.1 fps;
+- ReleaseSafe crash sweep: 1,800 frames of every game and test ROM;
+- SMW vs Mesen with no flags: identical to the results below.
 
 ## Result: exact agreement with Mesen2 on every probe
 
