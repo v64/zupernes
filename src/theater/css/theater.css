@@ -164,6 +164,16 @@ button:disabled { color: #55636f; cursor: default; }
 .key small { font-size: 8.5px; color: #7d8a99; }
 
 @media (max-width: 560px) {
-  .pad { gap: 12px; padding: 38px 14px 14px; }
+  /* Phone widths: tighter cross and diamond, Select/Start stacked, so the
+     whole pad fits a ~360px viewport without horizontal scrolling. */
+  .pad { gap: 10px; padding: 36px 12px 12px; }
+  .dpad, .face { grid-template-columns: repeat(3, 32px); grid-template-rows: repeat(3, 30px); }
+  .key.round { width: 30px; height: 30px; }
+  .dpad .key { min-width: 0; width: 31px; padding: 2px 0; }
+  .dpad .key small { font-size: 7px; }
+  .mid { flex-direction: column; gap: 4px; margin-bottom: 0; align-self: center; }
+  .shoulder { min-width: 46px; }
+  .shoulder.sl { left: 18px; }
+  .shoulder.sr { right: 18px; }
   body { padding: 8px; }
 }
