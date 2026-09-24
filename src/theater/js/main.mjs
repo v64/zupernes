@@ -730,13 +730,33 @@ function fbToRgba(fb) {
   return rgbaBuffer;
 }
 
-function fitCanvas() {
-  if (presenterMode === "webgpu" && gpuPresenter) return; // presenter owns output size
+// Integer-scale display fit, ported from ZuperWorld's theater fitCanvas
+// (src/theater/js/main.mjs at 954e3f72). The largest integer k that fits the
+// #stage box is chosen in DEVICE pixels, and the canvas's CSS box is set to
+// exactly W*k x H*k device pixels (W*k/dpr CSS px). Letting CSS stretch the
+// canvas to the stage instead (width: 100%) resamples the output by a
+// non-integer factor; for the CRT shader, whose phosphor mask and scanline
+// profile live at device-pixel frequency, that resampling beats against the
+// screen grid and shows as moire bands.
+function integerScale() {
   const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.getBoundingClientRect();
-  const availW = Math.max(1, Math.floor((cssW.width || W) * dpr));
-  const availH = Math.max(1, Math.floor((cssW.height || H) * dpr));
-  let k = Math.max(1, Math.min(Math.floor(availW / W), Math.floor(availH / H)));
+  const stage = $("stage").getBoundingClientRect();
+  const availW = (stage.width || W) * dpr;
+  const availH = (stage.height || H) * dpr;
+  return Math.max(1, Math.floor(Math.min(availW / W, availH / H)));
+}
+function applyDisplaySize(k) {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.style.width = (W * k / dpr) + "px";
+  canvas.style.height = (H * k / dpr) + "px";
+}
+
+// 2D presenter: a source-sized backing store drawn 1:1 is enough; CSS
+// `image-rendering: pixelated` performs the crisp integer upscale.
+function fitCanvas() {
+  if (presenterMode === "webgpu" && gpuPresenter) return fitWebGpuOutput(); // presenter owns output size
+  const k = integerScale();
+  applyDisplaySize(k);
   const w = W * k, h = H * k;
   if (canvas.width !== w || canvas.height !== h) {
     canvas.width = w;
@@ -1208,13 +1228,16 @@ function toggleCrt() {
   }
   updateCrtLabel();
 }
+// WebGPU presenter (ZuperWorld's contract): the CRT pass needs a real
+// device-resolution target (W*k x H*k) to lay its scanline beam and phosphor
+// mask between source pixels; the plain pipeline keeps a source-sized W x H
+// store and lets CSS do the integer upscale. Either way the CSS box is the
+// exact integer size, so the browser never resamples the shader output.
 function fitWebGpuOutput() {
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  const availW = Math.max(1, Math.floor((rect.width || W) * dpr));
-  const availH = Math.max(1, Math.floor((rect.height || H) * dpr));
-  let k = Math.max(1, Math.min(Math.floor(availW / W), Math.floor(availH / H)));
-  gpuPresenter.configure({ width: W, height: H, outputWidth: W * k, outputHeight: H * k, crt: crtRequested });
+  const k = integerScale();
+  applyDisplaySize(k);
+  const outW = crtRequested ? W * k : W, outH = crtRequested ? H * k : H;
+  gpuPresenter.configure({ width: W, height: H, outputWidth: outW, outputHeight: outH, crt: crtRequested });
 }
 addEventListener("resize", () => { if (presenterMode === "webgpu" && gpuPresenter) fitWebGpuOutput(); });
 
